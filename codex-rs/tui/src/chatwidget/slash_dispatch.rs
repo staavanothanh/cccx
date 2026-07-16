@@ -139,6 +139,14 @@ impl ChatWidget {
     }
 
     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
+        if codex_features::cccx_mvp::is_tui_slash_command_disabled(cmd.command()) {
+            self.add_error_message(codex_features::cccx_mvp::disabled_surface_message(
+                cmd.command(),
+            ));
+            self.bottom_pane.drain_pending_submission_state();
+            self.request_redraw();
+            return;
+        }
         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
             return;
         }
@@ -545,6 +553,14 @@ impl ChatWidget {
         args: String,
         text_elements: Vec<TextElement>,
     ) {
+        if codex_features::cccx_mvp::is_tui_slash_command_disabled(cmd.command()) {
+            self.add_error_message(codex_features::cccx_mvp::disabled_surface_message(
+                cmd.command(),
+            ));
+            self.bottom_pane.drain_pending_submission_state();
+            self.request_redraw();
+            return;
+        }
         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
             return;
         }

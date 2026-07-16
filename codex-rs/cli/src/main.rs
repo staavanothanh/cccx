@@ -76,6 +76,7 @@ use codex_core::config::find_codex_home;
 use codex_core::config::resolve_profile_v2_config_path;
 use codex_features::FEATURES;
 use codex_features::Stage;
+use codex_features::cccx_mvp;
 use codex_features::is_known_feature_key;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
@@ -130,9 +131,11 @@ enum Subcommand {
     Review(ReviewCommand),
 
     /// Manage login.
+    #[clap(hide = true)]
     Login(LoginCommand),
 
     /// Remove stored authentication credentials.
+    #[clap(hide = true)]
     Logout(LogoutCommand),
 
     /// Manage external MCP servers for Codex.
@@ -148,10 +151,12 @@ enum Subcommand {
     AppServer(AppServerCommand),
 
     /// [experimental] Manage the app-server daemon with remote control enabled.
+    #[clap(hide = true)]
     RemoteControl(RemoteControlCommand),
 
     /// Launch the Codex desktop app (opens the app installer if missing).
     #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[clap(hide = true)]
     App(app_cmd::AppCommand),
 
     /// Generate shell completion scripts.
@@ -194,6 +199,7 @@ enum Subcommand {
 
     /// [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally.
     #[clap(name = "cloud", alias = "cloud-tasks")]
+    #[clap(hide = true)]
     Cloud(CloudTasksCli),
 
     /// Internal: run the responses API proxy.
@@ -889,13 +895,20 @@ struct InteractiveRemoteOptions {
     /// Connect the TUI to a remote app server endpoint.
     ///
     /// Accepted forms: `ws://host:port`, `wss://host:port`, `unix://`, or `unix://PATH`.
-    #[arg(long = "remote", value_name = "ADDR")]
+    #[arg(long = "remote", value_name = "ADDR", hide = true)]
     remote: Option<String>,
 
     /// Name of the environment variable containing the bearer token to send to
     /// a remote app server websocket.
-    #[arg(long = "remote-auth-token-env", value_name = "ENV_VAR")]
+    #[arg(long = "remote-auth-token-env", value_name = "ENV_VAR", hide = true)]
     remote_auth_token_env: Option<String>,
+}
+
+fn reject_cccx_mvp_surface(surface: &str) -> anyhow::Result<()> {
+    if cccx_mvp::is_cli_surface_disabled(surface) {
+        anyhow::bail!("{}", cccx_mvp::disabled_surface_message(surface));
+    }
+    Ok(())
 }
 
 impl FeatureToggles {
@@ -978,6 +991,9 @@ async fn cli_main(
     root_config_overrides.raw_overrides.extend(toggle_overrides);
     let root_remote = remote.remote;
     let root_remote_auth_token_env = remote.remote_auth_token_env;
+    if root_remote.is_some() || root_remote_auth_token_env.is_some() {
+        reject_cccx_mvp_surface("remote-control")?;
+    }
     let root_strict_config = interactive.strict_config;
     reject_root_strict_config_for_subcommand(root_strict_config, &subcommand)?;
     if let Some(subcommand) = subcommand.as_ref() {
@@ -1074,6 +1090,7 @@ async fn cli_main(
             prepend_config_flags(&mut config_overrides, root_config_overrides.clone());
             match subcommand {
                 PluginSubcommand::Add(args) => {
+                    reject_cccx_mvp_surface("plugin add")?;
                     let overrides = config_overrides
                         .parse_overrides()
                         .map_err(anyhow::Error::msg)?;
@@ -1086,6 +1103,7 @@ async fn cli_main(
                     plugin_cmd::run_plugin_list(overrides, args).await?;
                 }
                 PluginSubcommand::Marketplace(mut marketplace_cli) => {
+                    reject_cccx_mvp_surface("plugin marketplace")?;
                     prepend_config_flags(&mut marketplace_cli.config_overrides, config_overrides);
                     marketplace_cli.run().await?;
                 }
@@ -1218,6 +1236,7 @@ async fn cli_main(
             }
         }
         Some(Subcommand::RemoteControl(remote_control_cli)) => {
+            reject_cccx_mvp_surface("remote-control")?;
             let subcommand_name = remote_control_cli.subcommand_name();
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -1233,6 +1252,7 @@ async fn cli_main(
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         Some(Subcommand::App(app_cli)) => {
+            reject_cccx_mvp_surface("app")?;
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),
@@ -1337,6 +1357,7 @@ async fn cli_main(
             handle_app_exit(exit_info)?;
         }
         Some(Subcommand::Login(mut login_cli)) => {
+            reject_cccx_mvp_surface("login")?;
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),
@@ -1381,6 +1402,7 @@ async fn cli_main(
             }
         }
         Some(Subcommand::Logout(mut logout_cli)) => {
+            reject_cccx_mvp_surface("logout")?;
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),
@@ -1423,6 +1445,7 @@ async fn cli_main(
             .await?;
         }
         Some(Subcommand::Cloud(mut cloud_cli)) => {
+            reject_cccx_mvp_surface("cloud")?;
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),

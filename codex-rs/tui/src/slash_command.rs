@@ -1,3 +1,4 @@
+use codex_features::cccx_mvp;
 use strum::IntoEnumIterator;
 use strum_macros::AsRefStr;
 use strum_macros::EnumIter;
@@ -244,6 +245,9 @@ impl SlashCommand {
     }
 
     fn is_visible(self) -> bool {
+        if cccx_mvp::is_tui_slash_command_disabled(self.command()) {
+            return false;
+        }
         match self {
             SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
             SlashCommand::Copy => !cfg!(target_os = "android"),

@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use toml::Table;
 
+pub mod cccx_mvp;
 mod feature_configs;
 mod legacy;
 pub use feature_configs::CodeModeConfigToml;
@@ -366,6 +367,14 @@ impl Features {
             if spec.default_enabled {
                 set.insert(spec.id);
             }
+        }
+        if cccx_mvp::surface_gate_enabled() {
+            set.remove(&Feature::Apps);
+            set.remove(&Feature::EnableMcpApps);
+            set.remove(&Feature::MemoryTool);
+            set.remove(&Feature::ExternalAgentMemoryImport);
+            set.remove(&Feature::RemotePlugin);
+            set.remove(&Feature::PluginSharing);
         }
         Self {
             enabled: set,

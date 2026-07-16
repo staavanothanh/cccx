@@ -50,12 +50,14 @@ pub enum PluginSubcommand {
     ///
     /// Pass either `PLUGIN@MARKETPLACE` or pass `PLUGIN` with
     /// `--marketplace MARKETPLACE`.
+    #[clap(hide = true)]
     Add(AddPluginArgs),
 
     /// List plugins available from configured marketplace snapshots.
     List(ListPluginsArgs),
 
     /// Add, list, upgrade, or remove configured plugin marketplaces.
+    #[clap(hide = true)]
     Marketplace(MarketplaceCli),
 
     /// Remove an installed plugin from local config and cache.

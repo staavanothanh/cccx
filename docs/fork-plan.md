@@ -289,10 +289,32 @@ Validation:
 ```text
 cargo check -p codex-core
 cargo check -p codex-tui
-cargo test -p codex-core multi_agents
+cargo test -p codex-core multi_agent
 ```
 
-Adjust exact package names after import if upstream workspace names differ.
+Status on 2026-07-16: complete. Validation passed on Windows with Visual Studio Build Tools 2022 and the repository-pinned Rust `1.95.0-x86_64-pc-windows-msvc` toolchain. For this local environment, run Cargo from a VS dev shell and prepend `D:\Program Files\cargo\bin` to `PATH`; the multi-agent test requires `RUST_MIN_STACK=33554432` plus `-- --test-threads=1` to avoid a Windows test-thread stack overflow.
+
+### M0.5 — cccx MVP Surface Gating
+
+Deliverable:
+
+- Keep upstream Codex source available for mergeability, but hide or disable non-MVP cccx surfaces.
+- Hide or block ChatGPT/OAuth login/logout UX in the cccx path.
+- Hide direct provider selection outside the 9router gateway.
+- Hide Bedrock, LM Studio, Ollama, and other provider-specific UX from the MVP cccx surface.
+- Hide remote/cloud task surfaces for the personal-local MVP.
+- Hide marketplace install UX while preserving the native plugin loader if required by the build.
+- Disable default Codex memory admission until explicit cccx Project Memory is implemented.
+- Treat full-history subagent fork as debug-only, never as a CX execution worker.
+
+Validation:
+
+- CLI help and TUI command surfaces do not advertise disabled MVP features.
+- Runtime paths for disabled features fail closed or route users to the cccx-supported alternative.
+- Existing upstream code remains present unless removal is proven safe after MVP works.
+- Feature gating is centralized enough that M1/M2 can enforce 9router and WorkSpec policies without scattered ad hoc checks.
+
+Status on 2026-07-16: implemented for the first MVP gate pass. A centralized `codex-features::cccx_mvp` gate now hides or blocks ChatGPT/OAuth login/logout, remote-control/root remote flags, desktop app launch, cloud tasks, plugin marketplace/add UX, default Apps/MCP Apps/MemoryTool/remote-plugin feature defaults, and non-MVP TUI slash commands such as `/apps`, `/plugins`, `/memories`, `/logout`, `/app`, `/fork`, `/usage`, `/agent`, and `/subagents`. Escape hatch: set `CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1` for upstream compatibility/debugging. Validation passed: `cargo fmt --check`; `cargo check -p codex-features -p codex-cli -p codex-tui`. Source inspection confirms help/popup hide attributes and runtime guards are wired. Direct binary smoke via `cargo run -p codex-cli` was attempted but timed out while building/running the Windows binary target, with no compile failure observed.
 
 ### M1 — 9router Provider Gateway
 
@@ -447,4 +469,3 @@ Run after every `git pull` from Codex upstream:
 ```
 
 These can be revisited later, but adding them now will blur the core harness boundary.
-

@@ -1,6 +1,7 @@
 AGENTS.md
 .agents/
 .env
+.codebase-memory/
 
 # deps
 node_modules

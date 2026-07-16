@@ -289,10 +289,32 @@ Kiểm tra:
 ```text
 cargo check -p codex-core
 cargo check -p codex-tui
-cargo test -p codex-core multi_agents
+cargo test -p codex-core multi_agent
 ```
 
-Điều chỉnh tên package chính xác sau import nếu tên workspace upstream khác.
+Trạng thái ngày 2026-07-16: hoàn tất. Validation đã pass trên Windows với Visual Studio Build Tools 2022 và Rust toolchain `1.95.0-x86_64-pc-windows-msvc` được pin bởi repo. Với môi trường local này, chạy Cargo từ VS dev shell và prepend `D:\Program Files\cargo\bin` vào `PATH`; multi-agent test cần `RUST_MIN_STACK=33554432` kèm `-- --test-threads=1` để tránh stack overflow của test thread trên Windows.
+
+### M0.5 — Ẩn/Tắt Surface MVP cccx
+
+Kết quả:
+
+- Giữ source Codex upstream để dễ merge, nhưng ẩn hoặc tắt các surface không thuộc MVP cccx.
+- Ẩn hoặc chặn UX ChatGPT/OAuth login/logout trong đường chạy cccx.
+- Ẩn lựa chọn provider trực tiếp ngoài 9router gateway.
+- Ẩn UX Bedrock, LM Studio, Ollama và provider-specific khác khỏi surface MVP cccx.
+- Ẩn remote/cloud task surfaces cho MVP cá nhân chạy local.
+- Ẩn marketplace install UX nhưng giữ native plugin loader nếu build còn cần.
+- Tắt default Codex memory admission cho tới khi Project Memory của cccx được implement rõ ràng.
+- Xem full-history subagent fork là debug-only, không bao giờ là CX execution worker.
+
+Kiểm tra:
+
+- CLI help và TUI command surfaces không quảng bá feature bị tắt trong MVP.
+- Runtime path của feature bị tắt phải fail-closed hoặc điều hướng sang lựa chọn được cccx hỗ trợ.
+- Source upstream vẫn được giữ lại trừ khi đã chứng minh việc xóa là an toàn sau khi MVP chạy được.
+- Feature gating đủ tập trung để M1/M2 có thể enforce 9router và WorkSpec policy mà không cần rải ad hoc checks.
+
+Trạng thái ngày 2026-07-16: đã triển khai lượt gate MVP đầu tiên. Gate tập trung `codex-features::cccx_mvp` hiện ẩn hoặc chặn ChatGPT/OAuth login/logout, remote-control/root remote flags, desktop app launch, cloud tasks, plugin marketplace/add UX, default Apps/MCP Apps/MemoryTool/remote-plugin feature defaults, và các slash command TUI ngoài MVP như `/apps`, `/plugins`, `/memories`, `/logout`, `/app`, `/fork`, `/usage`, `/agent`, `/subagents`. Escape hatch: đặt `CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1` để tạm mở lại surface upstream khi debug/merge. Validation đã pass: `cargo fmt --check`; `cargo check -p codex-features -p codex-cli -p codex-tui`. Source inspection xác nhận các attribute ẩn help/popup và runtime guard đã được wire. Smoke trực tiếp qua binary `cargo run -p codex-cli` đã thử nhưng timeout khi build/run Windows binary target, không có compile failure.
 
 ### M1 — Provider Gateway 9router
 
