@@ -376,6 +376,8 @@ Validation:
 - Classifier failure escalates or denies as designed.
 - Cancelled/stale permission digest cannot be approved.
 
+Status on 2026-07-16: complete for the policy-core pass. Added `cccx-policy` with deterministic `evaluate_action()` semantics, static rule priority (`circuit_breaker` > `escalate` > `allowlist`), Bypass retaining circuit breakers only, AcceptEdits threshold reroute, Auto classifier-unavailable approval fallback, and a single-active `PermissionRequestQueue` that rejects stale digest, cancelled requests, and circuit-breaker approvals. Validation passed with targeted test crate only: `cargo test -p cccx-policy`. Runtime wiring into Codex tool executor/approval path remains the next integration step.
+
 ### M5 — Task Graph / Verification Loop
 
 Deliverable:

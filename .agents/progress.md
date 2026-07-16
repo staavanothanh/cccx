@@ -2,8 +2,8 @@
 
 - Docs baseline committed: `39e511c`.
 - Codex CLI baseline imported: `88ddfb4` from upstream `800715d2`.
-- Current phase: M2/M3 implementation complete; next phase is M4 Permission Gate / Circuit Breaker.
-- Done: design docs, audit, fork plan, upstream remote, upstream docs separated, M0 validation complete, M0.5 MVP source gating implemented, M1 provider gateway crate implemented and wired into default Codex provider config path, M2 WorkSpec/Artifact protocol crate, M3 WorkSpecToChildConfigAdapter contract.
+- Current phase: M4 policy-core complete; next phase is M4 runtime wiring or M5 Task Graph / Verification Loop.
+- Done: design docs, audit, fork plan, upstream remote, upstream docs separated, M0 validation complete, M0.5 MVP source gating implemented, M1 provider gateway crate implemented and wired into default Codex provider config path, M2 WorkSpec/Artifact protocol crate, M3 WorkSpecToChildConfigAdapter contract, M4 permission policy core crate.
 - Toolchain fix: installed Visual Studio Build Tools 2022 with C++ tools/Windows SDK via `winget`; use repo-pinned Rust `1.95.0-x86_64-pc-windows-msvc` through `D:\Program Files\cargo\bin`.
 - M0 validation passed from `codex-rs/`: `cargo check -p codex-core`; `cargo check -p codex-tui`; `RUST_MIN_STACK=33554432 cargo test -p codex-core multi_agent -- --test-threads=1`.
 - M0.5 validation passed from `codex-rs/`: `cargo fmt --check`; `cargo check -p codex-features -p codex-cli -p codex-tui`.
@@ -17,4 +17,7 @@
 - M2/M3 validation passed from `codex-rs/`: `cargo test -p cccx-protocol`.
 - M2 scope completed: new `cccx-protocol` crate with schema versioning, typed `WorkSpec`, `Artifact`, `VerificationRecord`, evidence/provenance records, golden JSON shape test, round-trip tests, and artifact validator rejecting missing evidence/provenance.
 - M3 scope completed: `ParentCapabilitySet`, `ChildConfigProjection`, and `project_child_config()` with deny-by-default projection, WorkSpec/parent capability intersection, MCP allowlist enforcement, protected path checks, explicit model-route allowlist enforcement, and CX full-history fork rejection.
-- Next: start M4 Permission Gate / Circuit Breaker, preferably as a small policy crate before wiring into `codex-core`.
+- M4 validation passed from `codex-rs/`: `cargo test -p cccx-policy`.
+- M4 scope completed: new `cccx-policy` crate with deterministic `evaluate_action()`, circuit breaker priority over static allow/escalate, Bypass retaining circuit breakers only, AcceptEdits threshold reroute, Auto classifier-unavailable approval fallback, and single-active `PermissionRequestQueue` rejecting stale digest/cancelled/circuit-breaker approvals.
+- M4 remaining integration: wire `cccx-policy` into Codex tool executor/approval path in `codex-core` without running broad core builds unless necessary.
+- Next: either wire M4 runtime path narrowly or start M5 Task Graph / Verification Loop as another small crate.

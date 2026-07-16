@@ -376,6 +376,8 @@ Kiểm tra:
 - Classifier failure leo thang hoặc từ chối như thiết kế.
 - Permission digest bị hủy/hết hạn không thể được chấp thuận.
 
+Trạng thái ngày 2026-07-16: hoàn tất pass policy-core. Đã thêm `cccx-policy` với semantics `evaluate_action()` deterministic, priority rule tĩnh (`circuit_breaker` > `escalate` > `allowlist`), Bypass chỉ giữ circuit breaker, AcceptEdits vượt threshold thì reroute, Auto khi classifier unavailable thì fallback sang approval, và `PermissionRequestQueue` single-active từ chối stale digest, request đã cancel, và approval cho circuit breaker. Validation đã pass bằng crate test chọn lọc: `cargo test -p cccx-policy`. Phần wire runtime vào Codex tool executor/approval path là bước tích hợp tiếp theo.
+
 ### M5 — Task Graph / Verification Loop
 
 Kết quả:
