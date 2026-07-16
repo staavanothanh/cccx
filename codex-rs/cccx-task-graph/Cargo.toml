@@ -1,0 +1,18 @@
+[package]
+name = "cccx-task-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cccx_task_graph"
+path = "src/lib.rs"
+
+[dependencies]
+cccx-protocol = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+serde_json = { workspace = true }

@@ -31,6 +31,7 @@ members = [
     "cccx-policy",
     "cccx-protocol",
     "cccx-provider-gateway",
+    "cccx-task-graph",
     "cli",
     "collaboration-mode-templates",
     "connectors",
@@ -163,6 +164,7 @@ codex-chatgpt = { path = "chatgpt" }
 cccx-policy = { path = "cccx-policy" }
 cccx-protocol = { path = "cccx-protocol" }
 cccx-provider-gateway = { path = "cccx-provider-gateway" }
+cccx-task-graph = { path = "cccx-task-graph" }
 codex-cli = { path = "cli" }
 codex-client = { path = "codex-client" }
 codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }

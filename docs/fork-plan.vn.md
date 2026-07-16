@@ -392,6 +392,8 @@ Kiểm tra:
 - CX "done" không có VerificationRecord không đánh dấu task đã verify.
 - Thay đổi verification command/path được bảo vệ chặn verification.
 
+Trạng thái ngày 2026-07-16: hoàn tất pass task-graph core. Đã thêm `cccx-task-graph` với `TaskGraph`, `TaskNode`, `AttemptRecord`, `WorkerRecord`, `VerificationSpec` serialize được bằng JSON, apply artifact, projection verification, chặn dependency, và stop check deterministic `can_stop()`. Artifact success từ CX không tự verify task nếu chưa có `VerificationRecord.passed=true`; verification spec digest drift ở vùng protected sẽ chặn verification. Validation đã pass bằng crate test chọn lọc: `cargo test -p cccx-task-graph`. Phần wire runtime vào session turn boundaries, StopHook, bảo toàn qua compaction, và persistence `.cccx/state/` được tạm hoãn vào nhóm heavy wiring.
+
 ### M6 — TUI Commands / UX
 
 Kết quả:

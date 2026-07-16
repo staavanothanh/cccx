@@ -392,6 +392,8 @@ Validation:
 - CX "done" without VerificationRecord does not mark task verified.
 - Protected verification command/path changes block verification.
 
+Status on 2026-07-16: complete for the task-graph core pass. Added `cccx-task-graph` with JSON-serializable `TaskGraph`, `TaskNode`, `AttemptRecord`, `WorkerRecord`, `VerificationSpec`, artifact application, verification projection, dependency blocking, and deterministic `can_stop()` stop check. CX success artifacts do not verify tasks without `VerificationRecord.passed=true`; protected verification spec digest drift blocks verification. Validation passed with targeted test crate only: `cargo test -p cccx-task-graph`. Runtime wiring into session turn boundaries, StopHook, compaction preservation, and `.cccx/state/` persistence remains deferred heavy wiring.
+
 ### M6 — TUI Commands / UX
 
 Deliverable:
