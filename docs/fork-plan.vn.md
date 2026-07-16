@@ -407,6 +407,8 @@ Kiểm tra:
 - Snapshot test cho status line, agent list, permission queue.
 - Command parser test cho command có namespace.
 
+Trạng thái ngày 2026-07-16: hoàn tất pass UX-contract. Đã thêm `cccx-ux` với parser deterministic cho `/agents`, `/agents logs`, `/agents resume`, `/agents cancel`, `/agents model`, `/tasks`, `/permissions`, `/remember`, và `/cancel`, cùng renderer ổn định cho cccx status line, agent list, và permission queue. Validation đã pass bằng crate test chọn lọc: `cargo test -p cccx-ux`. Phần wire runtime vào command dispatch/status rendering của `codex-tui` được tạm hoãn vào nhóm heavy wiring.
+
 ### M7 — Headless Exec
 
 Kết quả:
@@ -419,6 +421,8 @@ Kiểm tra:
 
 - JSONL schema test.
 - stdout/stderr separation test.
+
+Trạng thái ngày 2026-07-16: hoàn tất pass headless-contract. Đã thêm `cccx-headless` với JSONL event envelope cho answer, approval-denied, task-update, agent-update, permission-request, error, và terminal event; kiểm tra sequence liên tục; guard stdout chỉ chứa JSONL; tách diagnostics sang stderr; và headless approval mặc định deny. Validation đã pass bằng crate test chọn lọc: `cargo test -p cccx-headless`. Phần wire runtime vào `codex-exec` được tạm hoãn vào nhóm heavy wiring.
 
 ### M8 — Đổi Tên Gói
 

@@ -1609,6 +1609,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cccx-headless"
+version = "0.0.0"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cccx-policy"
 version = "0.0.0"
 dependencies = [
@@ -1650,6 +1660,14 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cccx-ux"
+version = "0.0.0"
+dependencies = [
+ "pretty_assertions",
  "thiserror 2.0.18",
 ]
 

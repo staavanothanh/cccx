@@ -407,6 +407,8 @@ Validation:
 - Snapshot tests for status line, agent list, permission queue.
 - Command parser tests for namespaced commands.
 
+Status on 2026-07-16: complete for the UX-contract pass. Added `cccx-ux` with deterministic parsing for `/agents`, `/agents logs`, `/agents resume`, `/agents cancel`, `/agents model`, `/tasks`, `/permissions`, `/remember`, and `/cancel`, plus stable renderers for the cccx status line, agent list, and permission queue. Validation passed with targeted test crate only: `cargo test -p cccx-ux`. Runtime wiring into `codex-tui` command dispatch/status rendering remains deferred heavy wiring.
+
 ### M7 — Headless Exec
 
 Deliverable:
@@ -419,6 +421,8 @@ Validation:
 
 - JSONL schema tests.
 - stdout/stderr separation tests.
+
+Status on 2026-07-16: complete for the headless-contract pass. Added `cccx-headless` with JSONL event envelopes for answer, approval-denied, task-update, agent-update, permission-request, error, and terminal events; contiguous sequence validation; stdout JSONL-only guard; stderr diagnostics separation; and deny-by-default approval behavior for headless. Validation passed with targeted test crate only: `cargo test -p cccx-headless`. Runtime wiring into `codex-exec` remains deferred heavy wiring.
 
 ### M8 — Packaging Rename
 
