@@ -329,6 +329,8 @@ Kiểm tra:
 - Unit test cho route resolution: explicit, preset, inherit-main-requested, route không hợp lệ fail-closed.
 - Test mock 9router cho provenance requested/effective route.
 
+Trạng thái ngày 2026-07-16: hoàn tất implementation M1. Đã thêm `cccx-provider-gateway` với `ModelRouteCatalog`, `ModelRouteResolver`, `ModelRouteProvenance`, `ProviderGatewayConfig`, và `ProviderGateway::send_prompt` cho đường OpenAI-compatible `/v1/responses` phía sau 9router. Route ID vẫn opaque; resolver fail-closed khi route không tồn tại hoặc thiếu inherited route. Đã thêm built-in provider metadata `9router` trong `model-provider-info`, reserve provider id này, và đổi default model-provider resolution của cccx sang `9router` trong khi vẫn giữ default upstream `openai` phía sau MVP escape hatch. Validation đã pass bằng test chọn lọc: `cargo test -p cccx-provider-gateway`; `cargo test -p codex-model-provider-info test_built_in_model_providers_include_9router`. Test chọn lọc `cargo test -p codex-core cccx_default_model_provider` đã được thêm nhưng chưa hoàn tất trong pass này vì compile/link test binary `codex-core` trên Windows nhiều lần vượt time budget.
+
 ### M2 — Giao Thức WorkSpec / Artifact
 
 Kết quả:

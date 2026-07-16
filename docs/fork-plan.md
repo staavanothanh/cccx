@@ -329,6 +329,8 @@ Validation:
 - Unit tests for route resolution: explicit, preset, inherit-main-requested, invalid route fail-closed.
 - Mock 9router test for requested/effective route provenance.
 
+Status on 2026-07-16: complete for M1 implementation. Added `cccx-provider-gateway` with `ModelRouteCatalog`, `ModelRouteResolver`, `ModelRouteProvenance`, `ProviderGatewayConfig`, and `ProviderGateway::send_prompt` for the OpenAI-compatible `/v1/responses` path behind 9router. Route IDs remain opaque; resolver fails closed on unknown or missing inherited routes. Added built-in `9router` provider metadata in `model-provider-info`, reserved the provider id, and changed the cccx default model-provider resolution to `9router` while preserving the upstream `openai` default behind the MVP escape hatch. Validation passed with targeted tests: `cargo test -p cccx-provider-gateway`; `cargo test -p codex-model-provider-info test_built_in_model_providers_include_9router`. The targeted `cargo test -p codex-core cccx_default_model_provider` test was added but not completed in this pass because Windows compile/link of the `codex-core` test binary repeatedly exceeded the time budget.
+
 ### M2 — WorkSpec / Artifact Protocol
 
 Deliverable:

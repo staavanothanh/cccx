@@ -36,6 +36,10 @@ const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 const OPENAI_ACTOR_AUTHORIZATION_HEADER: &str = "x-openai-actor-authorization";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const NINE_ROUTER_PROVIDER_NAME: &str = "9router";
+pub const NINE_ROUTER_PROVIDER_ID: &str = "9router";
+pub const NINE_ROUTER_BASE_URL: &str = "https://9router.ai/api/v1";
+pub const NINE_ROUTER_API_KEY_ENV: &str = "CCCX_API_KEY";
 const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
 pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
 pub const AMAZON_BEDROCK_GPT_5_5_MODEL_ID: &str = "openai.gpt-5.5";
@@ -393,6 +397,30 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_9router_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: NINE_ROUTER_PROVIDER_NAME.into(),
+            base_url: Some(NINE_ROUTER_BASE_URL.into()),
+            env_key: Some(NINE_ROUTER_API_KEY_ENV.into()),
+            env_key_instructions: Some(format!(
+                "Set {NINE_ROUTER_API_KEY_ENV} to your 9router API key."
+            )),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn is_openai(&self) -> bool {
         self.name == OPENAI_PROVIDER_NAME
     }
@@ -409,6 +437,10 @@ impl ModelProviderInfo {
 
     pub fn is_amazon_bedrock(&self) -> bool {
         self.name == AMAZON_BEDROCK_PROVIDER_NAME
+    }
+
+    pub fn is_9router(&self) -> bool {
+        self.name == NINE_ROUTER_PROVIDER_NAME
     }
 
     pub fn supports_remote_compaction(&self) -> bool {
@@ -432,14 +464,14 @@ pub fn built_in_model_providers(
 ) -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
     let openai_provider = P::create_openai_provider(openai_base_url);
+    let nine_router_provider = P::create_9router_provider();
     let amazon_bedrock_provider = P::create_amazon_bedrock_provider(/*aws*/ None);
 
-    // We do not want to be in the business of adjucating which third-party
-    // providers are bundled with Codex CLI, so we only include the OpenAI and
-    // open source ("oss") providers by default. Users are encouraged to add to
-    // `model_providers` in config.toml to add their own providers.
+    // cccx is a personal fork that routes model traffic through 9router by
+    // default while retaining upstream providers behind explicit config.
     [
         (OPENAI_PROVIDER_ID, openai_provider),
+        (NINE_ROUTER_PROVIDER_ID, nine_router_provider),
         (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
         (
             OLLAMA_OSS_PROVIDER_ID,

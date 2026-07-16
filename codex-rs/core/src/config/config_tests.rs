@@ -71,7 +71,9 @@ use codex_exec_server::LOCAL_FS;
 use codex_features::Feature;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_model_provider_info::NINE_ROUTER_PROVIDER_ID;
 use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_network_proxy::NetworkMode;
@@ -754,6 +756,22 @@ command = "print-token"
     assert!(
         err.to_string()
             .contains("model_providers.corp: provider auth cannot be combined with env_key")
+    );
+}
+
+#[test]
+fn cccx_default_model_provider_uses_9router_when_gate_is_enabled() {
+    assert_eq!(
+        default_model_provider_id_for_cccx_gate(true),
+        NINE_ROUTER_PROVIDER_ID
+    );
+}
+
+#[test]
+fn cccx_default_model_provider_uses_openai_when_gate_is_disabled() {
+    assert_eq!(
+        default_model_provider_id_for_cccx_gate(false),
+        OPENAI_PROVIDER_ID
     );
 }
 

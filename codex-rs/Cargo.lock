@@ -1609,6 +1609,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cccx-provider-gateway"
+version = "0.0.0"
+dependencies = [
+ "pretty_assertions",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "cesu8"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
