@@ -2,8 +2,8 @@
 
 - Docs baseline committed: `39e511c`.
 - Codex CLI baseline imported: `88ddfb4` from upstream `800715d2`.
-- Current phase: M1 implementation complete; next phase is M2 WorkSpec/Artifact protocol.
-- Done: design docs, audit, fork plan, upstream remote, upstream docs separated, M0 validation complete, M0.5 MVP source gating implemented, M1 provider gateway crate implemented and wired into default Codex provider config path.
+- Current phase: M2/M3 implementation complete; next phase is M4 Permission Gate / Circuit Breaker.
+- Done: design docs, audit, fork plan, upstream remote, upstream docs separated, M0 validation complete, M0.5 MVP source gating implemented, M1 provider gateway crate implemented and wired into default Codex provider config path, M2 WorkSpec/Artifact protocol crate, M3 WorkSpecToChildConfigAdapter contract.
 - Toolchain fix: installed Visual Studio Build Tools 2022 with C++ tools/Windows SDK via `winget`; use repo-pinned Rust `1.95.0-x86_64-pc-windows-msvc` through `D:\Program Files\cargo\bin`.
 - M0 validation passed from `codex-rs/`: `cargo check -p codex-core`; `cargo check -p codex-tui`; `RUST_MIN_STACK=33554432 cargo test -p codex-core multi_agent -- --test-threads=1`.
 - M0.5 validation passed from `codex-rs/`: `cargo fmt --check`; `cargo check -p codex-features -p codex-cli -p codex-tui`.
@@ -14,4 +14,7 @@
 - M1 targeted validation passed from `codex-rs/`: `cargo test -p codex-model-provider-info test_built_in_model_providers_include_9router`.
 - M1 targeted validation attempted from `codex-rs/`: `cargo test -p codex-core cccx_default_model_provider`; test exists, but Windows compile/link of the `codex-core` test binary repeatedly exceeded the time budget and was stopped.
 - M1 scope completed: new `cccx-provider-gateway` crate with `ModelRouteCatalog`, `ModelRouteResolver`, `ModelRouteProvenance`, fail-closed route resolution, 9router `/v1/responses` client, mock 9router provenance test, built-in reserved `9router` provider metadata, and cccx default model-provider resolution to `9router`.
-- Next: start M2 WorkSpec/Artifact protocol.
+- M2/M3 validation passed from `codex-rs/`: `cargo test -p cccx-protocol`.
+- M2 scope completed: new `cccx-protocol` crate with schema versioning, typed `WorkSpec`, `Artifact`, `VerificationRecord`, evidence/provenance records, golden JSON shape test, round-trip tests, and artifact validator rejecting missing evidence/provenance.
+- M3 scope completed: `ParentCapabilitySet`, `ChildConfigProjection`, and `project_child_config()` with deny-by-default projection, WorkSpec/parent capability intersection, MCP allowlist enforcement, protected path checks, explicit model-route allowlist enforcement, and CX full-history fork rejection.
+- Next: start M4 Permission Gate / Circuit Breaker, preferably as a small policy crate before wiring into `codex-core`.

@@ -28,6 +28,7 @@ members = [
     "cloud-tasks",
     "cloud-tasks-client",
     "cloud-tasks-mock-client",
+    "cccx-protocol",
     "cccx-provider-gateway",
     "cli",
     "collaboration-mode-templates",
@@ -158,6 +159,7 @@ codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
 codex-chatgpt = { path = "chatgpt" }
+cccx-protocol = { path = "cccx-protocol" }
 cccx-provider-gateway = { path = "cccx-provider-gateway" }
 codex-cli = { path = "cli" }
 codex-client = { path = "codex-client" }

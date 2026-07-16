@@ -1609,6 +1609,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cccx-protocol"
+version = "0.0.0"
+dependencies = [
+ "pretty_assertions",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cccx-provider-gateway"
 version = "0.0.0"
 dependencies = [

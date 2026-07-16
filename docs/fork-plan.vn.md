@@ -344,6 +344,8 @@ Kiểm tra:
 - Golden JSON test cho schema stability.
 - Round-trip test.
 
+Trạng thái ngày 2026-07-16: hoàn tất pass protocol crate. Đã thêm `cccx-protocol` với `WorkSpec`, `Artifact`, `VerificationRecord`, struct evidence/provenance, schema versioning, serde/schemars derive, và validator từ chối thiếu evidence hoặc provenance. Validation đã pass bằng crate test chọn lọc: `cargo test -p cccx-protocol`.
+
 ### M3 — WorkSpecToChildConfigAdapter
 
 Kết quả:
@@ -357,6 +359,8 @@ Kiểm tra:
 - Test chứng minh parent broad permission không rò rỉ sang CX.
 - Test chứng minh CX không thể dùng MCP ngoài WorkSpec.
 - Test chứng minh đường dẫn bảo vệ không thể bị sửa.
+
+Trạng thái ngày 2026-07-16: hoàn tất pass adapter contract bên trong `cccx-protocol`. Đã thêm `ParentCapabilitySet`, `ChildConfigProjection`, và `project_child_config()` với projection deny-by-default, giao giữa WorkSpec và parent capability, enforce allowlist model-route explicit, kiểm tra protected path khi write, và fail-closed nếu `FullHistoryDebug` tạo CX worker. Validation đã pass trong `cargo test -p cccx-protocol`.
 
 ### M4 — Cổng Phân Quyền / Circuit Breaker
 

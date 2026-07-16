@@ -344,6 +344,8 @@ Validation:
 - Golden JSON tests for schema stability.
 - Round-trip tests.
 
+Status on 2026-07-16: complete for the protocol crate pass. Added `cccx-protocol` with typed `WorkSpec`, `Artifact`, `VerificationRecord`, evidence/provenance structs, schema versioning, serde/schemars derives, and validators that reject missing evidence or provenance. Validation passed with targeted test crate only: `cargo test -p cccx-protocol`.
+
 ### M3 — WorkSpecToChildConfigAdapter
 
 Deliverable:
@@ -357,6 +359,8 @@ Validation:
 - Tests proving parent broad permission does not leak to CX.
 - Tests proving CX cannot use MCP outside WorkSpec.
 - Tests proving protected paths cannot be edited.
+
+Status on 2026-07-16: complete for the adapter contract pass inside `cccx-protocol`. Added `ParentCapabilitySet`, `ChildConfigProjection`, and `project_child_config()` with deny-by-default projection, WorkSpec ∩ parent capability intersection, explicit model-route allowlist enforcement, protected-path write checks, and fail-closed rejection for `FullHistoryDebug` CX workers. Validation passed in `cargo test -p cccx-protocol`.
 
 ### M4 — Permission Gate / Circuit Breaker
 
