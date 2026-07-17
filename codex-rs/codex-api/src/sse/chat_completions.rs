@@ -281,6 +281,11 @@ impl ChatCompletionAccumulator {
                     arguments: parse_tool_search_arguments(&tool_call.arguments),
                     internal_chat_message_metadata_passthrough: None,
                 },
+                ToolNameMapping::UnsupportedHosted { name } => {
+                    return Err(ApiError::Stream(format!(
+                        "chat completions parser received unsupported hosted tool `{name}`"
+                    )));
+                }
                 ToolNameMapping::Function { namespace, name } => ResponseItem::FunctionCall {
                     id: None,
                     name,
@@ -400,6 +405,9 @@ async fn process_chat_completions_sse(
 
 enum ToolNameMapping {
     ToolSearch,
+    UnsupportedHosted {
+        name: String,
+    },
     Function {
         namespace: Option<String>,
         name: String,
@@ -412,6 +420,11 @@ enum ToolNameMapping {
 fn split_tool_name(value: &str) -> ToolNameMapping {
     if value == "tool_search" {
         return ToolNameMapping::ToolSearch;
+    }
+    if value == "web_search" || value == "image_generation" {
+        return ToolNameMapping::UnsupportedHosted {
+            name: value.to_string(),
+        };
     }
     if let Some(name) = value.strip_prefix("custom__")
         && !name.is_empty()
@@ -530,6 +543,18 @@ mod tests {
         assert!(matches!(split_tool_name("tool_search"), ToolNameMapping::ToolSearch));
     }
 
+    #[test]
+    fn split_tool_name_rejects_hosted_reserved_tools() {
+        assert!(matches!(
+            split_tool_name("web_search"),
+            ToolNameMapping::UnsupportedHosted { name } if name == "web_search"
+        ));
+        assert!(matches!(
+            split_tool_name("image_generation"),
+            ToolNameMapping::UnsupportedHosted { name } if name == "image_generation"
+        ));
+    }
+
     #[tokio::test]
     async fn finish_maps_tool_search_function_calls_to_typed_items() {
         let (tx, mut rx) = mpsc::channel(32);
@@ -562,5 +587,22 @@ mod tests {
                 && execution == "client"
                 && arguments == &json!({"query":"spawn agent","limit":2})
         ));
+    }
+
+    #[tokio::test]
+    async fn finish_rejects_unsupported_hosted_tool_calls() {
+        let (tx, _rx) = mpsc::channel(32);
+        let mut acc = ChatCompletionAccumulator::default();
+        acc.tool_calls.insert(
+            0,
+            PendingToolCall {
+                id: Some("call-1".to_string()),
+                name: "web_search".to_string(),
+                arguments: r#"{"query":"weather"}"#.to_string(),
+            },
+        );
+
+        let err = acc.finish(&tx).await.expect_err("hosted tool should be rejected");
+        assert!(err.to_string().contains("unsupported hosted tool `web_search`"));
     }
 }

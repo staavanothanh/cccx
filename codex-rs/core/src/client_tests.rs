@@ -1,4 +1,6 @@
 use super::AuthRequestTelemetryContext;
+use super::chat_completion_tools;
+use super::chat_message_from_response_item;
 use super::CompactConversationRequestSettings;
 use super::ModelClient;
 use super::PendingUnauthorizedRetry;
@@ -52,6 +54,11 @@ use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
 use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
+use codex_tools::JsonSchema;
+use codex_tools::ResponsesApiNamespace;
+use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::ResponsesApiTool;
+use codex_tools::ToolSpec;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -891,4 +898,61 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
         None,
     );
     assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn chat_completion_tools_reject_hosted_web_search() {
+    let err = chat_completion_tools(&[ToolSpec::WebSearch {
+        external_web_access: Some(true),
+        indexed_web_access: None,
+        filters: None,
+        user_location: None,
+        search_context_size: None,
+        search_content_types: None,
+    }])
+    .expect_err("hosted web_search should be rejected on chat-completions");
+
+    assert!(
+        err.to_string()
+            .contains("hosted web_search is unsupported on the chat-completions runtime path")
+    );
+}
+
+#[test]
+fn chat_message_from_response_item_rejects_web_search_history() {
+    let err = chat_message_from_response_item(&ResponseItem::WebSearchCall {
+        id: None,
+        status: Some("completed".into()),
+        action: None,
+        internal_chat_message_metadata_passthrough: None,
+    })
+    .expect_err("web_search history should be rejected on chat-completions");
+
+    assert!(
+        err.to_string()
+            .contains("web_search_call history is unsupported on the chat-completions runtime path")
+    );
+}
+
+#[test]
+fn chat_completion_tools_flattens_namespaced_function_tools() {
+    let tools = chat_completion_tools(&[ToolSpec::Namespace(ResponsesApiNamespace {
+        name: "multi_agent_v1".to_string(),
+        description: "desc".to_string(),
+        tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+            name: "spawn_agent".to_string(),
+            description: "spawn".to_string(),
+            strict: true,
+            defer_loading: Some(true),
+            parameters: JsonSchema::string(Some("args".to_string())),
+            output_schema: None,
+        })],
+    })])
+    .expect("namespace tools should serialize");
+
+    assert_eq!(tools.len(), 1);
+    assert_eq!(
+        tools[0]["function"]["name"].as_str(),
+        Some("multi_agent_v1__spawn_agent")
+    );
 }

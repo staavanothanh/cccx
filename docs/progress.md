@@ -39,4 +39,14 @@
   - Default config home changed to `~/.cccx` with `CCCX_HOME` as primary override and `CODEX_HOME` as legacy fallback.
   - NPM launcher/package surface switched to `cccx` with `cccx.js` primary entrypoint and `codex.js` compatibility shim.
   - Root README/package metadata updated to reflect cccx branding while preserving Codex provenance.
+- Post-M8 Phase 2/3/4 validation passed from `codex-rs/` on shared target dir `D:\cargo-targets\cccx`:
+  - `cargo test -p codex-core chat_completion_tools_reject_hosted_web_search -- --nocapture`
+  - `cargo test -p codex-core chat_message_from_response_item_rejects_web_search_history -- --nocapture`
+  - `cargo test -p codex-core chat_completion_tools_flattens_namespaced_function_tools -- --nocapture`
+  - `cargo test -p codex-api chat_completions -- --nocapture`
+- Post-M8 Phase 2/3/4 scope completed:
+  - Chat-completions request builder now fails closed on unsupported hosted tool/history items instead of silently serializing or dropping them into an invalid 9router/OpenAI payload.
+  - Namespaced/deferred tools still flatten correctly onto the chat-completions runtime path, preserving `multi_agent_v1__...` compatibility.
+  - Chat-completions SSE parser now treats reserved hosted tool names such as `web_search` and `image_generation` as unsupported on this path and surfaces an explicit stream error instead of mis-parsing them as callable local tools.
+  - The 9router adapter boundary is now stricter on the chat-completions path: unsupported hosted capabilities are rejected inside cccx before they become malformed upstream requests.
 - Remaining post-plan work: replace placeholder runtime actions for `/tasks`, `/remember`, `/cancel`, and deeper config/help/update string renames that are still intentionally left on internal `codex_*` terminology.

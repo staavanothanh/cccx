@@ -258,7 +258,13 @@ fn tool_output_text(item: &ResponseItem) -> Option<String> {
     }
 }
 
-fn chat_message_from_response_item(item: &ResponseItem) -> Option<Value> {
+enum ChatCompletionsItemBehavior<'a> {
+    Serialize(Value),
+    Drop,
+    Reject(&'a str),
+}
+
+fn chat_message_behavior_from_response_item(item: &ResponseItem) -> ChatCompletionsItemBehavior<'_> {
     match item {
         ResponseItem::Message { role, content, .. } => {
             let role = if role == "developer" {
@@ -266,11 +272,11 @@ fn chat_message_from_response_item(item: &ResponseItem) -> Option<Value> {
             } else {
                 role.as_str()
             };
-            chat_message_content_value(content).map(|content| {
-                json!({
+            chat_message_content_value(content).map_or(ChatCompletionsItemBehavior::Drop, |content| {
+                ChatCompletionsItemBehavior::Serialize(json!({
                     "role": role,
                     "content": content,
-                })
+                }))
             })
         }
         ResponseItem::FunctionCall {
@@ -279,7 +285,7 @@ fn chat_message_from_response_item(item: &ResponseItem) -> Option<Value> {
             arguments,
             call_id,
             ..
-        } => Some(json!({
+        } => ChatCompletionsItemBehavior::Serialize(json!({
             "role": "assistant",
             "content": Value::Null,
             "tool_calls": [{
@@ -296,7 +302,7 @@ fn chat_message_from_response_item(item: &ResponseItem) -> Option<Value> {
             input,
             call_id,
             ..
-        } => Some(json!({
+        } => ChatCompletionsItemBehavior::Serialize(json!({
             "role": "assistant",
             "content": Value::Null,
             "tool_calls": [{
@@ -312,7 +318,7 @@ fn chat_message_from_response_item(item: &ResponseItem) -> Option<Value> {
             call_id: Some(call_id),
             arguments,
             ..
-        } => Some(json!({
+        } => ChatCompletionsItemBehavior::Serialize(json!({
             "role": "assistant",
             "content": Value::Null,
             "tool_calls": [{
@@ -329,25 +335,125 @@ fn chat_message_from_response_item(item: &ResponseItem) -> Option<Value> {
         | ResponseItem::ToolSearchOutput {
             call_id: Some(call_id),
             ..
-        } => tool_output_text(item).map(|content| {
-            json!({
+        } => tool_output_text(item).map_or(ChatCompletionsItemBehavior::Drop, |content| {
+            ChatCompletionsItemBehavior::Serialize(json!({
                 "role": "tool",
                 "tool_call_id": call_id,
                 "content": content,
-            })
+            }))
         }),
+        ResponseItem::WebSearchCall { .. } => {
+            ChatCompletionsItemBehavior::Reject("web_search_call history is unsupported on the chat-completions runtime path")
+        }
+        ResponseItem::ImageGenerationCall { .. } => {
+            ChatCompletionsItemBehavior::Reject("image_generation_call history is unsupported on the chat-completions runtime path")
+        }
         ResponseItem::AdditionalTools { .. }
         | ResponseItem::AgentMessage { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::ToolSearchCall { .. }
         | ResponseItem::ToolSearchOutput { call_id: None, .. }
-        | ResponseItem::WebSearchCall { .. }
-        | ResponseItem::ImageGenerationCall { .. }
         | ResponseItem::Compaction { .. }
         | ResponseItem::CompactionTrigger { .. }
         | ResponseItem::ContextCompaction { .. }
-        | ResponseItem::Other => None,
+        | ResponseItem::Other => ChatCompletionsItemBehavior::Drop,
+    }
+}
+
+fn chat_message_from_response_item(item: &ResponseItem) -> Result<Option<Value>> {
+    match chat_message_behavior_from_response_item(item) {
+        ChatCompletionsItemBehavior::Serialize(value) => Ok(Some(value)),
+        ChatCompletionsItemBehavior::Drop => Ok(None),
+        ChatCompletionsItemBehavior::Reject(message) => {
+            Err(CodexErr::InvalidRequest(message.to_string()))
+        }
+    }
+}
+
+enum ChatCompletionsToolBehavior {
+    Serialize(Value),
+    Reject(&'static str),
+}
+
+fn chat_completion_tool_behavior(spec: &ToolSpec) -> ChatCompletionsToolBehavior {
+    match spec {
+        ToolSpec::Function(tool) => ChatCompletionsToolBehavior::Serialize(json!({
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+        })),
+        ToolSpec::Namespace(namespace) => {
+            let mut tools = Vec::new();
+            for tool in &namespace.tools {
+                match tool {
+                    ResponsesApiNamespaceTool::Function(tool) => tools.push(json!({
+                        "type": "function",
+                        "function": {
+                            "name": flatten_chat_tool_name(Some(&namespace.name), &tool.name, false),
+                            "description": tool.description,
+                            "parameters": tool.parameters,
+                        }
+                    })),
+                }
+            }
+            ChatCompletionsToolBehavior::Serialize(Value::Array(tools))
+        }
+        ToolSpec::Freeform(tool) => ChatCompletionsToolBehavior::Serialize(json!({
+            "type": "function",
+            "function": {
+                "name": flatten_chat_tool_name(None, &tool.name, true),
+                "description": tool.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "description": format!("{} input in {} syntax.", tool.name, tool.format.syntax),
+                        }
+                    },
+                    "required": ["input"],
+                    "additionalProperties": false,
+                },
+            }
+        })),
+        ToolSpec::ToolSearch {
+            description,
+            parameters,
+            ..
+        } => ChatCompletionsToolBehavior::Serialize(json!({
+            "type": "function",
+            "function": {
+                "name": "tool_search",
+                "description": description,
+                "parameters": parameters,
+            }
+        })),
+        ToolSpec::WebSearch { .. } => ChatCompletionsToolBehavior::Reject(
+            "hosted web_search is unsupported on the chat-completions runtime path",
+        ),
+    }
+}
+
+fn extend_chat_completion_tools(
+    output: &mut Vec<Value>,
+    spec: &ToolSpec,
+) -> Result<()> {
+    match chat_completion_tool_behavior(spec) {
+        ChatCompletionsToolBehavior::Serialize(Value::Array(values)) => {
+            output.extend(values);
+            Ok(())
+        }
+        ChatCompletionsToolBehavior::Serialize(value) => {
+            output.push(value);
+            Ok(())
+        }
+        ChatCompletionsToolBehavior::Reject(message) => {
+            Err(CodexErr::InvalidRequest(message.to_string()))
+        }
     }
 }
 
@@ -355,61 +461,7 @@ fn chat_completion_tools(tools: &[ToolSpec]) -> Result<Vec<Value>> {
     let mut output = Vec::new();
 
     for spec in tools {
-        match spec {
-            ToolSpec::Function(tool) => output.push(json!({
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                }
-            })),
-            ToolSpec::Namespace(namespace) => {
-                for tool in &namespace.tools {
-                    match tool {
-                        ResponsesApiNamespaceTool::Function(tool) => output.push(json!({
-                            "type": "function",
-                            "function": {
-                                "name": flatten_chat_tool_name(Some(&namespace.name), &tool.name, false),
-                                "description": tool.description,
-                                "parameters": tool.parameters,
-                            }
-                        })),
-                    }
-                }
-            }
-            ToolSpec::Freeform(tool) => output.push(json!({
-                "type": "function",
-                "function": {
-                    "name": flatten_chat_tool_name(None, &tool.name, true),
-                    "description": tool.description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "input": {
-                                "type": "string",
-                                "description": format!("{} input in {} syntax.", tool.name, tool.format.syntax),
-                            }
-                        },
-                        "required": ["input"],
-                        "additionalProperties": false,
-                    },
-                }
-            })),
-            ToolSpec::ToolSearch {
-                description,
-                parameters,
-                ..
-            } => output.push(json!({
-                "type": "function",
-                "function": {
-                    "name": "tool_search",
-                    "description": description,
-                    "parameters": parameters,
-                }
-            })),
-            ToolSpec::WebSearch { .. } => {}
-        }
+        extend_chat_completion_tools(&mut output, spec)?;
     }
 
     Ok(output)
@@ -1162,7 +1214,11 @@ impl ModelClient {
         input
             .iter_mut()
             .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
-        messages.extend(input.iter().filter_map(chat_message_from_response_item));
+        for item in &input {
+            if let Some(message) = chat_message_from_response_item(item)? {
+                messages.push(message);
+            }
+        }
 
         let mut request = json!({
             "model": model_info.slug,
