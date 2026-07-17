@@ -120,6 +120,33 @@ wire_api = "chat"
 }
 
 #[test]
+fn test_deserialize_chat_completions_wire_api() {
+    let provider_toml = r#"
+name = "9router local"
+base_url = "http://localhost:20128/v1"
+wire_api = "chat_completions"
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::ChatCompletions);
+}
+
+#[test]
+fn test_serialize_chat_completions_wire_api() {
+    let provider = ModelProviderInfo {
+        name: "9router local".to_string(),
+        base_url: Some("http://localhost:20128/v1".to_string()),
+        env_key: Some("CCCX_API_KEY".to_string()),
+        wire_api: WireApi::ChatCompletions,
+        ..Default::default()
+    };
+
+    let serialized = toml::to_string(&provider).unwrap();
+    assert!(serialized.contains("wire_api = \"chat_completions\""));
+    assert!(!serialized.contains("chatcompletions"));
+}
+
+#[test]
 fn test_deserialize_websocket_connect_timeout() {
     let provider_toml = r#"
 name = "OpenAI"
@@ -352,7 +379,7 @@ fn test_built_in_model_providers_include_9router() {
     assert_eq!(provider.base_url.as_deref(), Some(NINE_ROUTER_BASE_URL));
     assert_eq!(provider.env_key.as_deref(), Some(NINE_ROUTER_API_KEY_ENV));
     assert!(!provider.requires_openai_auth);
-    assert_eq!(provider.wire_api, WireApi::Responses);
+    assert_eq!(provider.wire_api, WireApi::ChatCompletions);
 }
 
 #[test]

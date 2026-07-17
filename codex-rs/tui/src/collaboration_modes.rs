@@ -11,6 +11,13 @@ fn filtered_presets(_model_catalog: &ModelCatalog) -> Vec<CollaborationModeMask>
         .collect()
 }
 
+fn cycle_presets(_model_catalog: &ModelCatalog) -> Vec<CollaborationModeMask> {
+    builtin_collaboration_mode_presets()
+        .into_iter()
+        .filter(|mask| mask.mode.is_some_and(ModeKind::is_cycle_visible))
+        .collect()
+}
+
 pub(crate) fn default_mask(model_catalog: &ModelCatalog) -> Option<CollaborationModeMask> {
     let presets = filtered_presets(model_catalog);
     presets
@@ -37,7 +44,7 @@ pub(crate) fn next_mask(
     model_catalog: &ModelCatalog,
     current: Option<&CollaborationModeMask>,
 ) -> Option<CollaborationModeMask> {
-    let presets = filtered_presets(model_catalog);
+    let presets = cycle_presets(model_catalog);
     if presets.is_empty() {
         return None;
     }

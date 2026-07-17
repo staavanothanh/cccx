@@ -617,32 +617,55 @@ pub enum ModeKind {
         alias = "custom"
     )]
     Default,
-    #[doc(hidden)]
-    #[serde(skip_serializing, skip_deserializing)]
-    #[schemars(skip)]
-    #[ts(skip)]
-    PairProgramming,
-    #[doc(hidden)]
-    #[serde(skip_serializing, skip_deserializing)]
-    #[schemars(skip)]
-    #[ts(skip)]
-    Execute,
+    AcceptEdits,
+    Auto,
+    DontAsk,
+    Bypass,
 }
 
-pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 2] = [ModeKind::Default, ModeKind::Plan];
+pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 6] = [
+    ModeKind::Default,
+    ModeKind::Plan,
+    ModeKind::AcceptEdits,
+    ModeKind::Auto,
+    ModeKind::DontAsk,
+    ModeKind::Bypass,
+];
 
 impl ModeKind {
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Plan => "Plan",
             Self::Default => "Default",
-            Self::PairProgramming => "Pair Programming",
-            Self::Execute => "Execute",
+            Self::AcceptEdits => "AcceptEdits",
+            Self::Auto => "Auto",
+            Self::DontAsk => "DontAsk",
+            Self::Bypass => "Bypass",
         }
     }
 
     pub const fn is_tui_visible(self) -> bool {
-        matches!(self, Self::Plan | Self::Default)
+        matches!(
+            self,
+            Self::Plan
+                | Self::Default
+                | Self::AcceptEdits
+                | Self::Auto
+                | Self::DontAsk
+                | Self::Bypass
+        )
+    }
+
+    pub const fn is_cycle_visible(self) -> bool {
+        matches!(
+            self,
+            Self::Plan
+                | Self::Default
+                | Self::AcceptEdits
+                | Self::Auto
+                | Self::DontAsk
+                | Self::Bypass
+        )
     }
 
     pub const fn allows_request_user_input(self) -> bool {
@@ -830,15 +853,25 @@ mod tests {
 
     #[test]
     fn tui_visible_collaboration_modes_match_mode_kind_visibility() {
-        let expected = [ModeKind::Default, ModeKind::Plan];
+        let expected = [
+            ModeKind::Default,
+            ModeKind::Plan,
+            ModeKind::AcceptEdits,
+            ModeKind::Auto,
+            ModeKind::DontAsk,
+            ModeKind::Bypass,
+        ];
         assert_eq!(expected, TUI_VISIBLE_COLLABORATION_MODES);
 
         for mode in TUI_VISIBLE_COLLABORATION_MODES {
             assert!(mode.is_tui_visible());
         }
-
-        assert!(!ModeKind::PairProgramming.is_tui_visible());
-        assert!(!ModeKind::Execute.is_tui_visible());
+        assert!(ModeKind::Plan.is_cycle_visible());
+        assert!(ModeKind::Default.is_cycle_visible());
+        assert!(ModeKind::AcceptEdits.is_cycle_visible());
+        assert!(ModeKind::Auto.is_cycle_visible());
+        assert!(ModeKind::DontAsk.is_cycle_visible());
+        assert!(ModeKind::Bypass.is_cycle_visible());
     }
 
     #[test]

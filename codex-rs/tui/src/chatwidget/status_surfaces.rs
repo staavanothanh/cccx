@@ -175,6 +175,26 @@ impl ChatWidget {
     }
 
     fn refresh_status_line_from_selections(&mut self, selections: &StatusSurfaceSelections) {
+        if codex_features::cccx_mvp::surface_gate_enabled() {
+            self.bottom_pane.set_status_line_enabled(true);
+            let mode = self.active_mode_kind().display_name();
+            let model = self.model_with_reasoning_display_name();
+            let context_percent = self
+                .status_line_context_used_percent()
+                .unwrap_or(0)
+                .clamp(0, 100);
+            let permissions = permissions_display(&self.config);
+            let state = self.run_state_status_text();
+            self.set_status_line(Some(
+                format!(
+                    "[cccx] mode:{mode}  harness:CC  model:{model}  ctx:{context_percent}%  perm:{permissions}  status:{state}"
+                )
+                .into(),
+            ));
+            self.set_status_line_hyperlink(None);
+            return;
+        }
+
         let enabled = !selections.status_line_items.is_empty();
         self.bottom_pane.set_status_line_enabled(enabled);
         if !enabled {

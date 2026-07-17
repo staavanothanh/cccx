@@ -4,6 +4,9 @@
 //! into another, especially while Plan mode is active.
 
 use super::*;
+use codex_features::cccx_mvp;
+use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::openai_models::default_input_modalities;
 
 const ULTRA_REASONING_CONCURRENCY_WARNING_THRESHOLD: usize = 8;
 
@@ -29,7 +32,49 @@ impl ChatWidget {
                 return;
             }
         };
+        let presets = if cccx_mvp::surface_gate_enabled() {
+            self.cccx_model_popup_presets(presets)
+        } else {
+            presets
+        };
         self.open_model_popup_with_presets(presets);
+    }
+
+    fn cccx_model_popup_presets(&self, presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
+        let current_model = self.current_model().to_string();
+        if let Some(preset) = presets
+            .into_iter()
+            .find(|preset| preset.model.as_str() == current_model)
+        {
+            return vec![preset];
+        }
+
+        let default_effort = self
+            .effective_reasoning_effort()
+            .unwrap_or(ReasoningEffortConfig::Medium);
+
+        vec![ModelPreset {
+            id: current_model.clone(),
+            model: current_model.clone(),
+            display_name: current_model.clone(),
+            description: "Configured model from your active cccx provider.".to_string(),
+            default_reasoning_effort: default_effort.clone(),
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: default_effort,
+                description: "configured default".to_string(),
+            }],
+            supports_personality: false,
+            additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            is_default: true,
+            upgrade: None,
+            show_in_picker: true,
+            multi_agent_version: None,
+            availability_nux: None,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        }]
     }
 
     fn model_menu_header(&self, title: &str, subtitle: &str) -> Box<dyn Renderable> {
@@ -220,10 +265,17 @@ impl ChatWidget {
             });
         }
 
-        let header = self.model_menu_header(
-            "Select Model and Effort",
-            "Access legacy models by running codex -m <model_name> or in your config.toml",
-        );
+        let header = if cccx_mvp::surface_gate_enabled() {
+            self.model_menu_header(
+                "Select Model and Effort",
+                "Models shown here come from your active cccx provider/config.",
+            )
+        } else {
+            self.model_menu_header(
+                "Select Model and Effort",
+                "Access legacy models by running codex -m <model_name> or in your config.toml",
+            )
+        };
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
             items,

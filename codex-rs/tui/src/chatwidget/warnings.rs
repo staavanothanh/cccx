@@ -11,8 +11,13 @@ pub(super) struct WarningDisplayState {
 
 impl WarningDisplayState {
     pub(super) fn should_display(&mut self, message: &str) -> bool {
-        fallback_model_metadata_warning_slug(message)
-            .is_none_or(|slug| self.fallback_model_metadata_slugs.insert(slug.to_string()))
+        match fallback_model_metadata_warning_slug(message) {
+            Some(slug) => {
+                self.fallback_model_metadata_slugs.insert(slug.to_string());
+                false
+            }
+            None => true,
+        }
     }
 }
 

@@ -14,7 +14,14 @@ static COLLABORATION_MODE_DEFAULT_TEMPLATE: LazyLock<Template> = LazyLock::new(|
 });
 
 pub fn builtin_collaboration_mode_presets() -> Vec<CollaborationModeMask> {
-    vec![plan_preset(), default_preset()]
+    vec![
+        plan_preset(),
+        default_preset(),
+        default_like_preset(ModeKind::AcceptEdits),
+        default_like_preset(ModeKind::Auto),
+        default_like_preset(ModeKind::DontAsk),
+        default_like_preset(ModeKind::Bypass),
+    ]
 }
 
 fn plan_preset() -> CollaborationModeMask {
@@ -28,9 +35,13 @@ fn plan_preset() -> CollaborationModeMask {
 }
 
 fn default_preset() -> CollaborationModeMask {
+    default_like_preset(ModeKind::Default)
+}
+
+fn default_like_preset(kind: ModeKind) -> CollaborationModeMask {
     CollaborationModeMask {
-        name: ModeKind::Default.display_name().to_string(),
-        mode: Some(ModeKind::Default),
+        name: kind.display_name().to_string(),
+        mode: Some(kind),
         model: None,
         reasoning_effort: None,
         developer_instructions: Some(Some(default_mode_instructions())),

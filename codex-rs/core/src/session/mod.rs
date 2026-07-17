@@ -2924,6 +2924,14 @@ impl Session {
         turn_context: &Arc<TurnContext>,
         server_model: String,
     ) -> bool {
+        if !turn_context.provider.info().is_openai() {
+            info!(
+                "suppressing OpenAI cyber-policy mismatch warning for non-OpenAI provider model {}",
+                server_model
+            );
+            return false;
+        }
+
         let requested_model = turn_context.model_info.slug.clone();
         let server_model_normalized = server_model.to_ascii_lowercase();
         let requested_model_normalized = requested_model.to_ascii_lowercase();

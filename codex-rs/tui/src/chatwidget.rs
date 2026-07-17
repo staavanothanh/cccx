@@ -1937,14 +1937,14 @@ impl Drop for ChatWidget {
 }
 
 const PLACEHOLDERS: [&str; 8] = [
-    "Explain this codebase",
+    "Map this codebase",
     "Summarize recent commits",
     "Implement {feature}",
     "Find and fix a bug in @filename",
     "Write tests for @filename",
-    "Improve documentation in @filename",
-    "Run /review on my current changes",
-    "Use /skills to list available skills",
+    "Audit harness behavior in @filename",
+    "Review my current changes",
+    "List available skills",
 ];
 
 const SIDE_PLACEHOLDERS: [&str; 3] = [

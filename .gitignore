@@ -2,6 +2,7 @@ AGENTS.md
 .agents/
 .env
 .codebase-memory/
+.cccx-test-home/
 
 # deps
 node_modules

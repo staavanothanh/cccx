@@ -33,6 +33,8 @@ use std::sync::atomic::Ordering;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::AuthProvider;
+use codex_api::ChatCompletionsClient as ApiChatCompletionsClient;
+use codex_api::ChatCompletionsOptions as ApiChatCompletionsOptions;
 use codex_api::CompactClient as ApiCompactClient;
 use codex_api::CompactionInput as ApiCompactionInput;
 use codex_api::Compression;
@@ -78,6 +80,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -87,6 +90,10 @@ use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::ToolName;
+use codex_tools::ToolSpec;
+use codex_tools::code_mode_name_for_tool_name;
 use codex_tools::create_tools_json_for_responses_api;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
@@ -95,6 +102,8 @@ use http::HeaderMap as ApiHeaderMap;
 use http::HeaderValue;
 use http::StatusCode as HttpStatusCode;
 use reqwest::StatusCode;
+use serde_json::Value;
+use serde_json::json;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -156,6 +165,7 @@ const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
     "x-openai-internal-codex-responses-lite";
 const REALTIME_CALLS_ENDPOINT: &str = "/realtime/calls";
 const RESPONSES_ENDPOINT: &str = "/responses";
+const CHAT_COMPLETIONS_ENDPOINT: &str = "/chat/completions";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
 // `/responses/compact` is unary, so the timeout covers the full response rather than one idle
 // period between stream events.
@@ -176,6 +186,233 @@ fn reasoning_effort_for_request(effort: ReasoningEffortConfig) -> ReasoningEffor
         ReasoningEffortConfig::Ultra => ReasoningEffortConfig::Max,
         effort => effort,
     }
+}
+
+fn flatten_chat_tool_name(namespace: Option<&str>, name: &str, is_custom: bool) -> String {
+    if is_custom {
+        return format!("custom__{name}");
+    }
+    match namespace {
+        Some(namespace) if namespace.ends_with('_') || name.starts_with('_') => {
+            format!("{namespace}{name}")
+        }
+        Some(namespace) => code_mode_name_for_tool_name(&ToolName::namespaced(
+            namespace.to_string(),
+            name.to_string(),
+        )),
+        None => name.to_string(),
+    }
+}
+
+fn chat_message_content_value(content: &[ContentItem]) -> Option<Value> {
+    let mut text_segments = Vec::new();
+    let mut rich_parts = Vec::new();
+    let mut has_image = false;
+
+    for item in content {
+        match item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                if !text.is_empty() {
+                    text_segments.push(text.clone());
+                    rich_parts.push(json!({
+                        "type": "text",
+                        "text": text,
+                    }));
+                }
+            }
+            ContentItem::InputImage { image_url, detail } => {
+                has_image = true;
+                rich_parts.push(chat_image_part(image_url, detail));
+            }
+        }
+    }
+
+    if has_image {
+        (!rich_parts.is_empty()).then_some(Value::Array(rich_parts))
+    } else if text_segments.is_empty() {
+        None
+    } else {
+        Some(Value::String(text_segments.join("\n")))
+    }
+}
+
+fn chat_image_part(image_url: &str, detail: &Option<ImageDetail>) -> Value {
+    let mut image_url_payload = serde_json::Map::new();
+    image_url_payload.insert("url".to_string(), Value::String(image_url.to_string()));
+    if let Some(detail) = detail {
+        image_url_payload.insert("detail".to_string(), json!(detail));
+    }
+
+    let mut part = serde_json::Map::new();
+    part.insert("type".to_string(), Value::String("image_url".to_string()));
+    part.insert("image_url".to_string(), Value::Object(image_url_payload));
+    Value::Object(part)
+}
+
+fn tool_output_text(item: &ResponseItem) -> Option<String> {
+    match item {
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => output.body.to_text(),
+        ResponseItem::ToolSearchOutput { tools, .. } => serde_json::to_string(tools).ok(),
+        _ => None,
+    }
+}
+
+fn chat_message_from_response_item(item: &ResponseItem) -> Option<Value> {
+    match item {
+        ResponseItem::Message { role, content, .. } => {
+            let role = if role == "developer" {
+                "system"
+            } else {
+                role.as_str()
+            };
+            chat_message_content_value(content).map(|content| {
+                json!({
+                    "role": role,
+                    "content": content,
+                })
+            })
+        }
+        ResponseItem::FunctionCall {
+            name,
+            namespace,
+            arguments,
+            call_id,
+            ..
+        } => Some(json!({
+            "role": "assistant",
+            "content": Value::Null,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": flatten_chat_tool_name(namespace.as_deref(), name, false),
+                    "arguments": arguments,
+                }
+            }],
+        })),
+        ResponseItem::CustomToolCall {
+            name,
+            input,
+            call_id,
+            ..
+        } => Some(json!({
+            "role": "assistant",
+            "content": Value::Null,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": flatten_chat_tool_name(None, name, true),
+                    "arguments": serde_json::to_string(&json!({ "input": input })).unwrap_or_else(|_| "{\"input\":\"\"}".to_string()),
+                }
+            }],
+        })),
+        ResponseItem::ToolSearchCall {
+            call_id: Some(call_id),
+            arguments,
+            ..
+        } => Some(json!({
+            "role": "assistant",
+            "content": Value::Null,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "tool_search",
+                    "arguments": serde_json::to_string(arguments).unwrap_or_else(|_| "{}".to_string()),
+                }
+            }],
+        })),
+        ResponseItem::FunctionCallOutput { call_id, .. }
+        | ResponseItem::CustomToolCallOutput { call_id, .. }
+        | ResponseItem::ToolSearchOutput {
+            call_id: Some(call_id),
+            ..
+        } => tool_output_text(item).map(|content| {
+            json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": content,
+            })
+        }),
+        ResponseItem::AdditionalTools { .. }
+        | ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
+        | ResponseItem::LocalShellCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
+        | ResponseItem::ToolSearchOutput { call_id: None, .. }
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. }
+        | ResponseItem::Compaction { .. }
+        | ResponseItem::CompactionTrigger { .. }
+        | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::Other => None,
+    }
+}
+
+fn chat_completion_tools(tools: &[ToolSpec]) -> Result<Vec<Value>> {
+    let mut output = Vec::new();
+
+    for spec in tools {
+        match spec {
+            ToolSpec::Function(tool) => output.push(json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                }
+            })),
+            ToolSpec::Namespace(namespace) => {
+                for tool in &namespace.tools {
+                    match tool {
+                        ResponsesApiNamespaceTool::Function(tool) => output.push(json!({
+                            "type": "function",
+                            "function": {
+                                "name": flatten_chat_tool_name(Some(&namespace.name), &tool.name, false),
+                                "description": tool.description,
+                                "parameters": tool.parameters,
+                            }
+                        })),
+                    }
+                }
+            }
+            ToolSpec::Freeform(tool) => output.push(json!({
+                "type": "function",
+                "function": {
+                    "name": flatten_chat_tool_name(None, &tool.name, true),
+                    "description": tool.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "input": {
+                                "type": "string",
+                                "description": format!("{} input in {} syntax.", tool.name, tool.format.syntax),
+                            }
+                        },
+                        "required": ["input"],
+                        "additionalProperties": false,
+                    },
+                }
+            })),
+            ToolSpec::ToolSearch {
+                description,
+                parameters,
+                ..
+            } => output.push(json!({
+                "type": "function",
+                "function": {
+                    "name": "tool_search",
+                    "description": description,
+                    "parameters": parameters,
+                }
+            })),
+            ToolSpec::WebSearch { .. } => {}
+        }
+    }
+
+    Ok(output)
 }
 
 fn session_telemetry_for_request(
@@ -907,6 +1144,61 @@ impl ModelClient {
         Ok(request)
     }
 
+    fn build_chat_completions_request(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        service_tier: Option<String>,
+    ) -> Result<Value> {
+        let mut messages = Vec::new();
+        if !prompt.base_instructions.text.is_empty() {
+            messages.push(json!({
+                "role": "system",
+                "content": prompt.base_instructions.text,
+            }));
+        }
+
+        let mut input = prompt.get_formatted_input_for_request(/*use_responses_lite*/ false);
+        input
+            .iter_mut()
+            .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
+        messages.extend(input.iter().filter_map(chat_message_from_response_item));
+
+        let mut request = json!({
+            "model": model_info.slug,
+            "messages": messages,
+            "stream": true,
+            "stream_options": {
+                "include_usage": true,
+            },
+        });
+
+        let tools = chat_completion_tools(&prompt.tools)?;
+        if !tools.is_empty() {
+            request["tools"] = Value::Array(tools);
+            request["tool_choice"] = Value::String("auto".to_string());
+            request["parallel_tool_calls"] =
+                Value::Bool(prompt.parallel_tool_calls && model_info.supports_parallel_tool_calls);
+        }
+
+        if let Some(service_tier) = model_info.service_tier_for_request(service_tier) {
+            request["service_tier"] = Value::String(service_tier);
+        }
+
+        if let Some(schema) = &prompt.output_schema {
+            request["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_output",
+                    "strict": prompt.output_schema_strict,
+                    "schema": schema,
+                }
+            });
+        }
+
+        Ok(request)
+    }
+
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem], store: bool) {
         for item in input.iter_mut() {
             if item.id().is_some_and(|id| !id.is_prefixed()) {
@@ -1505,6 +1797,105 @@ impl ModelClientSession {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_chat_completions_api(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        service_tier: Option<String>,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
+        let auth_manager = self.client.state.provider.auth_manager();
+        let mut auth_recovery = auth_manager
+            .as_ref()
+            .map(AuthManager::unauthorized_recovery);
+        let mut pending_retry = PendingUnauthorizedRetry::default();
+        loop {
+            let client_setup = self.client.current_client_setup().await?;
+            let transport = self
+                .client
+                .build_api_transport(&client_setup.api_provider, CHAT_COMPLETIONS_ENDPOINT)?;
+            let request_auth_context = AuthRequestTelemetryContext::new(
+                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+                client_setup.api_auth.as_ref(),
+                client_setup.agent_identity_telemetry.clone(),
+                pending_retry,
+            );
+            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
+                session_telemetry,
+                request_auth_context,
+                RequestRouteTelemetry::for_endpoint(CHAT_COMPLETIONS_ENDPOINT),
+                self.client.state.auth_env_telemetry.clone(),
+            );
+            let request = self.client.build_chat_completions_request(
+                prompt,
+                model_info,
+                service_tier.clone(),
+            )?;
+            let inference_trace_attempt = inference_trace.start_attempt();
+            inference_trace_attempt.record_started(&request);
+
+            let client = ApiChatCompletionsClient::new(
+                transport,
+                client_setup.api_provider,
+                client_setup.api_auth,
+            )
+            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+
+            let options = ApiChatCompletionsOptions {
+                session_id: None,
+                thread_id: Some(self.client.state.thread_id.to_string()),
+                session_source: Some(self.client.state.session_source.clone()),
+                extra_headers: ApiHeaderMap::new(),
+                compression: Compression::None,
+            };
+
+            match client.stream(request, options).await {
+                Ok(stream) => {
+                    let (stream, _) = map_response_stream(
+                        stream,
+                        session_telemetry.clone(),
+                        inference_trace_attempt,
+                        Arc::clone(&self.client.state.provider),
+                    );
+                    return Ok(stream);
+                }
+                Err(ApiError::Transport(
+                    unauthorized_transport @ TransportError::Http { status, .. },
+                )) if status == StatusCode::UNAUTHORIZED => {
+                    let response_debug_context =
+                        extract_response_debug_context(&unauthorized_transport);
+                    inference_trace_attempt.record_failed(
+                        &unauthorized_transport,
+                        response_debug_context.request_id.as_deref(),
+                        &[],
+                    );
+                    pending_retry = PendingUnauthorizedRetry::from_recovery(
+                        handle_unauthorized(
+                            unauthorized_transport,
+                            &mut auth_recovery,
+                            session_telemetry,
+                            &self.client.state.provider,
+                        )
+                        .await?,
+                    );
+                }
+                Err(err) => {
+                    let response_debug_context =
+                        extract_response_debug_context_from_api_error(&err);
+                    let err = self.client.state.provider.map_api_error(err);
+                    inference_trace_attempt.record_failed(
+                        &err,
+                        response_debug_context.request_id.as_deref(),
+                        &[],
+                    );
+                    return Err(err);
+                }
+            }
+        }
+    }
+
     /// Streams a turn via the Responses API over WebSocket transport.
     #[allow(clippy::too_many_arguments)]
     #[instrument(
@@ -1821,6 +2212,16 @@ impl ModelClientSession {
                 )
                 .await
             }
+            WireApi::ChatCompletions => {
+                self.stream_chat_completions_api(
+                    prompt,
+                    model_info,
+                    session_telemetry,
+                    service_tier,
+                    inference_trace,
+                )
+                .await
+            }
         }
     }
 
@@ -2072,6 +2473,11 @@ where
             upstream_request_id,
             &items_added,
         );
+        let _ = tx_event
+            .send(Err(provider.map_api_error(ApiError::Stream(
+                "stream closed before response.completed".into(),
+            ))))
+            .await;
     });
 
     (

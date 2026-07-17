@@ -1,6 +1,7 @@
 //! Session headers, onboarding guidance, and transcript cards.
 
 use super::*;
+use codex_features::cccx_mvp;
 
 pub(crate) const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56; // Just an eyeballed value
 
@@ -170,7 +171,7 @@ pub(crate) fn new_session_info(
             Line::from(vec![
                 "  ".into(),
                 "/init".into(),
-                " - create an AGENTS.md file with instructions for Codex".dim(),
+                " - create an AGENTS.md file with instructions for cccx".dim(),
             ]),
             Line::from(vec![
                 "  ".into(),
@@ -180,7 +181,7 @@ pub(crate) fn new_session_info(
             Line::from(vec![
                 "  ".into(),
                 "/permissions".into(),
-                " - choose what Codex is allowed to do".dim(),
+                " - choose what cccx is allowed to do".dim(),
             ]),
             Line::from(vec![
                 "  ".into(),
@@ -332,14 +333,6 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
-        // Title line rendered inside the box: ">_ OpenAI Codex (vX)"
-        let title_spans: Vec<Span<'static>> = vec![
-            Span::from(">_ ").dim(),
-            Span::from("OpenAI Codex").bold(),
-            Span::from(" ").dim(),
-            Span::from(format!("(v{})", self.version)).dim(),
-        ];
-
         const CHANGE_MODEL_HINT_COMMAND: &str = "/model";
         const CHANGE_MODEL_HINT_EXPLANATION: &str = " to change";
         const DIR_LABEL: &str = "directory:";
@@ -350,44 +343,81 @@ impl HistoryCell for SessionHeaderHistoryCell {
             DIR_LABEL.len()
         };
 
-        let model_label = format!(
-            "{model_label:<label_width$}",
-            model_label = "model:",
-            label_width = label_width
-        );
-        let reasoning_label = self.reasoning_label();
-        let model_spans: Vec<Span<'static>> = {
-            let mut spans = vec![
-                Span::from(format!("{model_label} ")).dim(),
-                Span::styled(self.model.clone(), self.model_style),
-            ];
-            if let Some(reasoning) = reasoning_label {
-                spans.push(Span::from(" "));
-                spans.push(Span::from(reasoning.to_owned()));
-            }
-            if self.show_fast_status {
-                spans.push("   ".into());
-                spans.push(Span::styled("fast", self.model_style.magenta()));
-            }
-            spans.push("   ".dim());
-            spans.push(CHANGE_MODEL_HINT_COMMAND.cyan());
-            spans.push(CHANGE_MODEL_HINT_EXPLANATION.dim());
-            spans
-        };
-
         let dir_label = format!("{DIR_LABEL:<label_width$}");
         let dir_prefix = format!("{dir_label} ");
         let dir_prefix_width = UnicodeWidthStr::width(dir_prefix.as_str());
         let dir_max_width = inner_width.saturating_sub(dir_prefix_width);
         let dir = self.format_directory(Some(dir_max_width));
-        let dir_spans = vec![Span::from(dir_prefix).dim(), Span::from(dir)];
+        let dir_spans = vec![Span::from(dir_prefix).dim(), Span::from(dir.clone())];
 
-        let mut lines = vec![
-            make_row(title_spans),
-            make_row(Vec::new()),
-            make_row(model_spans),
-            make_row(dir_spans),
-        ];
+        let reasoning_label = self.reasoning_label();
+        let mut lines = if cccx_mvp::surface_gate_enabled() {
+            let mut model_spans: Vec<Span<'static>> = vec![
+                Span::from("( •.• )   "),
+                Span::from("model:").dim(),
+                Span::styled(self.model.clone(), self.model_style),
+            ];
+            if let Some(reasoning) = reasoning_label {
+                model_spans.push(Span::from(" "));
+                model_spans.push(Span::from(reasoning.to_owned()));
+            }
+            if self.show_fast_status {
+                model_spans.push(Span::from("  "));
+                model_spans.push(Span::styled("fast", self.model_style.magenta()));
+            }
+            model_spans.push(Span::from("   "));
+            model_spans.push(CHANGE_MODEL_HINT_COMMAND.cyan());
+            model_spans.push(CHANGE_MODEL_HINT_EXPLANATION.dim());
+
+            vec![
+                make_row(vec![
+                    Span::from(" /\\_/|    "),
+                    Span::from(format!("cccx v{} — CC/CX harness", self.version)).bold(),
+                ]),
+                make_row(model_spans),
+                make_row(vec![
+                    Span::from(" > ^ <    "),
+                    Span::from(dir),
+                ]),
+            ]
+        } else {
+            let title_spans: Vec<Span<'static>> = vec![
+                Span::from(">_ ").dim(),
+                Span::from("cccx").bold(),
+                Span::from(" ").dim(),
+                Span::from(format!("(v{})", self.version)).dim(),
+            ];
+            let model_label = format!(
+                "{model_label:<label_width$}",
+                model_label = "model:",
+                label_width = label_width
+            );
+            let model_spans: Vec<Span<'static>> = {
+                let mut spans = vec![
+                    Span::from(format!("{model_label} ")).dim(),
+                    Span::styled(self.model.clone(), self.model_style),
+                ];
+                if let Some(reasoning) = reasoning_label {
+                    spans.push(Span::from(" "));
+                    spans.push(Span::from(reasoning.to_owned()));
+                }
+                if self.show_fast_status {
+                    spans.push("   ".into());
+                    spans.push(Span::styled("fast", self.model_style.magenta()));
+                }
+                spans.push("   ".dim());
+                spans.push(CHANGE_MODEL_HINT_COMMAND.cyan());
+                spans.push(CHANGE_MODEL_HINT_EXPLANATION.dim());
+                spans
+            };
+
+            vec![
+                make_row(title_spans),
+                make_row(Vec::new()),
+                make_row(model_spans),
+                make_row(dir_spans),
+            ]
+        };
 
         if self.yolo_mode {
             let permissions_label = format!("{PERMISSIONS_LABEL:<label_width$}");
@@ -401,20 +431,34 @@ impl HistoryCell for SessionHeaderHistoryCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = vec![
-            Line::from(format!("OpenAI Codex (v{})", self.version)),
-            Line::from(format!(
-                "model: {}{}",
-                self.model,
-                self.reasoning_label()
-                    .map(|reasoning| format!(" {reasoning}"))
-                    .unwrap_or_default()
-            )),
-            Line::from(format!(
-                "directory: {}",
-                self.format_directory(/*max_width*/ None)
-            )),
-        ];
+        let mut lines = if cccx_mvp::surface_gate_enabled() {
+            vec![
+                Line::from(format!("cccx v{} — CC/CX harness", self.version)),
+                Line::from(format!(
+                    "model:{}{}",
+                    self.model,
+                    self.reasoning_label()
+                        .map(|reasoning| format!(" {reasoning}"))
+                        .unwrap_or_default()
+                )),
+                Line::from(self.format_directory(/*max_width*/ None)),
+            ]
+        } else {
+            vec![
+                Line::from(format!("cccx (v{})", self.version)),
+                Line::from(format!(
+                    "model: {}{}",
+                    self.model,
+                    self.reasoning_label()
+                        .map(|reasoning| format!(" {reasoning}"))
+                        .unwrap_or_default()
+                )),
+                Line::from(format!(
+                    "directory: {}",
+                    self.format_directory(/*max_width*/ None)
+                )),
+            ]
+        };
         if self.yolo_mode {
             lines.push(Line::from("permissions: YOLO mode"));
         }

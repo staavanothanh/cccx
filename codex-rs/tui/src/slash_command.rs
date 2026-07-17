@@ -40,6 +40,11 @@ pub enum SlashCommand {
     Init,
     Compact,
     Plan,
+    Default,
+    AcceptEdits,
+    Auto,
+    DontAsk,
+    Bypass,
     Goal,
     Agents,
     Agent,
@@ -124,6 +129,11 @@ impl SlashCommand {
             }
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Plan => "switch to Plan mode",
+            SlashCommand::Default => "switch to Default mode",
+            SlashCommand::AcceptEdits => "switch to AcceptEdits mode",
+            SlashCommand::Auto => "switch to Auto mode",
+            SlashCommand::DontAsk => "switch to DontAsk mode",
+            SlashCommand::Bypass => "switch to Bypass mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agents => "list and control cccx subagents",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
@@ -165,6 +175,11 @@ impl SlashCommand {
             SlashCommand::Review
                 | SlashCommand::Rename
                 | SlashCommand::Plan
+                | SlashCommand::Default
+                | SlashCommand::AcceptEdits
+                | SlashCommand::Auto
+                | SlashCommand::DontAsk
+                | SlashCommand::Bypass
                 | SlashCommand::Goal
                 | SlashCommand::Agents
                 | SlashCommand::Permissions
@@ -215,6 +230,11 @@ impl SlashCommand {
             | SlashCommand::Import
             | SlashCommand::Review
             | SlashCommand::Plan
+            | SlashCommand::Default
+            | SlashCommand::AcceptEdits
+            | SlashCommand::Auto
+            | SlashCommand::DontAsk
+            | SlashCommand::Bypass
             | SlashCommand::Clear
             | SlashCommand::Logout
             | SlashCommand::MemoryDrop
@@ -330,6 +350,14 @@ mod tests {
         assert!(SlashCommand::Agents.supports_inline_args());
         assert!(SlashCommand::Tasks.available_during_task());
         assert!(SlashCommand::Cancel.available_during_task());
+        assert_eq!(SlashCommand::from_str("default"), Ok(SlashCommand::Default));
+        assert_eq!(
+            SlashCommand::from_str("accept-edits"),
+            Ok(SlashCommand::AcceptEdits)
+        );
+        assert_eq!(SlashCommand::from_str("auto"), Ok(SlashCommand::Auto));
+        assert_eq!(SlashCommand::from_str("dont-ask"), Ok(SlashCommand::DontAsk));
+        assert_eq!(SlashCommand::from_str("bypass"), Ok(SlashCommand::Bypass));
     }
 
     #[test]

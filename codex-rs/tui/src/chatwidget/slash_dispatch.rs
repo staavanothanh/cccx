@@ -85,23 +85,62 @@ impl ChatWidget {
         self.bottom_pane.record_pending_slash_command_history();
     }
 
-    fn apply_plan_slash_command(&mut self) -> bool {
+    fn apply_collaboration_mode_slash_command(
+        &mut self,
+        kind: ModeKind,
+        command_name: &'static str,
+        unavailable_message: &'static str,
+    ) -> bool {
         if !self.collaboration_modes_enabled() {
             self.add_info_message(
                 "Collaboration modes are disabled.".to_string(),
-                Some("Enable collaboration modes to use /plan.".to_string()),
+                Some(format!("Enable collaboration modes to use /{command_name}.")),
             );
             return false;
         }
-        if let Some(mask) = collaboration_modes::plan_mask(self.model_catalog.as_ref()) {
+        if let Some(mask) = collaboration_modes::mask_for_kind(self.model_catalog.as_ref(), kind) {
             self.set_collaboration_mask_from_user_action(mask);
             true
         } else {
-            self.add_info_message(
-                "Plan mode unavailable right now.".to_string(),
-                /*hint*/ None,
-            );
+            self.add_info_message(unavailable_message.to_string(), /*hint*/ None);
             false
+        }
+    }
+
+    fn apply_mode_slash_with_optional_prompt(
+        &mut self,
+        kind: ModeKind,
+        command_name: &'static str,
+        unavailable_message: &'static str,
+        prepared: PreparedSlashCommandArgs,
+    ) {
+        let PreparedSlashCommandArgs {
+            args,
+            text_elements,
+            local_images,
+            remote_image_urls,
+            mention_bindings,
+            source,
+            ..
+        } = prepared;
+        if !self.apply_collaboration_mode_slash_command(kind, command_name, unavailable_message) {
+            return;
+        }
+        let user_message = self.prepared_inline_user_message(
+            args,
+            text_elements,
+            local_images,
+            remote_image_urls,
+            mention_bindings,
+            source,
+        );
+        if self.is_session_configured() {
+            self.reasoning_buffer.clear();
+            self.reasoning_summary_parts.clear();
+            self.set_status_header(String::from("Working"));
+            self.submit_user_message(user_message);
+        } else {
+            self.queue_user_message(user_message);
         }
     }
 
@@ -289,7 +328,46 @@ impl ChatWidget {
                 self.defer_input_until_settings_applied();
             }
             SlashCommand::Plan => {
-                self.apply_plan_slash_command();
+                self.apply_collaboration_mode_slash_command(
+                    ModeKind::Plan,
+                    "plan",
+                    "Plan mode unavailable right now.",
+                );
+            }
+            SlashCommand::Default => {
+                self.apply_collaboration_mode_slash_command(
+                    ModeKind::Default,
+                    "default",
+                    "Default mode unavailable right now.",
+                );
+            }
+            SlashCommand::AcceptEdits => {
+                self.apply_collaboration_mode_slash_command(
+                    ModeKind::AcceptEdits,
+                    "accept-edits",
+                    "AcceptEdits mode unavailable right now.",
+                );
+            }
+            SlashCommand::Auto => {
+                self.apply_collaboration_mode_slash_command(
+                    ModeKind::Auto,
+                    "auto",
+                    "Auto mode unavailable right now.",
+                );
+            }
+            SlashCommand::DontAsk => {
+                self.apply_collaboration_mode_slash_command(
+                    ModeKind::DontAsk,
+                    "dont-ask",
+                    "DontAsk mode unavailable right now.",
+                );
+            }
+            SlashCommand::Bypass => {
+                self.apply_collaboration_mode_slash_command(
+                    ModeKind::Bypass,
+                    "bypass",
+                    "Bypass mode unavailable right now.",
+                );
             }
             SlashCommand::Goal => {
                 if !self.config.features.enabled(Feature::Goals) {
@@ -828,25 +906,100 @@ impl ChatWidget {
                 self.app_event_tx.set_thread_name(name);
             }
             SlashCommand::Plan if !trimmed.is_empty() => {
-                if !self.apply_plan_slash_command() {
-                    return;
-                }
-                let user_message = self.prepared_inline_user_message(
-                    args,
-                    text_elements,
-                    local_images,
-                    remote_image_urls,
-                    mention_bindings,
-                    source,
+                self.apply_mode_slash_with_optional_prompt(
+                    ModeKind::Plan,
+                    "plan",
+                    "Plan mode unavailable right now.",
+                    PreparedSlashCommandArgs {
+                        args,
+                        text_elements,
+                        pending_pastes,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    },
                 );
-                if self.is_session_configured() {
-                    self.reasoning_buffer.clear();
-                    self.reasoning_summary_parts.clear();
-                    self.set_status_header(String::from("Working"));
-                    self.submit_user_message(user_message);
-                } else {
-                    self.queue_user_message(user_message);
-                }
+            }
+            SlashCommand::Default if !trimmed.is_empty() => {
+                self.apply_mode_slash_with_optional_prompt(
+                    ModeKind::Default,
+                    "default",
+                    "Default mode unavailable right now.",
+                    PreparedSlashCommandArgs {
+                        args,
+                        text_elements,
+                        pending_pastes,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    },
+                );
+            }
+            SlashCommand::AcceptEdits if !trimmed.is_empty() => {
+                self.apply_mode_slash_with_optional_prompt(
+                    ModeKind::AcceptEdits,
+                    "accept-edits",
+                    "AcceptEdits mode unavailable right now.",
+                    PreparedSlashCommandArgs {
+                        args,
+                        text_elements,
+                        pending_pastes,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    },
+                );
+            }
+            SlashCommand::Auto if !trimmed.is_empty() => {
+                self.apply_mode_slash_with_optional_prompt(
+                    ModeKind::Auto,
+                    "auto",
+                    "Auto mode unavailable right now.",
+                    PreparedSlashCommandArgs {
+                        args,
+                        text_elements,
+                        pending_pastes,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    },
+                );
+            }
+            SlashCommand::DontAsk if !trimmed.is_empty() => {
+                self.apply_mode_slash_with_optional_prompt(
+                    ModeKind::DontAsk,
+                    "dont-ask",
+                    "DontAsk mode unavailable right now.",
+                    PreparedSlashCommandArgs {
+                        args,
+                        text_elements,
+                        pending_pastes,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    },
+                );
+            }
+            SlashCommand::Bypass if !trimmed.is_empty() => {
+                self.apply_mode_slash_with_optional_prompt(
+                    ModeKind::Bypass,
+                    "bypass",
+                    "Bypass mode unavailable right now.",
+                    PreparedSlashCommandArgs {
+                        args,
+                        text_elements,
+                        pending_pastes,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    },
+                );
             }
             SlashCommand::Goal if !trimmed.is_empty() => {
                 if !self.config.features.enabled(Feature::Goals) {
@@ -1178,6 +1331,11 @@ impl ChatWidget {
             | SlashCommand::Model
             | SlashCommand::Personality
             | SlashCommand::Plan
+            | SlashCommand::Default
+            | SlashCommand::AcceptEdits
+            | SlashCommand::Auto
+            | SlashCommand::DontAsk
+            | SlashCommand::Bypass
             | SlashCommand::Goal
             | SlashCommand::Side
             | SlashCommand::Btw

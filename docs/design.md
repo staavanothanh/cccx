@@ -381,7 +381,7 @@ Nếu goal-evaluator từ chối, in rõ lý do (từ `evidence.findings`), khô
 Khi cccx khởi động (persona enabled):
 
 ```text
- /\_/|    cccx v0.1.0 — CC/CX harness
+ /\_/\    cccx v0.1.0 — CC/CX harness
 ( •.• )   mode:Plan — ready
  > ^ <    D:\code\cccx
 ```

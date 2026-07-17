@@ -2739,7 +2739,11 @@ fn sandbox_policy_mode(permission_profile: &PermissionProfile, cwd: &Path) -> &'
 fn collaboration_mode_mode(mode: ModeKind) -> &'static str {
     match mode {
         ModeKind::Plan => "plan",
-        ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => "default",
+        ModeKind::Default => "default",
+        ModeKind::AcceptEdits => "accept_edits",
+        ModeKind::Auto => "auto",
+        ModeKind::DontAsk => "dont_ask",
+        ModeKind::Bypass => "bypass",
     }
 }
 
