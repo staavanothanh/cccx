@@ -97,7 +97,8 @@ pub struct ModeThresholds {
 
 impl ModeThresholds {
     pub fn exceeded_by(&self, action: &NormalizedAction) -> bool {
-        action.changed_files > self.max_changed_files || action.changed_lines > self.max_changed_lines
+        action.changed_files > self.max_changed_files
+            || action.changed_lines > self.max_changed_lines
     }
 }
 
@@ -447,11 +448,7 @@ impl PermissionRequestQueue {
         self.active_request_id.as_deref()
     }
 
-    pub fn approve(
-        &mut self,
-        request_id: &str,
-        observed_digest: &str,
-    ) -> Result<(), QueueError> {
+    pub fn approve(&mut self, request_id: &str, observed_digest: &str) -> Result<(), QueueError> {
         let request = self
             .requests
             .get_mut(request_id)
@@ -691,7 +688,10 @@ mod tests {
 
         assert!(matches!(
             decision,
-            PolicyDecision::Deny { bypassable: false, .. }
+            PolicyDecision::Deny {
+                bypassable: false,
+                ..
+            }
         ));
     }
 
@@ -727,7 +727,10 @@ mod tests {
             PermissionRisk::Medium,
         ));
 
-        assert_eq!(queue.approve("pr-1", "wrong-digest"), Err(QueueError::DigestMismatch));
+        assert_eq!(
+            queue.approve("pr-1", "wrong-digest"),
+            Err(QueueError::DigestMismatch)
+        );
 
         assert_eq!(
             queue.get("pr-1").map(|request| &request.status),

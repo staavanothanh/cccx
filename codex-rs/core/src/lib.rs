@@ -34,6 +34,7 @@ pub use session::turn_context::TurnContext;
 mod agent;
 mod agent_communication;
 mod attestation;
+pub mod cccx_task_graph_state;
 mod codex_delegate;
 mod command_canonicalization;
 pub mod config;

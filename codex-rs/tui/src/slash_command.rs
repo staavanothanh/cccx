@@ -41,7 +41,11 @@ pub enum SlashCommand {
     Compact,
     Plan,
     Goal,
+    Agents,
     Agent,
+    Tasks,
+    Remember,
+    Cancel,
     Side,
     Btw,
     Copy,
@@ -121,7 +125,11 @@ impl SlashCommand {
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
+            SlashCommand::Agents => "list and control cccx subagents",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
+            SlashCommand::Tasks => "show the cccx task graph",
+            SlashCommand::Remember => "record explicit project memory",
+            SlashCommand::Cancel => "cancel cccx subagent work",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
             }
@@ -158,6 +166,10 @@ impl SlashCommand {
                 | SlashCommand::Rename
                 | SlashCommand::Plan
                 | SlashCommand::Goal
+                | SlashCommand::Agents
+                | SlashCommand::Permissions
+                | SlashCommand::Remember
+                | SlashCommand::Cancel
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
@@ -212,6 +224,10 @@ impl SlashCommand {
             | SlashCommand::Model
             | SlashCommand::Personality
             | SlashCommand::Permissions
+            | SlashCommand::Agents
+            | SlashCommand::Tasks
+            | SlashCommand::Remember
+            | SlashCommand::Cancel
             | SlashCommand::Copy
             | SlashCommand::Raw
             | SlashCommand::Rename
@@ -299,6 +315,21 @@ mod tests {
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
+    }
+
+    #[test]
+    fn cccx_commands_parse_and_remain_visible() {
+        assert_eq!(SlashCommand::Agents.command(), "agents");
+        assert_eq!(SlashCommand::from_str("agents"), Ok(SlashCommand::Agents));
+        assert_eq!(SlashCommand::from_str("tasks"), Ok(SlashCommand::Tasks));
+        assert_eq!(
+            SlashCommand::from_str("remember"),
+            Ok(SlashCommand::Remember)
+        );
+        assert_eq!(SlashCommand::from_str("cancel"), Ok(SlashCommand::Cancel));
+        assert!(SlashCommand::Agents.supports_inline_args());
+        assert!(SlashCommand::Tasks.available_during_task());
+        assert!(SlashCommand::Cancel.available_during_task());
     }
 
     #[test]

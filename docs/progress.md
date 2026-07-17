@@ -2,7 +2,7 @@
 
 - Docs baseline committed: `39e511c`.
 - Codex CLI baseline imported: `88ddfb4` from upstream `800715d2`.
-- Current phase: M7 headless-contract complete; next phase M8 Packaging Rename or batched runtime wiring.
+- Current phase: M7 complete and M4-M7 heavy wiring batch integrated; next phase M8 Packaging Rename.
 - Done: design docs, audit, fork plan, upstream remote, upstream docs separated, M0 validation complete, M0.5 MVP source gating implemented, M1 provider gateway crate implemented and wired into default Codex provider config path, M2 WorkSpec/Artifact protocol crate, M3 WorkSpecToChildConfigAdapter contract, M4 permission policy core crate, M5 task graph core crate, M6 UX contract crate, M7 headless contract crate.
 - Toolchain fix: installed Visual Studio Build Tools 2022 with C++ tools/Windows SDK via `winget`; use repo-pinned Rust `1.95.0-x86_64-pc-windows-msvc` through `D:\Program Files\cargo\bin`.
 - M0 validation passed from `codex-rs/`: `cargo check -p codex-core`; `cargo check -p codex-tui`; `RUST_MIN_STACK=33554432 cargo test -p codex-core multi_agent -- --test-threads=1`.
@@ -25,8 +25,11 @@
 - M6 scope completed: new `cccx-ux` crate with deterministic parser for `/agents`, `/agents logs`, `/agents resume`, `/agents cancel`, `/agents model`, `/tasks`, `/permissions`, `/remember`, `/cancel`, plus stable renderers for cccx status line, agent list, and permission queue.
 - M7 validation passed from `codex-rs/`: `cargo test -p cccx-headless`.
 - M7 scope completed: new `cccx-headless` crate with JSONL event envelopes for answer/approval/task/agent/permission/error/terminal events, contiguous sequence validation, stdout JSONL-only guard, stderr diagnostics separation, and headless approval default deny.
-- Deferred heavy wiring backlog: wire `cccx-policy` into Codex tool executor/approval path in `codex-core`; batch this with later heavy runtime wiring steps so `codex-core` is compiled/tested fewer times.
-- Deferred heavy wiring backlog: wire `cccx-task-graph` into session turn boundaries, StopHook, compaction preservation, and `.cccx/state/` persistence.
-- Deferred heavy wiring backlog: wire `cccx-ux` into `codex-tui` slash-command dispatch/status rendering.
-- Deferred heavy wiring backlog: wire `cccx-headless` into `codex-exec` JSON output path and approval handling.
-- Next: start M8 Packaging Rename if continuing small milestone work, or batch the deferred runtime wiring when multiple integration points are ready.
+- Heavy wiring batch validation passed on shared target dir `D:\cargo-targets\cccx`: `cargo check -p codex-core --lib`; `cargo check -p codex-tui --lib`; `cargo check -p codex-exec --lib`.
+- Heavy wiring batch scope completed:
+  - `cccx-policy` circuit-breaker precheck wired into `codex-core` exec approval path.
+  - `cccx-task-graph` persistence/stop-guard/compaction-survivor state helper added under `.cccx/state/`.
+  - `cccx-ux` parser wired into `codex-tui` slash-command dispatch for `/agents`, `/tasks`, `/permissions`, `/remember`, `/cancel` with bounded placeholder actions where runtime behaviors are still intentionally deferred.
+  - `cccx-headless` stdout JSON guard wired into `codex-exec` JSONL emission path.
+- Build environment note: to keep large Rust artifacts off `C:`, use shared `CARGO_TARGET_DIR=D:\cargo-targets\cccx`. On Windows, the `v8` crate symlink step was worked around by creating a junction at `D:\cargo-targets\cccx\debug\gn_root`.
+- Next: start M8 Packaging Rename, then return for the remaining runtime behavior wiring that was intentionally left as placeholder action handling.

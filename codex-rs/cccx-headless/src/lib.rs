@@ -153,11 +153,7 @@ pub fn assert_stdout_is_jsonl_only(stdout: &str) -> Result<(), HeadlessEventErro
             continue;
         }
 
-        let value: Value =
-            serde_json::from_str(line).map_err(|error| HeadlessEventError::NonJsonStdoutLine {
-                line: index + 1,
-                reason: error.to_string(),
-            })?;
+        let value = parse_stdout_json_line(index + 1, line)?;
 
         let schema_version = value
             .get("schema_version")
@@ -172,6 +168,22 @@ pub fn assert_stdout_is_jsonl_only(stdout: &str) -> Result<(), HeadlessEventErro
     }
 
     Ok(())
+}
+
+pub fn assert_stdout_lines_are_json(stdout: &str) -> Result<(), HeadlessEventError> {
+    for (index, line) in stdout.lines().enumerate() {
+        if !line.trim().is_empty() {
+            parse_stdout_json_line(index + 1, line)?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_stdout_json_line(line_number: usize, line: &str) -> Result<Value, HeadlessEventError> {
+    serde_json::from_str(line).map_err(|error| HeadlessEventError::NonJsonStdoutLine {
+        line: line_number,
+        reason: error.to_string(),
+    })
 }
 
 fn validate_sequence(events: &[HeadlessEventEnvelope]) -> Result<(), HeadlessEventError> {
@@ -284,6 +296,14 @@ mod tests {
                 line: 1,
                 reason: "expected value at line 1 column 1".to_string()
             })
+        );
+    }
+
+    #[test]
+    fn generic_stdout_json_guard_accepts_existing_jsonl_schema() {
+        assert_eq!(
+            assert_stdout_lines_are_json("{\"type\":\"turn.completed\"}\n"),
+            Ok(())
         );
     }
 

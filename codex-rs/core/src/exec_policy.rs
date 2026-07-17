@@ -5,6 +5,14 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
+use cccx_policy::ActionType as CccxActionType;
+use cccx_policy::MainMode as CccxMainMode;
+use cccx_policy::ModeThresholds as CccxModeThresholds;
+use cccx_policy::NormalizedAction as CccxNormalizedAction;
+use cccx_policy::PolicyDecision as CccxPolicyDecision;
+use cccx_policy::PolicySession as CccxPolicySession;
+use cccx_policy::PolicySet as CccxPolicySet;
+use cccx_policy::evaluate_action as cccx_evaluate_action;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigLayerStackOrdering;
@@ -246,6 +254,40 @@ pub(crate) struct ExecApprovalRequest<'a> {
     pub(crate) prefix_rule: Option<Vec<String>>,
 }
 
+fn cccx_circuit_breaker_requirement(command: &[String]) -> Option<ExecApprovalRequirement> {
+    let command_summary = command.join(" ");
+    let action = CccxNormalizedAction {
+        action_type: CccxActionType::Shell,
+        summary: command_summary.clone(),
+        command: Some(command_summary),
+        target_paths: Vec::new(),
+        tool_name: Some("exec".to_string()),
+        task_id: "codex-core-exec".to_string(),
+        changed_files: 0,
+        changed_lines: 0,
+    };
+    let session = CccxPolicySession {
+        // Use Bypass deliberately: this pre-gate only wants the invariant
+        // circuit-breaker layer. All non-circuit policy remains owned by the
+        // existing Codex exec-policy path below.
+        mode: CccxMainMode::Bypass,
+        thresholds: CccxModeThresholds {
+            max_changed_files: usize::MAX,
+            max_changed_lines: usize::MAX,
+        },
+        explicit_allow_rules: Vec::new(),
+    };
+
+    match cccx_evaluate_action(&action, &session, &CccxPolicySet::default_m4(), None) {
+        CccxPolicyDecision::Deny {
+            reason,
+            bypassable: false,
+            ..
+        } => Some(ExecApprovalRequirement::Forbidden { reason }),
+        _ => None,
+    }
+}
+
 impl ExecPolicyManager {
     pub(crate) fn new(policy: Arc<Policy>) -> Self {
         Self {
@@ -279,6 +321,9 @@ impl ExecPolicyManager {
             sandbox_permissions,
             prefix_rule,
         } = req;
+        if let Some(requirement) = cccx_circuit_breaker_requirement(command) {
+            return requirement;
+        }
         let exec_policy = self.current();
         let ExecPolicyCommands {
             commands,
@@ -1105,6 +1150,31 @@ async fn collect_policy_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>, Exe
         dir.display()
     );
     Ok(policy_paths)
+}
+
+#[cfg(test)]
+mod cccx_policy_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn cccx_circuit_breaker_blocks_rm_rf_root_before_exec_policy() {
+        assert!(matches!(
+            cccx_circuit_breaker_requirement(&[
+                "bash".to_string(),
+                "-lc".to_string(),
+                "rm -rf /".to_string()
+            ]),
+            Some(ExecApprovalRequirement::Forbidden { reason })
+                if reason == "refuse recursive deletion of filesystem root"
+        ));
+    }
+
+    #[test]
+    fn cccx_circuit_breaker_ignores_non_circuit_command() {
+        assert!(
+            cccx_circuit_breaker_requirement(&["echo".to_string(), "ok".to_string()]).is_none()
+        );
+    }
 }
 
 #[cfg(test)]

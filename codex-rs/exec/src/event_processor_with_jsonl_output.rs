@@ -102,16 +102,15 @@ impl EventProcessorWithJsonOutput {
 
     #[allow(clippy::print_stdout)]
     fn emit(&self, event: ThreadEvent) {
-        println!(
-            "{}",
-            serde_json::to_string(&event).unwrap_or_else(|err| {
-                json!({
-                    "type": "error",
-                    "message": format!("failed to serialize exec json event: {err}"),
-                })
-                .to_string()
+        let line = serde_json::to_string(&event).unwrap_or_else(|err| {
+            json!({
+                "type": "error",
+                "message": format!("failed to serialize exec json event: {err}"),
             })
-        );
+            .to_string()
+        });
+        debug_assert!(cccx_headless::assert_stdout_lines_are_json(&line).is_ok());
+        println!("{line}");
     }
 
     fn usage_from_last_total(&self) -> Usage {

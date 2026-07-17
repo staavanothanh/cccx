@@ -14,6 +14,10 @@ use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
 use crate::goal_display::GOAL_USAGE;
 use crate::goal_files::GoalDraft;
+use cccx_ux::AgentsCommand;
+use cccx_ux::CccxCommand;
+use cccx_ux::PermissionsCommand;
+use cccx_ux::parse_cccx_command;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -305,8 +309,26 @@ impl ChatWidget {
             SlashCommand::Side | SlashCommand::Btw => {
                 self.request_empty_side_conversation(cmd);
             }
-            SlashCommand::Agent | SlashCommand::MultiAgents => {
+            SlashCommand::Agents | SlashCommand::Agent | SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
+            }
+            SlashCommand::Tasks => {
+                self.add_info_message(
+                    "Task Graph runtime view is wired through cccx-task-graph; TUI tree rendering is pending runtime wiring.".to_string(),
+                    /*hint*/ None,
+                );
+            }
+            SlashCommand::Remember => {
+                self.add_info_message(
+                    "Usage: /remember <project memory note>".to_string(),
+                    /*hint*/ None,
+                );
+            }
+            SlashCommand::Cancel => {
+                self.add_info_message(
+                    "Usage: /cancel [--all|<agent_id>]".to_string(),
+                    /*hint*/ None,
+                );
             }
             SlashCommand::Permissions => {
                 self.open_permissions_popup();
@@ -587,6 +609,17 @@ impl ChatWidget {
             return;
         }
 
+        if matches!(
+            cmd,
+            SlashCommand::Agents
+                | SlashCommand::Permissions
+                | SlashCommand::Remember
+                | SlashCommand::Cancel
+        ) {
+            self.dispatch_cccx_command_with_args(cmd, trimmed);
+            return;
+        }
+
         if cmd == SlashCommand::Goal {
             self.dispatch_prepared_command_with_args(
                 cmd,
@@ -620,6 +653,63 @@ impl ChatWidget {
                 source: SlashCommandDispatchSource::Live,
             },
         );
+    }
+
+    fn dispatch_cccx_command_with_args(&mut self, cmd: SlashCommand, args: &str) {
+        let input = format!("/{} {}", cmd.command(), args);
+        match parse_cccx_command(&input) {
+            Ok(Some(CccxCommand::Agents(AgentsCommand::List))) => {
+                self.app_event_tx.send(AppEvent::OpenAgentPicker);
+            }
+            Ok(Some(CccxCommand::Agents(command))) => {
+                self.add_info_message(
+                    format!("/agents {command:?} parsed; runtime action wiring is pending."),
+                    /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Permissions(PermissionsCommand::List))) => {
+                self.open_permissions_popup();
+                self.defer_input_until_settings_applied();
+            }
+            Ok(Some(CccxCommand::Permissions(command))) => {
+                self.add_info_message(
+                    format!(
+                        "/permissions {command:?} parsed; approval queue action wiring is pending."
+                    ),
+                    /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Remember { note })) => {
+                self.add_info_message(
+                    format!(
+                        "/remember parsed; project memory write wiring is pending. note={}",
+                        note.unwrap_or_default()
+                    ),
+                    /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Cancel { all, target })) => {
+                self.add_info_message(
+                    format!(
+                        "/cancel parsed; subagent cancellation wiring is pending. all={all} target={}",
+                        target.unwrap_or_else(|| "none".to_string())
+                    ),
+                    /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Tasks)) => {
+                self.add_info_message(
+                    "/tasks parsed; Task Graph TUI rendering is pending.".to_string(),
+                    /*hint*/ None,
+                );
+            }
+            Ok(None) => {
+                self.add_error_message(format!("Invalid cccx command: {input}"));
+            }
+            Err(error) => {
+                self.add_error_message(error.to_string());
+            }
+        }
     }
 
     fn prepare_live_inline_args(
@@ -1092,7 +1182,11 @@ impl ChatWidget {
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
+            | SlashCommand::Agents
             | SlashCommand::Agent
+            | SlashCommand::Tasks
+            | SlashCommand::Remember
+            | SlashCommand::Cancel
             | SlashCommand::MultiAgents
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
