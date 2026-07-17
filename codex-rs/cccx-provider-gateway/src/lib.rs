@@ -1,7 +1,13 @@
 //! cccx 9router provider gateway.
 //!
-//! This crate owns cccx model-route resolution and 9router request provenance.
+//! This crate owns cccx model-route resolution and legacy 9router request provenance.
 //! Route IDs are opaque: cccx never parses provider identity out of model IDs.
+//!
+//! Important runtime boundary:
+//! - The active cccx runtime uses the codex-core chat-completions client path for
+//!   9router/OpenAI-compatible traffic.
+//! - The HTTP prompt helpers in this crate remain for route-resolution tests and
+//!   older experiments, but they are not the canonical live inference boundary.
 
 use reqwest::Client;
 use serde::Deserialize;
@@ -204,6 +210,9 @@ impl ProviderGatewayConfig {
         }
     }
 
+    #[deprecated(
+        note = "cccx runtime should use codex-core's chat-completions boundary for 9router; this helper is legacy-only"
+    )]
     pub fn default_9router() -> Result<Self, ProviderGatewayError> {
         Ok(Self::new(Url::parse(DEFAULT_9ROUTER_BASE_URL)?))
     }
@@ -215,6 +224,9 @@ pub struct ProviderGateway {
 }
 
 impl ProviderGateway {
+    #[deprecated(
+        note = "cccx runtime should use codex-core's chat-completions boundary for 9router; this gateway is legacy-only"
+    )]
     pub fn new(config: ProviderGatewayConfig) -> Result<Self, ProviderGatewayError> {
         let client = Client::builder()
             .timeout(config.request_timeout)
@@ -223,6 +235,9 @@ impl ProviderGateway {
         Ok(Self { config, client })
     }
 
+    #[deprecated(
+        note = "cccx runtime should use codex-core's chat-completions boundary for 9router; this helper is legacy-only"
+    )]
     pub async fn send_prompt(
         &self,
         resolved_route: &ResolvedModelRoute,
@@ -233,10 +248,16 @@ impl ProviderGateway {
                 env_var: self.config.api_key_env.clone(),
             }
         })?;
-        self.send_prompt_with_api_key(resolved_route, prompt, &api_key)
-            .await
+        #[allow(deprecated)]
+        {
+            self.send_prompt_with_api_key(resolved_route, prompt, &api_key)
+                .await
+        }
     }
 
+    #[deprecated(
+        note = "cccx runtime should use codex-core's chat-completions boundary for 9router; this helper is legacy-only"
+    )]
     pub async fn send_prompt_with_api_key(
         &self,
         resolved_route: &ResolvedModelRoute,
@@ -424,6 +445,7 @@ mod tests {
         ));
     }
 
+    #[allow(deprecated)]
     #[tokio::test]
     async fn mock_9router_records_effective_route_provenance() {
         let server = MockServer::start().await;

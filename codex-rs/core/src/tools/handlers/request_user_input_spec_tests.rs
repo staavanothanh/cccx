@@ -215,15 +215,28 @@ fn request_user_input_unavailable_messages_respect_default_mode_feature_flag() {
         None
     );
     assert_eq!(
-        request_user_input_unavailable_message(ModeKind::Execute, &default_available_modes()),
-        Some("request_user_input is unavailable in Execute mode".to_string())
+        serde_json::from_str::<ModeKind>("\"execute\"").expect("deserialize execute alias"),
+        ModeKind::Default
     );
     assert_eq!(
         request_user_input_unavailable_message(
-            ModeKind::PairProgramming,
+            serde_json::from_str("\"execute\"").expect("deserialize execute alias"),
             &default_available_modes()
         ),
-        Some("request_user_input is unavailable in Pair Programming mode".to_string())
+        Some("request_user_input is unavailable in Default mode".to_string())
+    );
+    assert_eq!(
+        serde_json::from_str::<ModeKind>("\"pair_programming\"")
+            .expect("deserialize pair_programming alias"),
+        ModeKind::Default
+    );
+    assert_eq!(
+        request_user_input_unavailable_message(
+            serde_json::from_str("\"pair_programming\"")
+                .expect("deserialize pair_programming alias"),
+            &default_available_modes()
+        ),
+        Some("request_user_input is unavailable in Default mode".to_string())
     );
 }
 

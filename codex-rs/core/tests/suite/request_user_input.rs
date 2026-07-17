@@ -425,8 +425,11 @@ where
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_user_input_rejected_in_execute_mode_alias() -> anyhow::Result<()> {
-    assert_request_user_input_rejected("Execute", |model| CollaborationMode {
-        mode: ModeKind::Execute,
+    let mode: ModeKind = serde_json::from_str("\"execute\"").expect("deserialize execute alias");
+    assert_eq!(ModeKind::Default, mode);
+
+    assert_request_user_input_rejected("Default", move |model| CollaborationMode {
+        mode,
         settings: Settings {
             model,
             reasoning_effort: None,
@@ -456,8 +459,12 @@ async fn request_user_input_round_trip_in_default_mode_with_feature() -> anyhow:
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_user_input_rejected_in_pair_mode_alias() -> anyhow::Result<()> {
-    assert_request_user_input_rejected("Pair Programming", |model| CollaborationMode {
-        mode: ModeKind::PairProgramming,
+    let mode: ModeKind =
+        serde_json::from_str("\"pair_programming\"").expect("deserialize pair alias");
+    assert_eq!(ModeKind::Default, mode);
+
+    assert_request_user_input_rejected("Default", move |model| CollaborationMode {
+        mode,
         settings: Settings {
             model,
             reasoning_effort: None,
