@@ -99,10 +99,10 @@ use codex_terminal_detection::TerminalName;
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
-    // `codex-x86_64-unknown-linux-musl`, but the help output should always use
-    // the generic `codex` command name that users run.
-    bin_name = "codex",
-    override_usage = "codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]"
+    // `cccx-x86_64-unknown-linux-musl`, but the help output should always use
+    // the generic `cccx` command name that users run.
+    bin_name = "cccx",
+    override_usage = "cccx [OPTIONS] [PROMPT]\n       cccx [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
     #[clap(flatten)]
@@ -1692,7 +1692,7 @@ fn profile_v2_for_subcommand<'a>(
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
+            "--profile only applies to runtime commands and `cccx mcp`: `cccx`, `cccx exec`, `cccx review`, `cccx resume`, `cccx archive`, `cccx delete`, `cccx unarchive`, `cccx fork`, `cccx mcp`, `cccx sandbox`, and `cccx debug prompt-input`."
         ),
     }
 }

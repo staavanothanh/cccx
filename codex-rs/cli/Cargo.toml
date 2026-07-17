@@ -1,9 +1,13 @@
 [package]
-name = "codex-cli"
+name = "cccx-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 build = "build.rs"
+
+[[bin]]
+name = "cccx"
+path = "src/main.rs"
 
 [[bin]]
 name = "codex"

@@ -1,16 +1,18 @@
 {
-  "name": "@openai/codex",
+  "name": "cccx",
   "version": "0.0.0-dev",
-  "description": "Codex CLI is a coding agent from OpenAI that runs locally on your computer.",
+  "description": "cccx is a personal CC/CX coding CLI fork built on top of Codex CLI.",
   "license": "Apache-2.0",
   "bin": {
-    "codex": "bin/codex.js"
+    "cccx": "bin/cccx.js",
+    "codex": "bin/cccx.js"
   },
   "type": "module",
   "engines": {
     "node": ">=16"
   },
   "files": [
+    "bin/cccx.js",
     "bin/codex.js"
   ],
   "repository": {

@@ -2,7 +2,7 @@
 
 - Docs baseline committed: `39e511c`.
 - Codex CLI baseline imported: `88ddfb4` from upstream `800715d2`.
-- Current phase: M7 complete and M4-M7 heavy wiring batch integrated; next phase M8 Packaging Rename.
+- Current phase: M8 Packaging Rename complete.
 - Done: design docs, audit, fork plan, upstream remote, upstream docs separated, M0 validation complete, M0.5 MVP source gating implemented, M1 provider gateway crate implemented and wired into default Codex provider config path, M2 WorkSpec/Artifact protocol crate, M3 WorkSpecToChildConfigAdapter contract, M4 permission policy core crate, M5 task graph core crate, M6 UX contract crate, M7 headless contract crate.
 - Toolchain fix: installed Visual Studio Build Tools 2022 with C++ tools/Windows SDK via `winget`; use repo-pinned Rust `1.95.0-x86_64-pc-windows-msvc` through `D:\Program Files\cargo\bin`.
 - M0 validation passed from `codex-rs/`: `cargo check -p codex-core`; `cargo check -p codex-tui`; `RUST_MIN_STACK=33554432 cargo test -p codex-core multi_agent -- --test-threads=1`.
@@ -32,4 +32,11 @@
   - `cccx-ux` parser wired into `codex-tui` slash-command dispatch for `/agents`, `/tasks`, `/permissions`, `/remember`, `/cancel` with bounded placeholder actions where runtime behaviors are still intentionally deferred.
   - `cccx-headless` stdout JSON guard wired into `codex-exec` JSONL emission path.
 - Build environment note: to keep large Rust artifacts off `C:`, use shared `CARGO_TARGET_DIR=D:\cargo-targets\cccx`. On Windows, the `v8` crate symlink step was worked around by creating a junction at `D:\cargo-targets\cccx\debug\gn_root`.
-- Next: start M8 Packaging Rename, then return for the remaining runtime behavior wiring that was intentionally left as placeholder action handling.
+- M8 validation passed from `codex-rs/`: `cargo test -p codex-utils-home-dir`; `cargo check -p cccx-cli --bin cccx`; `cargo run -p cccx-cli --bin cccx -- --version`.
+- M8 scope completed:
+  - Rust CLI package renamed to `cccx-cli`.
+  - New primary binary surface is `cccx`; legacy `codex` binary alias kept temporarily for compatibility.
+  - Default config home changed to `~/.cccx` with `CCCX_HOME` as primary override and `CODEX_HOME` as legacy fallback.
+  - NPM launcher/package surface switched to `cccx` with `cccx.js` primary entrypoint and `codex.js` compatibility shim.
+  - Root README/package metadata updated to reflect cccx branding while preserving Codex provenance.
+- Remaining post-plan work: replace placeholder runtime actions for `/tasks`, `/remember`, `/cancel`, and deeper config/help/update string renames that are still intentionally left on internal `codex_*` terminology.
