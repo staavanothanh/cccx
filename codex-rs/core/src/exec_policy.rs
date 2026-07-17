@@ -288,6 +288,181 @@ fn cccx_circuit_breaker_requirement(command: &[String]) -> Option<ExecApprovalRe
     }
 }
 
+/// Runs cccx policy evaluation for MCP tool calls.
+///
+/// Uses `Default` mode so circuit-breaker rules hard-deny, escalate rules
+/// require approval, and allowlist rules fast-path.
+///
+/// Returns:
+/// - `Some(Forbidden)` when cccx policy hard-denies (circuit breaker match)
+/// - `Some(NeedsApproval)` when user approval is required (escalate match)
+/// - `None` when no cccx policy applies (allowlist match or no rule matched)
+pub(crate) fn cccx_mcp_requirement(
+    server_id: &str,
+    tool_name: &str,
+) -> Option<ExecApprovalRequirement> {
+    let action = CccxNormalizedAction {
+        action_type: CccxActionType::McpCall,
+        summary: format!("mcp:{server_id}.{tool_name}"),
+        command: None,
+        target_paths: Vec::new(),
+        tool_name: Some(format!("mcp:{server_id}.{tool_name}")),
+        task_id: "codex-core-mcp".to_string(),
+        changed_files: 0,
+        changed_lines: 0,
+    };
+    let session = CccxPolicySession {
+        mode: CccxMainMode::Default,
+        thresholds: CccxModeThresholds {
+            max_changed_files: usize::MAX,
+            max_changed_lines: usize::MAX,
+        },
+        explicit_allow_rules: Vec::new(),
+    };
+
+    match cccx_evaluate_action(&action, &session, &CccxPolicySet::default_m4(), None) {
+        CccxPolicyDecision::Deny { reason, .. } => {
+            Some(ExecApprovalRequirement::Forbidden { reason })
+        }
+        CccxPolicyDecision::RequireApproval { reason, .. } => {
+            Some(ExecApprovalRequirement::NeedsApproval {
+                reason: Some(reason),
+                proposed_execpolicy_amendment: None,
+            })
+        }
+        CccxPolicyDecision::RerouteToCx { reason } => {
+            Some(ExecApprovalRequirement::NeedsApproval {
+                reason: Some(format!("{reason} — reroute to CX recommended")),
+                proposed_execpolicy_amendment: None,
+            })
+        }
+        CccxPolicyDecision::Allow { .. } => None,
+    }
+}
+
+/// Runs the full cccx policy pipeline (circuit breaker + escalate + allowlist)
+/// on shell commands with `Default` mode (matching the architecture.md spec
+/// where Default=Ask requires approval for non-trivial actions).
+///
+/// This complements `cccx_circuit_breaker_requirement` which only checks
+/// circuit-breaker invariants. This function also checks:
+/// - Escalate rules (secret paths, destructive git, network install)
+/// - DontAsk mode: deny silent for escalate matches
+/// - Plan mode: deny edits/shell
+///
+/// Returns:
+/// - `Some(Forbidden)` when the command is hard-denied (circuit breaker,
+///   Plan-mode shell, DontAsk with escalate match)
+/// - `Some(NeedsApproval)` when user approval is required (escalate match
+///   in Default/AcceptEdits/Auto mode)
+/// - `None` when no cccx policy applies (allowlist match, or no rule matched)
+fn cccx_full_shell_requirement(command: &[String]) -> Option<ExecApprovalRequirement> {
+    let command_summary = command.join(" ");
+    let action = CccxNormalizedAction {
+        action_type: CccxActionType::Shell,
+        summary: command_summary.clone(),
+        command: Some(command_summary),
+        target_paths: Vec::new(),
+        tool_name: Some("exec".to_string()),
+        task_id: "codex-core-exec".to_string(),
+        changed_files: 0,
+        changed_lines: 0,
+    };
+    let session = CccxPolicySession {
+        mode: CccxMainMode::Default,
+        thresholds: CccxModeThresholds {
+            max_changed_files: usize::MAX,
+            max_changed_lines: usize::MAX,
+        },
+        explicit_allow_rules: Vec::new(),
+    };
+
+    match cccx_evaluate_action(&action, &session, &CccxPolicySet::default_m4(), None) {
+        CccxPolicyDecision::Deny { reason, .. } => {
+            Some(ExecApprovalRequirement::Forbidden { reason })
+        }
+        CccxPolicyDecision::RequireApproval { reason, .. } => {
+            Some(ExecApprovalRequirement::NeedsApproval {
+                reason: Some(reason),
+                proposed_execpolicy_amendment: None,
+            })
+        }
+        CccxPolicyDecision::RerouteToCx { reason } => {
+            // Reroute-to-CX is not actionable in shell path; treat as
+            // require-approval so user can decide.
+            Some(ExecApprovalRequirement::NeedsApproval {
+                reason: Some(format!("{reason} — reroute to CX recommended")),
+                proposed_execpolicy_amendment: None,
+            })
+        }
+        CccxPolicyDecision::Allow { .. } => None,
+    }
+}
+
+/// Runs the full cccx policy pipeline (circuit breaker + escalate + allowlist)
+/// on file edit operations (apply_patch, file_write) with `Default` mode.
+///
+/// This mirrors `cccx_full_shell_requirement` for shell commands, applying the
+/// same decision logic to edit actions:
+/// - Circuit breaker: rejects known-dangerous edit patterns
+/// - Escalate: requires approval for writes to sensitive paths
+/// - Allowlist: fast-passes known-safe edit operations
+///
+/// Returns:
+/// - `Some(Forbidden)` when the edit is hard-denied (circuit breaker,
+///   Plan-mode edit, DontAsk with escalate match)
+/// - `Some(NeedsApproval)` when user approval is required
+/// - `None` when no cccx policy applies (allowlist match, or no rule matched)
+pub(crate) fn cccx_edit_requirement(
+    file_paths: &[String],
+) -> Option<ExecApprovalRequirement> {
+    let paths_summary = file_paths.join(", ");
+    let action = CccxNormalizedAction {
+        action_type: CccxActionType::Edit,
+        summary: format!("edit files: {paths_summary}"),
+        command: None,
+        target_paths: file_paths.to_vec(),
+        tool_name: Some("apply_patch".to_string()),
+        task_id: "codex-core-edit".to_string(),
+        changed_files: file_paths.len(),
+        changed_lines: 0,
+    };
+    let session = CccxPolicySession {
+        mode: CccxMainMode::Default,
+        thresholds: CccxModeThresholds {
+            max_changed_files: usize::MAX,
+            max_changed_lines: usize::MAX,
+        },
+        explicit_allow_rules: Vec::new(),
+    };
+
+    match cccx_evaluate_action(&action, &session, &CccxPolicySet::default_m4(), None) {
+        CccxPolicyDecision::Deny {
+            reason,
+            bypassable: false,
+            ..
+        } => Some(ExecApprovalRequirement::Forbidden { reason }),
+        CccxPolicyDecision::Deny {
+            reason,
+            bypassable: true,
+            ..
+        } => Some(ExecApprovalRequirement::Forbidden { reason }),
+        CccxPolicyDecision::RequireApproval { reason, .. } => {
+            Some(ExecApprovalRequirement::NeedsApproval {
+                reason: Some(reason),
+                proposed_execpolicy_amendment: None,
+            })
+        }
+        CccxPolicyDecision::RerouteToCx { reason } => {
+            Some(ExecApprovalRequirement::NeedsApproval {
+                reason: Some(format!("{reason} — reroute to CX recommended")),
+                proposed_execpolicy_amendment: None,
+            })
+        }
+        CccxPolicyDecision::Allow { .. } => None,
+    }
+}
+
 impl ExecPolicyManager {
     pub(crate) fn new(policy: Arc<Policy>) -> Self {
         Self {
@@ -322,6 +497,16 @@ impl ExecPolicyManager {
             prefix_rule,
         } = req;
         if let Some(requirement) = cccx_circuit_breaker_requirement(command) {
+            return requirement;
+        }
+        // Run full cccx policy (escalate + allowlist) with Default mode.
+        // Circuit breaker handles invariant protects; this layer handles
+        // escalate rules (secrets, destructive git, network install) and
+        // allowlist fast-path.
+        if let Some(requirement) = cccx_full_shell_requirement(command) {
+            // Forbidden (Plan-mode, DontAsk+escalate): hard-deny immediately.
+            // NeedsApproval (escalate in Default/AcceptEdits): bubble
+            // up so user gets a meaningful prompt from cccx policy.
             return requirement;
         }
         let exec_policy = self.current();

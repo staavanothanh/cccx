@@ -488,7 +488,7 @@ impl ToolRegistry {
                 &tool_result_tags,
                 &extra_trace_fields,
             );
-            let err = FunctionCallError::Fatal(message);
+            let err = FunctionCallError::RespondToModel(message);
             dispatch_trace.record_failed(&err);
             return Err(err);
         }

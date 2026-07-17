@@ -144,9 +144,51 @@ impl PolicySet {
                 StaticRule::contains(
                     "secret-path",
                     RuleTier::Escalate,
-                    ActionType::Read,
+                    ActionType::Edit,
                     ".env",
                     "secret-like path requires approval",
+                ),
+                StaticRule::contains(
+                    "secret-pem",
+                    RuleTier::Escalate,
+                    ActionType::Edit,
+                    ".pem",
+                    "credential file requires approval",
+                ),
+                StaticRule::contains(
+                    "secret-key",
+                    RuleTier::Escalate,
+                    ActionType::Edit,
+                    ".key",
+                    "credential file requires approval",
+                ),
+                StaticRule::contains(
+                    "secret-id-rsa",
+                    RuleTier::Escalate,
+                    ActionType::Edit,
+                    "id_rsa",
+                    "credential file requires approval",
+                ),
+                StaticRule::contains(
+                    "secret-credentials",
+                    RuleTier::Escalate,
+                    ActionType::Edit,
+                    "credentials",
+                    "credential file requires approval",
+                ),
+                StaticRule::contains(
+                    "secret-config-secrets",
+                    RuleTier::Escalate,
+                    ActionType::Edit,
+                    "secrets",
+                    "credential-like path requires approval",
+                ),
+                StaticRule::contains(
+                    "mcp-side-effect",
+                    RuleTier::Escalate,
+                    ActionType::McpCall,
+                    "manage_adr",
+                    "potential side-effect MCP tool requires approval",
                 ),
                 StaticRule::contains(
                     "safe-read",
@@ -182,16 +224,70 @@ impl StaticRule {
             return false;
         }
 
+        // --- cb-git-force-main: force push to protected branches ---
         if self.id == "cb-git-force-main" {
-            let Some(command) = action.command.as_deref() else {
+            let Some(cmd) = action.command.as_deref() else {
                 return false;
             };
-            let command = command.to_ascii_lowercase();
-            return command.contains("git push")
-                && (command.contains(" origin main") || command.contains(" origin master"))
-                && (command.contains("--force") || command.contains("-f"));
+            let cmd = cmd.to_ascii_lowercase();
+            if !cmd.contains("git push") {
+                return false;
+            }
+            let has_force = cmd.contains("--force")
+                || cmd.contains("-f")
+                || cmd.contains("--force-with-lease");
+            if !has_force {
+                return false;
+            }
+            let targets_protected = cmd.contains(" origin main")
+                || cmd.contains(" origin master")
+                || cmd.contains(" origin prod")
+                || cmd.contains(" origin production")
+                || cmd.contains("--mirror");
+            return targets_protected;
         }
 
+        // --- cb-rm-rf-root: destructive recursive deletion ---
+        if self.id == "cb-rm-rf-root" {
+            let Some(cmd) = action.command.as_deref() else {
+                return false;
+            };
+            let cmd = cmd.to_ascii_lowercase();
+            if !cmd.contains("rm") {
+                return false;
+            }
+            let destructive_flags = cmd.contains("-rf")
+                || cmd.contains("-r -f")
+                || cmd.contains("-fr")
+                || cmd.contains("--recursive")
+                || cmd.contains("--force");
+            if !destructive_flags {
+                return false;
+            }
+            let dangerous_targets = [
+                " /", " /*", " ~", " /home", "$home",
+                "\"c:\\", "c:\\windows",
+            ];
+            return dangerous_targets.iter().any(|t| cmd.contains(t));
+        }
+
+        // --- cb-format: disk format / wipe ---
+        if self.id == "cb-format" {
+            let Some(cmd) = action.command.as_deref() else {
+                return false;
+            };
+            let cmd = cmd.to_ascii_lowercase();
+            if cmd.contains("format ") || cmd.contains("mkfs")
+                || (cmd.contains("dd if=") && cmd.contains("of="))
+                || cmd.contains("diskpart")
+                || (cmd.contains("wmic") && cmd.contains("diskdrive") && cmd.contains("clean"))
+            {
+                return true;
+            }
+            return false;
+        }
+
+        // --- generic contains-based matching ---
         let pattern = self.pattern.to_ascii_lowercase();
         if pattern.is_empty() {
             return true;
@@ -589,10 +685,23 @@ mod tests {
         }
     }
 
+    fn edit_env_action() -> NormalizedAction {
+        NormalizedAction {
+            action_type: ActionType::Edit,
+            summary: "edit env file".to_string(),
+            command: None,
+            target_paths: vec!["D:/repo/.env".to_string()],
+            tool_name: Some("apply_patch".to_string()),
+            task_id: "T1".to_string(),
+            changed_files: 1,
+            changed_lines: 1,
+        }
+    }
+
     #[test]
     fn static_deny_beats_static_allow() {
         let decision = evaluate_action(
-            &read_env_action(),
+            &edit_env_action(),
             &session(MainMode::Default),
             &PolicySet::default_m4(),
             None,

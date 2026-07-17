@@ -3,9 +3,11 @@ use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
+use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
@@ -37,6 +39,7 @@ use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event_match;
+use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -50,6 +53,11 @@ use tokio::time::sleep;
 use tracing::Level;
 use tracing_test::internal::MockWriter;
 use wiremock::MockServer;
+use wiremock::Mock;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
+use wiremock::matchers::body_string_contains;
 
 const SPAWN_CALL_ID: &str = "spawn-call-1";
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
@@ -113,6 +121,73 @@ fn has_subagent_notification(req: &ResponsesRequest) -> bool {
     req.message_input_texts("user")
         .iter()
         .any(|text| text.contains("<subagent_notification>"))
+}
+
+fn chat_completions_sse(chunks: &[Value]) -> String {
+    let mut body = chunks
+        .iter()
+        .map(|chunk| format!("data: {chunk}\n\n"))
+        .collect::<String>();
+    body.push_str("data: [DONE]\n\n");
+    body
+}
+
+/// Mount an SSE mock for chat-completions path (unlike mount_sse_once_match which expects `/responses`)
+async fn mount_chat_once_match<M>(server: &MockServer, matcher: M, body: String)
+where
+    M: wiremock::Match + Send + Sync + 'static,
+{
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(matcher)
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+}
+
+fn chat_tool_call_chunk(
+    response_id: &str,
+    call_id: &str,
+    tool_name: &str,
+    arguments: &str,
+) -> Value {
+    json!({
+        "id": response_id,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "index": 0,
+                    "id": call_id,
+                    "function": {
+                        "name": tool_name,
+                        "arguments": arguments,
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    })
+}
+
+fn chat_text_chunk(response_id: &str, text: &str, finish_reason: &str) -> Value {
+    json!({
+        "id": response_id,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "role": "assistant",
+                "content": text,
+            },
+            "finish_reason": finish_reason
+        }]
+    })
 }
 
 fn tool_parameter_description(tool: &Value, parameter_name: &str) -> Option<String> {
@@ -474,6 +549,106 @@ async fn setup_turn_one_with_custom_spawned_child(
     let spawned_id = wait_for_spawned_thread_id(&test).await?;
 
     Ok((test, spawned_id, child_request_log))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_completions_spawn_agent_flow_dispatches_child_without_payload_mismatch() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+    }))?;
+
+    // Mount parent mock: returns tool call
+    mount_chat_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        chat_completions_sse(&[chat_tool_call_chunk(
+            "chatcmpl-parent-1",
+            SPAWN_CALL_ID,
+            "multi_agent_v1__spawn_agent",
+            &spawn_args,
+        )]),
+    )
+    .await;
+
+    // Mount child mock (excludes parent follow-up which contains child prompt in history)
+    mount_chat_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        chat_completions_sse(&[chat_text_chunk(
+            "chatcmpl-child-1",
+            "child done",
+            "stop",
+        )]),
+    )
+    .await;
+
+    // Mount parent follow-up mock (last mounted = highest priority for requests with SPAWN_CALL_ID)
+    mount_chat_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        chat_completions_sse(&[chat_text_chunk(
+            "chatcmpl-parent-2",
+            "parent done",
+            "stop",
+        )]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .disable(Feature::EnableRequestCompression)
+            .expect("test config should allow feature update");
+        config.model = Some(INHERITED_MODEL.to_string());
+        config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
+        config.agent_max_depth = 3;
+        config.model_provider.wire_api = WireApi::ChatCompletions;
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(0);
+        config.model_provider.supports_websockets = false;
+        config
+            .web_search_mode
+            .set(WebSearchMode::Disabled)
+            .expect("test web_search_mode should satisfy constraints");
+    });
+    let test = builder.build(&server).await?;
+
+    // Submit turn
+    test.submit_turn(TURN_1_PROMPT).await?;
+
+    // Verify requests
+    let all_requests = server.received_requests().await.unwrap_or_default();
+    assert!(
+        all_requests.iter().any(|req| body_contains(req, TURN_1_PROMPT)),
+        "expected parent request; got {} reqs",
+        all_requests.len()
+    );
+    let has_child = all_requests.iter().any(|req| body_contains(req, CHILD_PROMPT));
+    assert!(has_child, "expected child request with CHILD_PROMPT");
+    assert!(
+        all_requests.len() >= 2,
+        "expected at least 2 requests (parent + follow-up); got {}",
+        all_requests.len()
+    );
+    assert!(
+        all_requests.iter().all(|req| req.url.path() == "/v1/chat/completions"),
+        "expected chat-completions-only traffic"
+    );
+
+    // Verify child thread was spawned
+    let spawned_id = wait_for_spawned_thread_id(&test).await?;
+    assert!(!spawned_id.is_empty());
+    Ok(())
 }
 
 async fn spawn_child_and_capture_snapshot(

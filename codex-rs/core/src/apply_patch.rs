@@ -1,3 +1,4 @@
+use crate::exec_policy::cccx_edit_requirement;
 use crate::function_tool::FunctionCallError;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_patch_safety;
@@ -36,6 +37,37 @@ pub(crate) async fn apply_patch(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     action: ApplyPatchAction,
 ) -> InternalApplyPatchInvocation {
+    let file_paths: Vec<String> = action
+        .changes()
+        .keys()
+        .map(|p| p.to_string())
+        .collect();
+
+    if let Some(requirement) = cccx_edit_requirement(&file_paths) {
+        match requirement {
+            ExecApprovalRequirement::Forbidden { reason } => {
+                return InternalApplyPatchInvocation::Output(Err(
+                    FunctionCallError::RespondToModel(format!(
+                        "patch rejected by cccx policy: {reason}"
+                    )),
+                ));
+            }
+            ExecApprovalRequirement::NeedsApproval { reason, .. } => {
+                return InternalApplyPatchInvocation::DelegateToRuntime(
+                    ApplyPatchRuntimeInvocation {
+                        action,
+                        auto_approved: false,
+                        exec_approval_requirement: ExecApprovalRequirement::NeedsApproval {
+                            reason,
+                            proposed_execpolicy_amendment: None,
+                        },
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
     match assess_patch_safety(
         &action,
         turn_context.approval_policy.value(),

@@ -24,6 +24,7 @@ use tokio::time::Instant;
 use tokio::time::timeout;
 use tracing::debug;
 use tracing::trace;
+use tracing::warn;
 
 const X_REASONING_INCLUDED_HEADER: &str = "x-reasoning-included";
 const X_CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
@@ -68,7 +69,8 @@ pub fn spawn_response_stream(
         let _ = turn_state.set(header_value.to_string());
     }
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
-    tokio::spawn(async move {
+    let tx_event_backup = tx_event.clone();
+    let handle = tokio::spawn(async move {
         if let Some(model) = server_model {
             let _ = tx_event.send(Ok(ResponseEvent::ServerModel(model))).await;
         }
@@ -91,6 +93,25 @@ pub fn spawn_response_stream(
             safety_buffering_treatment,
         )
         .await;
+    });
+    tokio::spawn(async move {
+        if let Err(e) = handle.await {
+            if e.is_panic() {
+                let panic_payload = e.into_panic();
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                let _ = tx_event_backup
+                    .send(Err(ApiError::Stream(format!(
+                        "SSE processing panicked: {msg}"
+                    ))))
+                    .await;
+            }
+        }
     });
 
     ResponseStream {
@@ -533,7 +554,7 @@ async fn process_sse_with_treatment(
         let event: ResponsesStreamEvent = match serde_json::from_str(&sse.data) {
             Ok(event) => event,
             Err(e) => {
-                debug!("Failed to parse SSE event: {e}, data: {}", &sse.data);
+                warn!("Failed to parse SSE event: {e}, data: {}", &sse.data);
                 continue;
             }
         };

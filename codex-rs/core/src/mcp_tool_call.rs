@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::connectors;
+use crate::exec_policy::cccx_mcp_requirement;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::GuardianMcpAnnotations;
 use crate::guardian::guardian_rejection_message;
@@ -21,6 +22,7 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::hook_names::HookToolName;
+use crate::tools::sandboxing::ExecApprovalRequirement;
 use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::turn_metadata::McpTurnMetadataContext;
 use codex_analytics::AppInvocation;
@@ -241,6 +243,46 @@ pub(crate) async fn handle_mcp_tool_call(
                 .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
         };
     }
+    if let Some(requirement) = cccx_mcp_requirement(&server, &tool_name) {
+        match requirement {
+            ExecApprovalRequirement::Forbidden { reason } => {
+                let result = notify_mcp_tool_call_skip(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    &call_id,
+                    invocation,
+                    item_metadata.clone(),
+                    format!("cccx policy denied MCP tool call: {reason}"),
+                    /*already_started*/ false,
+                )
+                .await;
+                let outcome = McpCallMetricOutcome::from_status("denied");
+                emit_mcp_call_metrics(
+                    turn_context.as_ref(),
+                    &outcome,
+                    &server,
+                    &tool_name,
+                    connector_id.as_deref(),
+                    connector_name.as_deref(),
+                    /*duration*/ None,
+                );
+                return HandledMcpToolCall {
+                    result: CallToolResult::from_result(result),
+                    tool_input: arguments_value
+                        .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
+                };
+            }
+            ExecApprovalRequirement::NeedsApproval { .. } => {
+                // cccx requires approval — continue into the existing
+                // maybe_request_mcp_tool_approval flow which will prompt
+                // the user or route through guardian.
+            }
+            ExecApprovalRequirement::Skip { .. } => {
+                // cccx allows this tool call unconditionally.
+            }
+        }
+    }
+
     notify_mcp_tool_call_started(
         sess.as_ref(),
         turn_context.as_ref(),

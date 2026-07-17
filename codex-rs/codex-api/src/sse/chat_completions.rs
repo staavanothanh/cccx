@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::timeout;
-use tracing::debug;
+use tracing::{debug, warn};
 
 const OPENAI_MODEL_HEADER: &str = "openai-model";
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -41,7 +41,8 @@ pub fn spawn_chat_completions_stream(
         .map(ToString::to_string);
 
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
-    tokio::spawn(async move {
+    let tx_event_backup = tx_event.clone();
+    let handle = tokio::spawn(async move {
         if let Some(model) = server_model {
             let _ = tx_event.send(Ok(ResponseEvent::ServerModel(model))).await;
         }
@@ -50,6 +51,25 @@ pub fn spawn_chat_completions_stream(
         }
         process_chat_completions_sse(stream_response.bytes, tx_event, idle_timeout, telemetry)
             .await;
+    });
+    tokio::spawn(async move {
+        if let Err(e) = handle.await {
+            if e.is_panic() {
+                let panic_payload = e.into_panic();
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                let _ = tx_event_backup
+                    .send(Err(ApiError::Stream(format!(
+                        "SSE processing panicked: {msg}"
+                    ))))
+                    .await;
+            }
+        }
     });
 
     ResponseStream {
@@ -266,6 +286,45 @@ impl ChatCompletionAccumulator {
                 .map_err(|_| ApiError::Stream("chat completions stream receiver dropped".into()))?;
         }
 
+        // Emit OutputItemAdded for each tool call before OutputItemDone
+        for (_, tool_call) in &self.tool_calls {
+            let add_item = match split_tool_name(&tool_call.name) {
+                ToolNameMapping::ToolSearch => ResponseItem::ToolSearchCall {
+                    id: None,
+                    call_id: None,
+                    status: None,
+                    execution: String::new(),
+                    arguments: serde_json::Value::Null,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ToolNameMapping::Function { namespace, name } => ResponseItem::FunctionCall {
+                    id: None,
+                    name: name.clone(),
+                    namespace: namespace.clone(),
+                    arguments: String::new(),
+                    call_id: String::new(),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ToolNameMapping::Custom { name } => ResponseItem::CustomToolCall {
+                    id: None,
+                    status: None,
+                    call_id: String::new(),
+                    name: name.clone(),
+                    namespace: None,
+                    input: String::new(),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ToolNameMapping::UnsupportedHosted { .. } => continue,
+            };
+            if tx_event
+                .send(Ok(ResponseEvent::OutputItemAdded(add_item)))
+                .await
+                .is_err()
+            {
+                warn!("finish: OutputItemAdded send failed, receiver closed");
+            }
+        }
+
         let end_turn = !matches!(self.finish_reason.as_deref(), Some("tool_calls"));
         for (index, tool_call) in self.tool_calls {
             let mapped_item = match split_tool_name(&tool_call.name) {
@@ -360,6 +419,10 @@ async fn process_chat_completions_sse(
             }
             Err(_) => {
                 if !done_received {
+                    // Emit whatever we accumulated before timeout
+                    if let Err(finish_err) = std::mem::take(&mut acc).finish(&tx_event).await {
+                        let _ = tx_event.send(Err(finish_err)).await;
+                    }
                     let _ = tx_event
                         .send(Err(ApiError::Stream(
                             "idle timeout waiting for chat completion SSE".into(),
@@ -388,7 +451,7 @@ async fn process_chat_completions_sse(
         let chunk: ChatCompletionChunk = match serde_json::from_str(&sse.data) {
             Ok(chunk) => chunk,
             Err(err) => {
-                debug!(
+                warn!(
                     "Failed to parse chat completions chunk: {err}, data: {}",
                     sse.data
                 );
@@ -576,8 +639,12 @@ mod tests {
             events.push(event);
         }
 
+        assert!(
+            matches!(&events[0], ResponseEvent::OutputItemAdded(ResponseItem::ToolSearchCall { .. })),
+            "expected first event to be OutputItemAdded(ToolSearchCall)"
+        );
         assert!(matches!(
-            &events[0],
+            &events[1],
             ResponseEvent::OutputItemDone(ResponseItem::ToolSearchCall {
                 call_id,
                 execution,

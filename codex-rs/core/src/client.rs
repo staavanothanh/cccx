@@ -1867,6 +1867,7 @@ impl ModelClientSession {
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
+        let mut retry_count = 0u32;
         loop {
             let client_setup = self.client.current_client_setup().await?;
             let transport = self
@@ -1927,6 +1928,12 @@ impl ModelClientSession {
                         response_debug_context.request_id.as_deref(),
                         &[],
                     );
+                    retry_count += 1;
+                    if retry_count >= 3 {
+                        return Err(self.client.state.provider.map_api_error(
+                            ApiError::Stream("max unauthorized retries exceeded".to_string()),
+                        ));
+                    }
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(
                             unauthorized_transport,
@@ -2381,7 +2388,7 @@ fn map_response_stream(
     } = api_stream;
     let api_stream = codex_api::ResponseStream {
         rx_event,
-        upstream_request_id: None,
+        upstream_request_id: upstream_request_id.clone(),
     };
     map_response_events(
         upstream_request_id,

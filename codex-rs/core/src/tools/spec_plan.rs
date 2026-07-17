@@ -60,6 +60,7 @@ use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 use codex_features::Feature;
 use codex_login::AuthManager;
+use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -289,6 +290,12 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
     let turn_context = context.step_context.turn.as_ref();
     // Responses Lite accepts schemas for client-executed tools, not hosted Responses tools.
     if turn_context.model_info.use_responses_lite {
+        return Vec::new();
+    }
+
+    // Hosted tools (web_search, image_generation) are Responses API only.
+    // Chat Completions wire rejects them with a hard error.
+    if turn_context.provider.info().wire_api != WireApi::Responses {
         return Vec::new();
     }
 
