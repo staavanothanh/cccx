@@ -204,6 +204,34 @@ async fn build_custom_tool_call_uses_namespace_for_registry_name() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn build_tool_search_call_uses_tool_search_payload() -> anyhow::Result<()> {
+    let call = ToolRouter::build_tool_call(ResponseItem::ToolSearchCall {
+        id: None,
+        call_id: Some("call-tool-search".to_string()),
+        status: Some("completed".to_string()),
+        execution: "client".to_string(),
+        arguments: json!({
+            "query": "spawn agent",
+            "limit": 2,
+        }),
+        internal_chat_message_metadata_passthrough: None,
+    })?
+    .expect("tool_search_call should produce a tool call");
+
+    assert_eq!(call.tool_name, ToolName::plain("tool_search"));
+    assert_eq!(call.call_id, "call-tool-search");
+    match call.payload {
+        ToolPayload::ToolSearch { arguments } => {
+            assert_eq!(arguments.query, "spawn agent");
+            assert_eq!(arguments.limit, Some(2));
+        }
+        other => panic!("expected tool_search payload, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
     let (_, turn) = make_session_and_context().await;
     let turn = Arc::new(turn);

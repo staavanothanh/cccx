@@ -49,4 +49,12 @@
   - Namespaced/deferred tools still flatten correctly onto the chat-completions runtime path, preserving `multi_agent_v1__...` compatibility.
   - Chat-completions SSE parser now treats reserved hosted tool names such as `web_search` and `image_generation` as unsupported on this path and surfaces an explicit stream error instead of mis-parsing them as callable local tools.
   - The 9router adapter boundary is now stricter on the chat-completions path: unsupported hosted capabilities are rejected inside cccx before they become malformed upstream requests.
+- Post-M8 tool-search payload regression validation passed from `codex-rs/` on shared target dir `D:\cargo-targets\cccx`:
+  - `cargo test -p codex-core build_tool_search_call_uses_tool_search_payload -- --nocapture`
+  - `cargo test -p codex-api finish_maps_tool_search_function_calls_to_typed_items -- --nocapture`
+  - `cargo test -p codex-api split_tool_name_preserves_tool_search_as_reserved_call -- --nocapture`
+- Post-M8 tool-search payload regression scope completed:
+  - Added a direct router regression test proving `ResponseItem::ToolSearchCall` is converted into `ToolPayload::ToolSearch` rather than the generic function payload path.
+  - Re-verified the chat-completions parser keeps `tool_search` as a reserved typed call instead of flattening it into a normal function tool call.
+  - Confirmed the current adapter matrix remains asymmetric by design: `ToolSpec` has five model-visible variants, but runtime `ToolPayload` only has `Function`, `ToolSearch`, and `Custom`, so boundary translation correctness is mandatory for 9router/chat-completions compatibility.
 - Remaining post-plan work: replace placeholder runtime actions for `/tasks`, `/remember`, `/cancel`, and deeper config/help/update string renames that are still intentionally left on internal `codex_*` terminology.
