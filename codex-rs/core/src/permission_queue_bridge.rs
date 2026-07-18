@@ -44,13 +44,7 @@ impl CccxPermissionQueue {
     }
 
     pub async fn deny(&self, request_id: &str) -> Result<(), QueueError> {
-        let mut guard = self.inner.lock().await;
-        let agent_id = guard
-            .get(request_id)
-            .map(|r| r.agent_id.clone())
-            .ok_or_else(|| QueueError::UnknownRequest(request_id.to_string()))?;
-        guard.cancel_agent_requests(&agent_id);
-        Ok(())
+        self.inner.lock().await.deny(request_id)
     }
 
     pub async fn cancel_agent_requests(&self, agent_session_id: &str) {

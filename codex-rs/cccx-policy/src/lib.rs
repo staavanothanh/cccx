@@ -756,6 +756,30 @@ impl PermissionRequestQueue {
         self.requests.get(request_id)
     }
 
+    /// Mark a single request as denied and promote the next queued
+    /// request. Other requests from the same agent are NOT cancelled.
+    pub fn deny(&mut self, request_id: &str) -> Result<(), QueueError> {
+        let request = self
+            .requests
+            .get_mut(request_id)
+            .ok_or_else(|| QueueError::UnknownRequest(request_id.to_string()))?;
+
+        if request.status != PermissionRequestStatus::Active {
+            return Err(QueueError::NotActive(request_id.to_string()));
+        }
+
+        request.status = PermissionRequestStatus::Denied;
+        if self
+            .active_request_id
+            .as_ref()
+            .is_some_and(|id| id == request_id)
+        {
+            self.active_request_id = None;
+            self.promote_next();
+        }
+        Ok(())
+    }
+
     fn promote_next(&mut self) {
         if let Some(active_id) = self.active_request_id.take()
             && let Some(active) = self.requests.get(&active_id)
