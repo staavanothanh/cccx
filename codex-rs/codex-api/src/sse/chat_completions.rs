@@ -411,9 +411,11 @@ async fn process_chat_completions_sse(
             }
             Ok(None) => {
                 if !done_received {
-                    if let Err(err) = std::mem::take(&mut acc).finish(&tx_event).await {
-                        let _ = tx_event.send(Err(err)).await;
-                    }
+                    let _ = tx_event
+                        .send(Err(ApiError::Stream(
+                            "chat completions stream ended before [DONE]".into(),
+                        )))
+                        .await;
                 }
                 return;
             }
