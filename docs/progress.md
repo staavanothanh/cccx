@@ -121,8 +121,14 @@
 - 2026-07-19 Phase 8 complete — UX command completion:
   - Audit: all commands from `design.md:715-823` checked. 0 user-facing placeholders remain.
   - Classified: 42 commands implemented, 2 deferred (/import, /ide), 3 non-MVP (/reroute, /pets, /personality delegated to Codex built-in), 2 explicitly non-ported (/multi-agents, /agent singular).
-  - Fix: `/tasks` now routes through `dispatch_cccx_command_with_args` for both no-arg and with-arg cases. Previously `/tasks` alone (no args) hit an old placeholder message; now reads `.cccx/state/task-graph.json`.
-  - `/remember` writes to `.cccx/memory/MEMORY.md` via `ProjectMemory` (explicit-first admission, ref Phase 5).
-  - Already dispatched: `/review`, `/theme`, `/skills`, `/plugins`, `/mcp` — all through Codex built-in popups or cccx-enhanced info messages.
-  - Tests: cccx-ux (8) ✓ — all design mode, task, goal, utility command parsers. codex-tui compiles ✓. cccx-cli compiles ✓.
-  - Phase 8 commit: next.
+  - Fix: `/tasks` now routes through `dispatch_cccx_command_with_args` for both no-arg and with-arg cases.
+  - Tests: cccx-ux (8) ✓. codex-tui compiles ✓. cccx-cli compiles ✓.
+  - Phase 8 commit: `3fb4777` (feat: UX command completion — /tasks no-arg placeholder fix).
+- 2026-07-19 Phase 9 complete — plugin/hook/rules runtime isolation:
+  - Task 1: Native `plugin.json` (no `cccxSchemaVersion`) — legacy load for Main CC after trust, CX denied (Codex native behavior, no change).
+  - Task 2: `cccx-plugin.json` — strict schema with `#[serde(deny_unknown_fields)]`, harness target (`Cc`/`Cx`/`Both`), rules, agent presets, MCP stable ids/schema digests. `McpToolEntry` with `stableId`/`schemaDigest` for WorkSpec gating.
+  - Task 3: Hook trust — preserved from Codex native. `hook_runtime` tests (5) still green.
+  - Task 4: Plugin rules do not override AGENTS.md, WorkSpec, permission rules — enforced by design (plugin rules are advisory, never runtime override).
+  - Added: `is_compatible_with_main_cc()` and `is_compatible_with_cx_subagent()` gates. `mcp_stable_ids()` for WorkSpec projection.
+  - Tests: cccx-protocol plugin (8) ✓ — schema validation, reject unknown fields, schema version, Cx-only plugin rejects Main CC, CC-only plugin rejects CX, Both accepts both, MCP stable ids, empty stable id rejection. hook_runtime (5) ✓. codex-core compile ✓. codex-tui compile ✓. cccx-cli compile ✓.
+  - Phase 9 commit: next.
