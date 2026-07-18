@@ -41,40 +41,89 @@ impl ChatWidget {
     }
 
     fn cccx_model_popup_presets(&self, presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
-        let current_model = self.current_model().to_string();
-        if let Some(preset) = presets
-            .into_iter()
-            .find(|preset| preset.model.as_str() == current_model)
-        {
-            return vec![preset];
-        }
-
+        let catalog = cccx_provider_gateway::LocalConfigCatalog::default();
         let default_effort = self
             .effective_reasoning_effort()
             .unwrap_or(ReasoningEffortConfig::Medium);
 
-        vec![ModelPreset {
-            id: current_model.clone(),
-            model: current_model.clone(),
-            display_name: current_model.clone(),
-            description: "Configured model from your active cccx provider.".to_string(),
-            default_reasoning_effort: default_effort.clone(),
-            supported_reasoning_efforts: vec![ReasoningEffortPreset {
-                effort: default_effort,
-                description: "configured default".to_string(),
-            }],
-            supports_personality: false,
-            additional_speed_tiers: Vec::new(),
-            service_tiers: Vec::new(),
-            default_service_tier: None,
-            is_default: true,
-            upgrade: None,
-            show_in_picker: true,
-            multi_agent_version: None,
-            availability_nux: None,
-            supported_in_api: true,
-            input_modalities: default_input_modalities(),
-        }]
+        // Pre-compute display names from the local catalog.
+        let display_map: std::collections::BTreeMap<&str, &str> = catalog
+            .display_entries()
+            .into_iter()
+            .map(|(id, display)| (id, display))
+            .collect();
+
+        // Build presets from the local config catalog.
+        let mut local_presets: Vec<ModelPreset> = catalog
+            .available_models
+            .iter()
+            .map(|model_id| {
+                let display_name =
+                    display_map.get(model_id.as_str()).copied().unwrap_or(model_id.as_str());
+                ModelPreset {
+                    id: model_id.clone(),
+                    model: model_id.clone(),
+                    display_name: display_name.to_string(),
+                    description: "cccx model from local config catalog via 9router".to_string(),
+                    default_reasoning_effort: default_effort.clone(),
+                    supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                        effort: default_effort.clone(),
+                        description: "configured default".to_string(),
+                    }],
+                    supports_personality: false,
+                    additional_speed_tiers: Vec::new(),
+                    service_tiers: Vec::new(),
+                    default_service_tier: None,
+                    is_default: *model_id == catalog.default_model,
+                    upgrade: None,
+                    show_in_picker: true,
+                    multi_agent_version: None,
+                    availability_nux: None,
+                    supported_in_api: true,
+                    input_modalities: default_input_modalities(),
+                }
+            })
+            .collect();
+
+        // Also include the current model if it's not in the local catalog yet
+        // (user may have an active remote model from before local catalog existed).
+        let current_model = self.current_model().to_string();
+        if !local_presets
+            .iter()
+            .any(|p| p.model == current_model)
+        {
+            if let Some(upstream_preset) = presets
+                .iter()
+                .find(|p| p.model == current_model)
+            {
+                local_presets.push(upstream_preset.clone());
+            } else {
+                local_presets.push(ModelPreset {
+                    id: current_model.clone(),
+                    model: current_model.clone(),
+                    display_name: current_model.clone(),
+                    description: "Active model (not in local config catalog)".to_string(),
+                    default_reasoning_effort: default_effort.clone(),
+                    supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                        effort: default_effort.clone(),
+                        description: "configured default".to_string(),
+                    }],
+                    supports_personality: false,
+                    additional_speed_tiers: Vec::new(),
+                    service_tiers: Vec::new(),
+                    default_service_tier: None,
+                    is_default: false,
+                    upgrade: None,
+                    show_in_picker: true,
+                    multi_agent_version: None,
+                    availability_nux: None,
+                    supported_in_api: true,
+                    input_modalities: default_input_modalities(),
+                });
+            }
+        }
+
+        local_presets
     }
 
     fn model_menu_header(&self, title: &str, subtitle: &str) -> Box<dyn Renderable> {

@@ -342,10 +342,59 @@ pub enum ProviderGatewayError {
     HttpStatus { status: u16, body: String },
 }
 
+/// Local model catalog that defines which models are available to the `/model`
+/// command and model picker when 9router's catalog API is not available.
+///
+/// This is a static, local-consensus catalog of known-good model IDs that the
+/// cccx CLI can safely offer without calling an external API.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalConfigCatalog {
+    /// The default model ID (e.g. `"oc/deepseek-v4-flash-free"`).
+    pub default_model: String,
+    /// All model IDs available for selection (including `default_model`).
+    pub available_models: Vec<String>,
+    /// The fallback policy ID to use for all routes.
+    pub fallback_policy_id: FallbackPolicyId,
+}
+
+impl Default for LocalConfigCatalog {
+    fn default() -> Self {
+        Self {
+            default_model: "oc/deepseek-v4-flash-free".to_string(),
+            available_models: vec![
+                "oc/deepseek-v4-flash-free".to_string(),
+                "oc/deepseek-v4-pro".to_string(),
+            ],
+            fallback_policy_id: FallbackPolicyId::Strict,
+        }
+    }
+}
+
+impl LocalConfigCatalog {
+    /// Returns the models that should appear in the `/model` popup, keyed by
+    /// the display name shown in the TUI.
+    pub fn display_entries(&self) -> Vec<(&str, &str)> {
+        self.available_models
+            .iter()
+            .map(|m| {
+                let display = if m.contains("flash-free") {
+                    "Flash (free)"
+                } else if m.contains("-pro") {
+                    "Pro"
+                } else {
+                    m.as_str()
+                };
+                (m.as_str(), display)
+            })
+            .collect()
+    }
+}
+
 pub mod provenance;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use super::*;
     use pretty_assertions::assert_eq;
     use wiremock::Mock;
@@ -535,5 +584,58 @@ mod tests {
             Some("main".to_string())
         );
         assert_eq!(response.provenance.requested_route_id, "main".to_string());
+    }
+}
+
+#[cfg(test)]
+mod local_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn default_catalog_has_flash_free_as_default() {
+        let catalog = LocalConfigCatalog::default();
+        assert_eq!(catalog.default_model, "oc/deepseek-v4-flash-free");
+    }
+
+    #[test]
+    fn default_catalog_contains_at_least_flash_and_pro() {
+        let catalog = LocalConfigCatalog::default();
+        assert!(catalog
+            .available_models
+            .contains(&"oc/deepseek-v4-flash-free".to_string()));
+        assert!(catalog
+            .available_models
+            .contains(&"oc/deepseek-v4-pro".to_string()));
+    }
+
+    #[test]
+    fn default_catalog_strict_fallback() {
+        let catalog = LocalConfigCatalog::default();
+        assert_eq!(catalog.fallback_policy_id, FallbackPolicyId::Strict);
+    }
+
+    #[test]
+    fn display_entries_produces_readable_labels() {
+        let catalog = LocalConfigCatalog::default();
+        let entries = catalog.display_entries();
+        assert_eq!(entries.len(), 2);
+        // Flash (free) model
+        assert_eq!(
+            entries[0],
+            ("oc/deepseek-v4-flash-free", "Flash (free)")
+        );
+        // Pro model
+        assert_eq!(entries[1], ("oc/deepseek-v4-pro", "Pro"));
+    }
+
+    #[test]
+    fn display_entries_fall_back_to_raw_id_for_unknown_models() {
+        let catalog = LocalConfigCatalog {
+            default_model: "unknown/model".to_string(),
+            available_models: vec!["unknown/model".to_string()],
+            fallback_policy_id: FallbackPolicyId::Strict,
+        };
+        let entries = catalog.display_entries();
+        assert_eq!(entries, vec![("unknown/model", "unknown/model")]);
     }
 }
