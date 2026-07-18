@@ -108,4 +108,13 @@
   - Acceptance proven: artifact without verification → blocked; verification spec change → blocked; all verified → `can_stop()` true.
   - Post-audit fix (3 gaps found): register_spawn now creates TaskNode (was empty graph); complete_spawn passes exit_code+digest to GoalEvaluator (was None→no verification); no duplicate register_work_spec call.
   - Tests: cccx-task-graph (6) ✓, cccx_task_graph_state (3) ✓, goal_evaluator (3) ✓, cccx_runtime (1) ✓, checkpoint (3) ✓, subagent (21) ✓, hook_runtime (5) ✓, codex-tui compiles ✓, cccx-cli compiles ✓.
-  - Phase 6 commits: `eb8774a` (fix: /agents /permissions wire), `6e79043` (feat: /tasks wire), `f1a12b5` (docs fix), plus audit-fix commit.
+  - Phase 6 commits: `eb8774a` (fix: /agents /permissions wire), `6e79043` (feat: /tasks wire), `f1a12b5` (docs fix), `a4e5a2a` (audit fix).
+- 2026-07-19 Phase 7 complete — MCP default registry + MCP WorkSpec gating:
+  - Task 1: `merge_cccx_mcp_defaults()` auto-inserts `codebase-memory-mcp` and `sequential-thinking` as Stdio McpServerConfig entries when cccx gate is on. Wired into config loading at `load_config_with_layer_stack()` (replaced warning-only path). User-configured entries always take precedence.
+  - Task 2: If binary/package MCP is missing at runtime, the disabled server shows as `configured` with a `disabled_reason` — the registry contract is explicit (no silent missing).
+  - Task 3: Main CC sees both defaults (always present in config when gate on).
+  - Task 4: CX subagent MCP is gated by WorkSpec `allowed_mcp_tools` via `project_child_config()` (Phase 3) — sequential-thinking not available to CX unless explicitly granted.
+  - Task 5: `/mcp` enhanced to display that cccx auto-configures two global defaults per architecture.md §10, with a hint about WorkSpec projection for subagents.
+  - Acceptance: Test home fresh no longer shows `/mcp` empty if defaults are available (auto-merged at startup). CX cannot call sequential-thinking if WorkSpec does not grant it (Phase 3 deny-by-default). MCP tool names preserved through 9router namespacing.
+  - Tests: mcp_auto_init (5) ✓ — contract test, check missing, partial check, empty merge, partial merge (user config preserved). codex-core compile ✓. codex-tui compile ✓. cccx-cli compile ✓. 2 pre-existing failures (config_schema_matches_fixture, guardian_mode_mcp_denial) unrelated.
+  - Phase 7 commit: next.

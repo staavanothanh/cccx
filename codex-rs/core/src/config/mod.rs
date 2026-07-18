@@ -3817,13 +3817,23 @@ impl Config {
             &mut startup_warnings,
         )?;
 
-        let mcp_servers = constrain_mcp_servers(cfg.mcp_servers.clone(), mcp_servers.as_ref())
+        let mut mcp_servers = constrain_mcp_servers(cfg.mcp_servers.clone(), mcp_servers.as_ref())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}")))?;
 
         {
-            let missing = crate::mcp_auto_init::check_cccx_mcp_defaults(&mcp_servers);
-            if !missing.is_empty() {
-                crate::mcp_auto_init::warn_missing_cccx_mcps(&missing);
+            // Phase 7: auto-merge cccx global MCP defaults when gate is on.
+            // Previously this was warning-only — now it inserts Stdio entries
+            // for codebase-memory-mcp and sequential-thinking so /mcp is
+            // never empty. User-configured entries take precedence.
+            if codex_features::cccx_mvp::surface_gate_enabled() {
+                let mut servers = mcp_servers.get().clone();
+                crate::mcp_auto_init::merge_cccx_mcp_defaults(&mut servers);
+                let _ = mcp_servers.set(servers);
+            } else {
+                let missing = crate::mcp_auto_init::check_cccx_mcp_defaults(&mcp_servers);
+                if !missing.is_empty() {
+                    crate::mcp_auto_init::warn_missing_cccx_mcps(&missing);
+                }
             }
         }
 

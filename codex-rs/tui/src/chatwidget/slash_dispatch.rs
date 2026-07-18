@@ -1048,8 +1048,14 @@ impl ChatWidget {
             }
             Ok(Some(CccxCommand::Mcp)) => {
                 self.add_info_message(
-                    "/mcp — wired through codex built-in MCP diagnostics.".to_string(),
-                    /*hint*/ None,
+                    "/mcp — wired through codex built-in MCP diagnostics. \
+                     cccx auto-configures two global defaults: \
+                     codebase-memory-mcp and sequential-thinking (see architecture.md §10)."
+                        .to_string(),
+                    Some(
+                        "Use /mcp to inspect server status. WorkSpec projection limits MCP for subagents."
+                            .to_string(),
+                    ),
                 );
             }
             Ok(Some(CccxCommand::Help { section })) => {
