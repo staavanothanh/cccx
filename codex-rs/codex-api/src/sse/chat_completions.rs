@@ -496,7 +496,10 @@ fn split_tool_name(value: &str) -> ToolNameMapping {
             name: name.to_string(),
         };
     }
-    if let Some((namespace, name)) = value.split_once("__")
+    // Use rsplit_once so that MCP namespaced names like
+    // mcp__codebase_memory_mcp__search_graph resolve to
+    // namespace=mcp__codebase_memory_mcp, name=search_graph.
+    if let Some((namespace, name)) = value.rsplit_once("__")
         && !namespace.is_empty()
         && !name.is_empty()
     {
