@@ -9,6 +9,12 @@ pub struct GatewayProvenance {
     pub upstream_request_id: Option<String>,
     pub fallback_chain: Vec<String>,
     pub retry_count: u32,
+    /// Which `FallbackPolicyId` 9router applied for this request.
+    pub fallback_policy_id: Option<crate::FallbackPolicyId>,
+    /// The wire API used for this call (e.g. `chat_completions`, `responses`).
+    pub wire_api: Option<String>,
+    /// Outcome of the stream: `completed`, `truncated`, `timeout`, `error`.
+    pub stream_termination_status: Option<String>,
 }
 
 impl GatewayProvenance {
@@ -22,6 +28,9 @@ impl GatewayProvenance {
             upstream_request_id: None,
             fallback_chain: Vec::new(),
             retry_count: 0,
+            fallback_policy_id: None,
+            wire_api: None,
+            stream_termination_status: None,
         }
     }
 
@@ -37,6 +46,18 @@ impl GatewayProvenance {
         } else {
             self.fallback_chain.push(format!("{provider}:{model}"));
         }
+    }
+
+    pub fn record_fallback_policy(&mut self, policy: crate::FallbackPolicyId) {
+        self.fallback_policy_id = Some(policy);
+    }
+
+    pub fn record_wire_api(&mut self, wire_api: &str) {
+        self.wire_api = Some(wire_api.to_string());
+    }
+
+    pub fn record_stream_termination(&mut self, status: &str) {
+        self.stream_termination_status = Some(status.to_string());
     }
 }
 
@@ -76,6 +97,47 @@ mod tests {
         assert_eq!(
             provenance.fallback_chain,
             vec!["fallback-provider:other-model"]
+        );
+    }
+
+    #[test]
+    fn provenance_records_fallback_policy_wire_api_and_stream_termination() {
+        let mut provenance = GatewayProvenance::new("oc/deepseek-v4-flash-free".to_string());
+        provenance.record_fallback_policy(crate::FallbackPolicyId::Strict);
+        provenance.record_wire_api("chat_completions");
+        provenance.record_stream_termination("completed");
+
+        assert_eq!(
+            provenance.fallback_policy_id,
+            Some(crate::FallbackPolicyId::Strict)
+        );
+        assert_eq!(provenance.wire_api.as_deref(), Some("chat_completions"));
+        assert_eq!(
+            provenance.stream_termination_status.as_deref(),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn provenance_stream_termination_distinguishes_completed_from_truncated() {
+        let completed = {
+            let mut p = GatewayProvenance::new("route-1".to_string());
+            p.record_stream_termination("completed");
+            p
+        };
+        let truncated = {
+            let mut p = GatewayProvenance::new("route-2".to_string());
+            p.record_stream_termination("truncated");
+            p
+        };
+
+        assert_eq!(
+            completed.stream_termination_status.as_deref(),
+            Some("completed")
+        );
+        assert_eq!(
+            truncated.stream_termination_status.as_deref(),
+            Some("truncated")
         );
     }
 }
