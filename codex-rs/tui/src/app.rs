@@ -819,7 +819,7 @@ impl App {
         // -m override is present. For cccx with 9router, the managed
         // default is meaningless — use the configured model instead.
         config.model = cccx_configured_model;
-        let mut model = config.model.clone().unwrap_or(bootstrap.default_model);
+        let model = config.model.clone().unwrap_or(bootstrap.default_model);
         let available_models = bootstrap.available_models;
         let remote_connection = crate::status::remote_connection::remote_connection_status_value(
             &app_server_target,

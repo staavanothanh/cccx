@@ -7,16 +7,11 @@ use cccx_policy::{
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Wraps cccx-policy's PermissionRequestQueue for thread-safe use in session.
-/// Wraps cccx-policy's PermissionRequestQueue for thread-safe use in session.
-// TODO(cccx-phase6): Instantiate in Session::new() and wire into
-// exec_policy permission dispatch path.
-#[allow(dead_code)]
 pub struct CccxPermissionQueue {
     inner: Arc<AsyncMutex<PermissionRequestQueue>>,
     counter: AtomicU64,
 }
 
-#[allow(dead_code)]
 impl CccxPermissionQueue {
     pub fn new() -> Self {
         Self {
@@ -44,14 +39,25 @@ impl CccxPermissionQueue {
         request_id
     }
 
+    // Deferred until the cccx-specific `/permissions approve` command surface
+    // replaces or wraps the native Codex approval callback. Runtime Phase 6
+    // wires enqueue/serialization; approving still flows through Codex's
+    // existing pending approval map to avoid a protocol split.
+    #[allow(dead_code)]
     pub async fn approve(&self, request_id: &str, observed_digest: &str) -> Result<(), QueueError> {
         self.inner.lock().await.approve(request_id, observed_digest)
     }
 
+    // Deferred until the cccx-specific `/permissions deny` command surface
+    // is wired to native pending approval callbacks.
+    #[allow(dead_code)]
     pub async fn deny(&self, request_id: &str) -> Result<(), QueueError> {
         self.inner.lock().await.deny(request_id)
     }
 
+    // Deferred with `approve`: cancellation requires the `/agents cancel`
+    // command surface to bridge queue state and native pending callbacks.
+    #[allow(dead_code)]
     pub async fn cancel_agent_requests(&self, agent_session_id: &str) {
         self.inner
             .lock()
@@ -67,6 +73,8 @@ impl CccxPermissionQueue {
             .map(String::from)
     }
 
+    // Deferred inspection helper for `/permissions inspect`.
+    #[allow(dead_code)]
     pub async fn get(&self, request_id: &str) -> Option<PermissionRequest> {
         self.inner.lock().await.get(request_id).cloned()
     }

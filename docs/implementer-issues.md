@@ -1,343 +1,390 @@
-# cccx current implementation issues for implementers
+# cccx — vấn đề còn tồn đọng cho implementer
 
-Date: 2026-07-18
+Ngày audit: 2026-07-18
 
-Audience: implementers fixing the current RED feature contracts.
+Nguồn sự thật:
 
-## Executive verdict
+- `docs/architecture.md`
+- `docs/design.md`
 
-cccx is not yet implementation-complete against `docs/architecture.md` and `docs/design.md`. The current code has enough scaffold to describe the intended architecture, but several runtime boundaries are still wrapper-level or placeholder-level. The most urgent failures are in the 9router/OpenAI-compatible chat-completions path, because they affect real conversations as soon as the agent uses tools, MCP, or subagents.
+Phạm vi file này: chỉ ghi các vấn đề hiện còn lệch thiết kế hoặc còn thiếu runtime wiring. Các lỗi RED cũ về chat-completions tool-call grouping, MCP tool namespace split, EOF-before-DONE, checkpoint git head, path boundary, plugin manifest, headless envelope đã có commit sửa trước đó và không được lặp lại như blocker hiện tại.
 
-The immediate goal is not to add new features. The goal is to make the existing cccx contract tests green while preserving the design constraints:
+## Kết luận kỹ thuật
 
-- 9router is the only model gateway boundary.
-- CC is the scheduler/control plane.
-- CX is bounded execution.
-- Cross-agent work must use WorkSpec/Artifact style structured data.
-- Tool/MCP serialization must be valid for OpenAI-compatible chat-completions.
-- Safety must be enforced by state machines and policy gates, not prompt wording.
+cccx đã vượt qua giai đoạn scaffold ban đầu: có crate riêng cho protocol/policy/provider-gateway/task-graph/mode/UX/headless/harness, có nhiều test hợp đồng đã xanh, và binary đã đi được request 9router ở case đơn giản.
 
-## Evidence baseline
+Nhưng cccx chưa thể coi là hoàn thiện theo thiết kế. Các phần quan trọng nhất vẫn còn ở trạng thái “có khung, chưa thành runtime boundary”:
 
-Checkpoint commit before this document:
+- 9router chưa thật sự là cổng LLM duy nhất có fail-closed contract.
+- Mode hiển thị/command còn dựa nhiều vào collaboration mode kế thừa từ Codex, chưa thống nhất quanh `cccx-mode`.
+- WorkSpec được yêu cầu khi spawn nhưng projection chưa thật sự khóa child config theo deny-by-default.
+- CC/CX scheduler boundary chưa được enforce đủ: subagent phải là worker bounded, không tự mở rộng scheduler/tool/MCP scope.
+- `/agents`, `/permissions`, `/tasks` còn nhiều nhánh parser/placeholder chưa thành hành vi thật.
+- MCP default mới ở mức warning/check, chưa bảo đảm startup registry đúng như thiết kế.
 
-- `7d3ee89b08 test: add cccx feature coverage contracts`
+Nếu implement đúng toàn bộ `docs/task.md`, cccx mới đạt trạng thái “đúng kỳ vọng thiết kế”: CC-led, CX-delegated, 9router-only, WorkSpec-bound, UI command đủ chức năng, có test chứng minh.
 
-Test evidence:
+## Baseline quan sát hiện tại
 
-- Detailed RED report: `docs/testing/cccx-feature-coverage-red-report.md`
-- `v8` Windows build blocker has been worked around locally by creating junction `D:\cargo-targets\cccx\debug\gn_root`.
+Worktree tại thời điểm audit đang dirty, có nhiều thay đổi runtime chưa commit. Đây không tự động là lỗi, nhưng là rủi ro audit/review vì trạng thái chạy test có thể không khớp commit gần nhất.
 
-## Critical issues
+Ví dụ nhóm file đang thay đổi:
 
-### C1 — Chat-completions request history is invalid for parallel tool calls
+- `codex-rs/core/src/agent/control.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents*.rs`
+- `codex-rs/core/src/cccx_runtime.rs`
+- `codex-rs/core/src/permission_queue_bridge.rs`
+- `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+- `codex-rs/cccx-policy/src/lib.rs`
 
-Failure:
+Validation đã từng chạy và đạt ở mức targeted:
 
-- `codex-core::client::tests::parallel_function_call_history_must_serialize_as_one_assistant_message`
+- `cargo test -p codex-api chat_completions --lib`
+- Các crate cccx nhỏ: `cccx-protocol`, `cccx-policy`, `cccx-provider-gateway`, `cccx-task-graph`, `cccx-mode`, `cccx-ux`, `cccx-headless`, `cccx-harness-cc`, `cccx-harness-cx`
+- Nhóm targeted trong `codex-core`: `provider_gateway_bridge`, `mcp_auto_init`, `permission_queue_bridge`, `goal_evaluator`, `checkpoint`, `cccx`, `subagent`
+- `cargo check -p codex-tui`
+- `cargo check -p cccx-cli --bin cccx`
+- Coverage aggregate từng pass `83.38%`, nhưng không thay thế e2e runtime validation; một số crate cccx nhỏ vẫn dưới 80% nếu xét riêng lẻ.
 
-Observed mechanism:
+## Critical
 
-- A single assistant turn with multiple function/tool calls is serialized into multiple assistant messages.
-- OpenAI-compatible chat-completions expects one assistant message with a `tool_calls` array.
-- This can explain 9router upstream `400` failures after tool/subagent/MCP calls.
+### C1 — WorkSpec-to-ChildConfig Adapter mới append prompt, chưa enforce deny-by-default
 
-Evidence:
+Thiết kế yêu cầu adapter áp WorkSpec vào child config theo các lớp:
 
-- Test: `codex-rs/core/src/client_tests.rs:962`
-- Current per-call serialization sites: `codex-rs/core/src/client.rs:296`, `codex-rs/core/src/client.rs:313`, `codex-rs/core/src/client.rs:329`
+- harness;
+- allowed/forbidden tools;
+- MCP allowlist;
+- filesystem scope;
+- permission policy;
+- model route;
+- context projection;
+- artifact sink.
 
-Expected fix:
+Evidence thiết kế:
 
-- Fix the chat history conversion layer, not the model prompt.
-- Preserve assistant turn grouping when converting `ResponseItem::FunctionCall` history to chat-completions messages.
-- Emit one assistant message with `tool_calls: [ ... ]`, then corresponding `tool` result messages.
+- `docs/architecture.md:885` — `WorkSpec-to-ChildConfig Adapter — deny-by-default`
+- `docs/architecture.md:899` — chỉ enable tool được liệt kê tường minh
+- `docs/architecture.md:903` — áp WorkSpec scope vào filesystem access
+- `docs/architecture.md:909` — CX không có sequential-thinking, ADR write, spawn
 
-Acceptance:
+Evidence code:
 
-- `cargo test -p codex-core parallel_function_call_history_must_serialize_as_one_assistant_message --lib` passes.
-- Existing chat-completions request tests still pass.
+- `codex-rs/core/src/cccx_spawn.rs:21` gọi `project_child_config`.
+- Nhưng hàm hiện chỉ append `cccx_harness_cc`/`cccx_harness_cx` vào `developer_instructions` và log `allowed_tools`.
+- Không thấy projection được áp trực tiếp vào config runtime để filter tool catalog, MCP registry, sandbox roots, permission ceiling hoặc model route.
 
-### C2 — MCP tool names are split incorrectly
+Impact:
 
-Failure:
+- Đây là lỗi harness boundary, không phải lỗi prompt.
+- Model có thể được “dặn” hành xử như CX nhưng runtime vẫn để tool/scope rộng hơn WorkSpec.
+- Tool count gửi lên LLM có thể không phản ánh quyền thực thi thật.
+- Subagent có thể lệch khỏi bounded-worker contract khi task dài hoặc có MCP/tool phức tạp.
 
-- `codex-api::sse::chat_completions::tests::split_tool_name_preserves_mcp_server_namespace`
+Fix direction:
 
-Observed mechanism:
+- Biến `project_child_config()` thành input bắt buộc của một `ChildConfigProjectionApplier`.
+- Áp projection vào `Config`/session/tool router thật, không chỉ prompt.
+- Test phải chứng minh tool/MCP/scope/model bị chặn trước khi prompt/model can thiệp.
 
-- `mcp__codebase_memory_mcp__search_graph` loses its namespace boundary.
-- This can route MCP calls to the wrong runtime tool payload or crash tool dispatch.
+### C2 — Mode system chưa có một nguồn sự thật duy nhất
 
-Evidence:
+Thiết kế yêu cầu 6 mode của cccx là state machine của Main CC, chỉ user chuyển mode; subagent không có mode riêng.
 
-- Split function: `codex-rs/codex-api/src/sse/chat_completions.rs:483`
-- RED test: `codex-rs/codex-api/src/sse/chat_completions.rs:631`
+Evidence thiết kế:
 
-Expected fix:
+- `docs/architecture.md:174` — subagent không dùng mode state machine, bị bound bởi WorkSpec.
+- `docs/design.md:334` — Shift+Tab chỉ cycle Plan / Default / AcceptEdits / Auto.
+- `docs/design.md:335` — DontAsk, Bypass không nằm trong cycle nhanh.
+- `docs/design.md:343` — `/dont-ask` cần xác nhận.
+- `docs/design.md:344` — `/bypass --confirm` cần flag và attestation.
 
-- Treat `mcp__<server>__<tool>` as a namespaced runtime tool.
-- Preserve namespace as `mcp__codebase_memory_mcp`, name as `search_graph`.
-- Keep reserved typed calls such as `tool_search` separate from generic function tools.
+Evidence code:
 
-Acceptance:
+- `codex-rs/protocol/src/config_types.rs:659` định nghĩa `ModeKind::is_cycle_visible`.
+- `codex-rs/protocol/src/config_types.rs:666-667` vẫn đưa `DontAsk` và `Bypass` vào cycle.
+- `codex-rs/tui/src/chatwidget/slash_dispatch.rs:334-369` các slash `/plan`, `/default`, `/accept-edits`, `/auto`, `/dont-ask`, `/bypass` vẫn đi qua `apply_collaboration_mode_slash_command`.
 
-- `cargo test -p codex-api chat_completions --lib` no longer fails on namespace split.
-- Existing `tool_search` reserved-call tests still pass.
+Impact:
 
-### C3 — Stream EOF before `[DONE]` is treated as successful completion
+- UX có thể hiển thị đủ command nhưng state source vẫn là Codex collaboration mode, không phải `cccx-mode::CccxModeState`.
+- Policy gate có nguy cơ đọc một mode, TUI/status line hiển thị mode khác.
+- DontAsk/Bypass là mode rủi ro, không được phép cycle bằng phím tắt.
 
-Failure:
+Fix direction:
 
-- `codex-api::sse::chat_completions::tests::eof_before_done_is_reported_as_stream_error_not_completed`
+- Chọn `cccx-mode` làm source of truth.
+- Tạo adapter rõ ràng từ cccx mode sang legacy Codex approval/sandbox mode chỉ ở boundary cần thiết.
+- Shift+Tab phải chỉ cycle safe modes.
+- `/dont-ask` và `/bypass` phải đi qua API xác nhận/attestation, không gọi chung path với mode thường.
 
-Observed mechanism:
+### C3 — 9router chưa là runtime boundary duy nhất
 
-- The parser sends `ResponseEvent::Completed` from accumulator finish even if the stream ends without `[DONE]`.
-- This hides truncated responses and can make cccx think a long task completed cleanly after a disconnect.
+Thiết kế yêu cầu mọi LLM call của cccx đi qua 9router:
 
-Evidence:
+- Main CC;
+- CC/CX subagent;
+- classifier;
+- goal evaluator;
+- summarizer;
+- tool repair/retry nếu có.
 
-- `[DONE]` branch: `codex-rs/codex-api/src/sse/chat_completions.rs:436`
-- Current completed emission: `codex-rs/codex-api/src/sse/chat_completions.rs:377`
-- RED test: `codex-rs/codex-api/src/sse/chat_completions.rs:704`
+Evidence thiết kế:
 
-Expected fix:
+- `docs/architecture.md:33` — `provider-gateway`: mọi LLM call đi qua 9router.
+- `docs/architecture.md:1193` — `core/provider-gateway` là đường LLM duy nhất.
+- `docs/architecture.md:1194` — mọi model call của Main CC, subagent, classifier, goal evaluator, summarizer đi qua 9router.
 
-- Track whether `[DONE]` was received.
-- If the stream ends before `[DONE]`, emit a stream error and do not emit `Completed`.
-- Keep retry/reconnect policy explicit at the caller/gateway layer.
+Evidence code:
 
-Acceptance:
+- `codex-rs/model-provider-info/src/lib.rs:407` có `create_9router_provider`.
+- `codex-rs/model-provider-info/src/lib.rs:421` đặt 9router dùng `WireApi::ChatCompletions`.
+- `codex-rs/core/src/provider_gateway_bridge.rs` hiện là bridge/provenance nhỏ.
+- `codex-rs/core/src/client.rs` vẫn là nơi stream model call chính theo provider wire API kế thừa.
+- `codex-rs/core/src/config/config_tests.rs` còn test `cccx_default_model_provider_uses_openai_when_gate_is_disabled`.
 
-- `cargo test -p codex-api chat_completions --lib` passes.
-- No regression in normal `[DONE]` stream completion.
+Impact:
 
-## High issues
+- cccx đã cấu hình được 9router cho happy path, nhưng chưa fail-closed ở mọi LLM call path.
+- Nếu gate/config/env lệch, OpenAI upstream model vẫn có thể xuất hiện hoặc được dùng ở path kế thừa.
+- `/model` hiện chưa có catalog 9router thực, chủ yếu dựa vào current model/config fallback.
+- Fallback/provenance của 9router chưa đủ để làm căn cứ WorkSpec model route và subagent model policy.
 
-### H1 — Permission queue bridge denies one prompt by cancelling all prompts from the same agent
+Fix direction:
 
-Failure:
+- Định nghĩa rõ `CccxModelGateway`/`ProviderGatewayRuntime` là boundary duy nhất cho binary `cccx`.
+- Direct OpenAI/default provider chỉ được tồn tại cho `codex` legacy hoặc test explicitly named.
+- Mọi path tạo `ModelClient` trong cccx phải đi qua 9router provider resolution.
+- `/model` và `/agents model` đọc từ 9router config/catalog, không từ upstream GPT preset list.
 
-- `codex-core::permission_queue_bridge::tests::denying_one_prompt_must_not_cancel_other_prompts_from_same_agent`
+### C4 — CC/CX scheduler boundary chưa được enforce đủ
 
-Observed mechanism:
+Thiết kế yêu cầu Main CC là scheduler duy nhất. CC-harness subagent và CX-harness subagent đều không được spawn tiếp; nếu cần thêm scope/worker thì trả SchedulingRequest/Artifact về Main CC.
 
-- `CccxPermissionQueue::deny()` resolves the agent id and calls `cancel_agent_requests(agent_id)`.
-- That violates the central queue design: deny should apply to one request, then promote the next request.
+Evidence thiết kế:
 
-Evidence:
+- `docs/architecture.md:1346` — CX không tự spawn CC hoặc mở rộng scope/tool/MCP.
+- `docs/architecture.md:1372` — CC-harness subagent cũng không tự spawn subagent khác.
+- `docs/architecture.md:576` — cross-harness communication phải qua WorkSpec/Artifact.
 
-- `codex-rs/core/src/permission_queue_bridge.rs:46`
-- Bulk cancel call: `codex-rs/core/src/permission_queue_bridge.rs:52`
+Evidence code:
 
-Expected fix:
+- `codex-rs/core/src/tools/handlers/multi_agents_common.rs:249` có `apply_cccx_work_spec_to_spawn_config`.
+- `codex-rs/core/src/tools/handlers/multi_agents_common.rs:261` yêu cầu `work_spec` khi cccx gate bật.
+- `codex-rs/core/src/tools/handlers/multi_agents_common.rs:270` gọi `apply_cccx_harness_to_config`.
+- Chưa thấy guard rõ ràng kiểu “nếu caller hiện là subagent / CX / non-main CC thì reject spawn and return SchedulingRequest guidance”.
 
-- Add a single-request deny operation in `cccx-policy::PermissionRequestQueue`.
-- `CccxPermissionQueue::deny(request_id)` should mark only that request as `Denied`.
-- Then promote the next queued request.
+Impact:
 
-Acceptance:
+- Với model có tool `spawn_agent`, child agent có thể tự mở rộng agent tree nếu tool catalog không bị WorkSpec filter chặt.
+- Điều này phá triết lý CC-led, CX-delegated.
 
-- `cargo test -p codex-core permission_queue_bridge::tests --lib` passes.
+Fix direction:
 
-### H2 — Subagent path scope uses unsafe prefix matching
+- Runtime phải có `ActorIdentity { main|subagent, harness, logicalSessionId, workSpecId }`.
+- Spawn handler phải fail-closed nếu caller không phải Main CC.
+- Khi subagent cần thêm worker/scope, chỉ được emit Artifact/SchedulingRequest.
 
-Failure:
+## High
 
-- `cccx-policy::tests::subagent_scope_check_requires_real_path_boundary`
+### H1 — `/agents` parser có nhưng runtime actions còn placeholder
 
-Observed mechanism:
+Evidence thiết kế:
 
-- `D:/repo/src/authentication/session.rs` matches scope `D:/repo/src/auth` because policy uses `starts_with`.
-- This breaks bounded CX execution guarantees.
+- `docs/design.md:515-541` định nghĩa `/agents view/logs/resume/cancel/model`.
+- `docs/design.md:593-601` yêu cầu list subagent có id, harness, model, state, commands.
 
-Evidence:
+Evidence code:
 
-- Prefix check: `codex-rs/cccx-policy/src/lib.rs:516`
-- RED test: `codex-rs/cccx-policy/src/lib.rs:1060`
+- `codex-rs/tui/src/chatwidget/slash_dispatch.rs:747` ghi `/agents ... parsed; runtime action wiring is pending`.
 
-Expected fix:
+Impact:
 
-- Normalize path separators.
-- Treat a path as in scope only when it equals the scope root or starts with `scope_root + "/"`.
-- Apply the same boundary logic to protected paths if not already done.
+- User nhìn thấy command nhưng không điều khiển được lifecycle thật.
+- Cancellable/resumable worker, read-only attach và model route preset chưa đạt thiết kế.
 
-Acceptance:
+Fix direction:
 
-- `cargo test -p cccx-policy --lib` passes.
+- Wire `/agents list/view/logs/resume/cancel/model` vào `CccxRuntimeRegistry`, checkpoint/resume, log store và model route config.
 
-### H3 — Checkpoint validation ignores current git head
+### H2 — `/permissions` approve/deny/inspect/batch-approve còn placeholder
 
-Failure:
+Evidence thiết kế:
 
-- `codex-core::checkpoint::tests::checkpoint_from_different_git_head_requires_revalidation`
+- `docs/design.md:630-659` định nghĩa permission queue tập trung và command approve/deny/inspect/batch-approve.
 
-Observed mechanism:
+Evidence code:
 
-- `validate_checkpoint()` accepts `_current_git_head` but does not use it.
-- A resumed subagent may apply stale partial work against a different tree state.
+- `codex-rs/core/src/permission_queue_bridge.rs` có queue bridge và enqueue state.
+- `codex-rs/tui/src/chatwidget/slash_dispatch.rs:758` ghi approval queue action wiring pending.
 
-Evidence:
+Impact:
 
-- `codex-rs/core/src/checkpoint.rs:80`
-- `_current_git_head`: `codex-rs/core/src/checkpoint.rs:82`
-- RED test: `codex-rs/core/src/checkpoint.rs:181`
+- Background subagent permission queue chưa có UX điều khiển thật.
+- Nếu permission prompt nhiều hoặc đến từ agent nền, user vẫn chưa có queue command đúng thiết kế.
 
-Expected fix:
+Fix direction:
 
-- Add `base_commit` or equivalent to `SubagentCheckpoint`.
-- Return `NeedsRevalidation { base_commit, current_head }` when current head differs.
-- Preserve backward-compatible handling for old checkpoints by marking them `NeedsRevalidation` or `Stale`, not `Valid`.
+- `/permissions` phải đọc queue thật.
+- `approve/deny/inspect/batch-approve` phải gọi action thật, có digest/checkpoint validation.
+- Batch approve không được include high-risk request.
 
-Acceptance:
+### H3 — `/tasks`, Task Graph và StopHook chưa chứng minh được lifecycle end-to-end
 
-- `cargo test -p codex-core checkpoint::tests --lib` passes.
+Evidence thiết kế:
 
-### H4 — Risky mode transitions are not enforced
+- `docs/design.md:282-285` yêu cầu `/tasks` hiển thị tree theo `blockedBy`.
+- `docs/architecture.md:1257-1258` yêu cầu StopHook luôn bật, kiểm tra mọi Task đã verified.
+- `docs/architecture.md:1319-1322` yêu cầu `verifiedAt` chỉ là projection từ `VerificationRecord.passed=true`.
 
-Failure:
+Evidence code:
 
-- `cccx-mode::tests::risky_modes_require_explicit_confirmation_or_attestation`
+- `codex-rs/tui/src/chatwidget/slash_dispatch.rs:816` ghi `/tasks ... TUI tree renderer is pending session wiring`.
+- Có `cccx_task_graph_state` và `goal_evaluator`, nhưng cần e2e chứng minh graph được tạo/cập nhật/chặn done trong session thật.
 
-Observed mechanism:
+Impact:
 
-- `DontAsk` and `Bypass` error variants exist, but `change_mode()` currently changes mode directly.
+- Main CC có thể báo xong dựa vào conversation/model answer thay vì TaskGraph verified state.
+- `/tasks` không phải nguồn quan sát đáng tin cậy nếu chưa wired.
 
-Evidence:
+Fix direction:
 
-- Error variants: `codex-rs/cccx-mode/src/lib.rs:31`
-- Commented design constraint: `codex-rs/cccx-mode/src/lib.rs:57`
-- RED test: `codex-rs/cccx-mode/src/lib.rs:168`
+- Session runtime phải tạo/cập nhật TaskGraph khi có WorkSpec/subagent/Artifact.
+- StopHook phải đọc TaskGraph thật và chặn final done khi còn task unverified.
+- `/tasks` phải render từ state thật.
 
-Expected fix:
+### H4 — MCP default registry mới warning-only
 
-- Split transition APIs:
-  - normal mode change for Plan/Default/AcceptEdits/Auto;
-  - explicit confirmation API for `DontAsk`;
-  - explicit sandbox/isolation attestation API for `Bypass`.
-- Wire TUI slash commands and Shift+Tab behavior to these APIs.
+Evidence thiết kế:
 
-Acceptance:
+- `docs/architecture.md:89` — startup luôn init 2 global defaults: `codebase-memory-mcp`, `sequential-thinking`.
+- `docs/architecture.md:1106-1119` — MCP registry gồm global defaults và registry mở rộng.
 
-- `cargo test -p cccx-mode --lib` passes.
-- TUI mode switching still supports the safe Shift+Tab cycle.
+Evidence code:
 
-## Medium issues
+- `codex-rs/core/src/mcp_auto_init.rs:5` khai báo `CCCX_GLOBAL_MCP_SERVERS`.
+- `codex-rs/core/src/mcp_auto_init.rs:10` có `check_cccx_mcp_defaults`.
+- `codex-rs/core/src/mcp_auto_init.rs:21` có `warn_missing_cccx_mcps`.
+- `codex-rs/core/src/config/mod.rs:3824-3826` đang warning khi thiếu MCP, chưa auto-init thật.
 
-### M1 — Headless JSONL envelope does not match cccx design
+Impact:
 
-Failures:
+- `/mcp` có thể vẫn báo “No MCP servers configured” nếu user/test home chưa cấu hình.
+- Main CC không có MCP-first discovery mặc định như thiết kế.
 
-- `cccx-headless::tests::jsonl_event_matches_design_exec_envelope_contract`
-- `cccx-headless::tests::terminal_event_must_be_last_jsonl_event`
+Fix direction:
 
-Observed mechanism:
+- Startup cccx phải merge default MCP config vào runtime registry khi chưa có user override.
+- Nếu executable/package MCP thiếu thì warning rõ dependency thiếu, nhưng registry contract vẫn có trạng thái explicit.
+- WorkSpec projection vẫn phải giới hạn MCP cho subagent.
 
-- Test expects `schemaVersion = "cccx.exec_event.v1"` but serialized event lacks it.
-- Terminal event ordering is not guaranteed.
+### H5 — Runtime tool list chưa được kiểm soát như một contract
 
-Evidence:
+Hiện tượng user từng thấy: request gửi 12–14 tools. Số lượng này có thể đúng hoặc sai tùy mode/harness/WorkSpec, nhưng hiện chưa có contract test chứng minh:
 
-- Schema validation area: `codex-rs/cccx-headless/src/lib.rs:162`
-- RED schema assertion: `codex-rs/cccx-headless/src/lib.rs:353`
-- RED terminal-last test: `codex-rs/cccx-headless/src/lib.rs:376`
+- Main CC thấy full toolset dự kiến.
+- CC subagent thấy only WorkSpec tools.
+- CX subagent không thấy spawn/ADR/sequential-thinking trừ khi được cấp.
+- MCP tool schema được preserve qua 9router/OpenAI-compatible chat-completions.
 
-Expected fix:
+Impact:
 
-- Align serialized JSON field names with design: `schemaVersion`, `sessionId`, `turnId`, monotonic sequence, stable terminal event.
-- Make terminal event final in emission helpers, not only in tests.
+- Tool format có thể không crash, nhưng quyền model thấy và quyền runtime execute có thể lệch nhau.
+- Đây là dạng wrapper regression nghiêm trọng cho agent harness.
 
-Acceptance:
+Fix direction:
 
-- `cargo test -p cccx-headless --lib` passes.
+- Thêm `ToolCatalogSnapshot` test cho Main CC / CC-subagent / CX-subagent theo từng mode.
+- Fail nếu tool sent-to-model không khớp tool executable-by-runtime.
 
-### M2 — UX parser/dispatcher does not yet register all design slash commands
+## Medium
 
-Failures:
+### M1 — Subagent model route policy chưa khép kín
 
-- `cccx-ux::tests::parses_all_design_mode_slash_commands`
-- `cccx-ux::tests::parses_design_task_goal_and_utility_commands`
+Evidence thiết kế:
 
-Observed mechanism:
+- `docs/architecture.md:532-568` định nghĩa subagent model route policy: CC resolve, WorkSpec pin, 9router ghi effective route/fallback.
 
-- Parser knows some cccx commands, but `/plan`, `/goal tests pass`, `/review`, `/theme`, etc. are not all represented by stable typed commands.
+Current gap:
 
-Evidence:
+- Có discussion/design về inherit-main-requested, inherit-main-effective, preset route.
+- Chưa đủ bằng chứng runtime cho `/agents model <preset> <route>`, validation với 9router catalog, và provenance per attempt.
 
-- RED mode command table: `codex-rs/cccx-ux/src/lib.rs:336`
-- RED utility command table: `codex-rs/cccx-ux/src/lib.rs:355`
+Fix direction:
 
-Expected fix:
+- Route resolution phải xảy ra trước spawn và ghi vào WorkSpec.
+- 9router effective route/fallback phải ghi vào Artifact/provenance, không tự mutate policy của attempt đang chạy.
 
-- Extend `cccx-ux` command enum and parser to cover all commands in `docs/design.md`.
-- Then wire TUI slash dispatch without placeholder-only behavior.
+### M2 — Plugin extended manifest đã có schema nhưng runtime isolation chưa đủ
 
-Acceptance:
+Evidence thiết kế:
 
-- `cargo test -p cccx-ux --lib` passes.
-- Add focused TUI dispatcher tests for at least mode, task, permission, memory commands.
+- `docs/architecture.md:1419-1466` định nghĩa `cccx-plugin.json`, harness isolation, rules, agents preset, MCP stableId/schemaDigest.
 
-### M3 — Plugin manifest schema still uses implementation-shaped field names
+Current gap:
 
-Failure:
+- Schema tests đã từng xanh, nhưng runtime load/trust/isolation mapping cần e2e.
+- Codex native plugin và cccx extended plugin cần phân biệt rõ.
 
-- `cccx-protocol::plugin::tests::cccx_plugin_manifest_uses_design_schema_field_names`
+Fix direction:
 
-Observed mechanism:
+- Thêm loader tests cho native plugin vs cccx-plugin.
+- Verify CX chỉ thấy plugin capability nếu WorkSpec cấp stableId/schemaDigest.
 
-- Manifest struct expects `allowed_tools`; design test supplies design-shaped camelCase fields.
+### M3 — Headless đã có envelope tests nhưng thiếu e2e với runtime cccx
 
-Evidence:
+Current gap:
 
-- Current field: `codex-rs/cccx-protocol/src/plugin.rs:42`
-- Validation use: `codex-rs/cccx-protocol/src/plugin.rs:63`
-- RED test fixture starts at `codex-rs/cccx-protocol/src/plugin.rs:77`
+- `cccx-headless` contract unit tests không đủ chứng minh `cccx exec` thật emit đúng event khi có tool call, subagent event, permission queue, TaskGraph, stream error.
 
-Expected fix:
+Fix direction:
 
-- Decide final manifest schema:
-  - either design camelCase only;
-  - or accept both design camelCase and legacy snake_case with explicit compatibility tests.
-- Do not silently accept unknown Codex/plugin fields.
+- Mock 9router e2e cho `cccx exec`.
+- Assert JSONL terminal event last, sequence monotonic, no non-JSON stdout.
 
-Acceptance:
-
-- `cargo test -p cccx-protocol --lib` passes.
-
-## Lower-priority but required closure
-
-### L1 — Coverage cannot be claimed yet
+### M4 — Coverage aggregate chưa đủ đại diện cho feature completeness
 
 Current state:
 
-- `cargo llvm-cov` is not installed.
-- `cargo tarpaulin` is not installed.
-- Feature suite is RED.
+- Aggregate coverage từng pass trên scoped set, nhưng có crate riêng dưới 80%.
+- E2E coverage cho các path cccx quan trọng còn thiếu.
 
-Expected fix:
+Fix direction:
 
-- After RED list is green, install or vendor `cargo-llvm-cov`.
-- Run `cargo llvm-cov --workspace --fail-under-lines 80` or a scoped equivalent justified in docs.
+- Dùng hai gate:
+  - aggregate scoped cccx + touched core >= 80%;
+  - critical crate/path minimum riêng cho mode/policy/ux/gateway/spawn.
 
-### L2 — Several cccx modules are still scaffolded but not fully wired
+## Low
 
-Observed from warnings and current code shape:
+### L1 — Duplicate binary target warning
 
-- `GoalEvaluator`, `CccxPermissionQueue`, task graph state helpers, project memory, checkpoints, artifact collector, provider gateway bridge exist but are not fully consumed by runtime paths.
-- This is acceptable during scaffolding, but not for feature-complete cccx.
+User từng thấy warning:
 
-Expected fix:
+- `cli/src/main.rs` có mặt trong cả bin target `cccx` và `codex`.
 
-- Wire each state machine into the runtime one phase at a time.
-- Keep tests red/green per module and avoid prompt-only enforcement.
+Impact thấp nhưng nên dọn trước release vì gây nhiễu smoke test.
 
-## Recommended implementation order
+### L2 — Upstream Codex fallback/branding còn rải rác
 
-1. Fix 9router/chat-completions correctness first.
-2. Fix policy and state-machine safety.
-3. Fix headless/UX/schema user-facing contracts.
-4. Wire scaffolded core modules into runtime.
-5. Add coverage tooling and enforce the 80% gate.
+Một số UI/help/model default path vẫn có thể rơi về upstream wording hoặc GPT preset nếu `CCCX_HOME`/gate/config không đúng.
 
-Do not start with cosmetic branding or docs-only cleanup. Those do not address the current failure mode.
+Fix direction:
+
+- Centralize cccx branding/model fallback.
+- `cccx` binary không được dùng GPT preset mặc định trừ khi user cấu hình explicit qua 9router route.
+
+## Done / không còn là blocker chính
+
+Các mục sau không nên đưa lại vào phase mới nếu test vẫn xanh:
+
+- Chat-completions gom nhiều tool calls vào một assistant message.
+- MCP tool namespace split.
+- EOF trước `[DONE]` không còn được coi là completed.
+- Scope path boundary dùng real boundary thay vì prefix thô.
+- Checkpoint yêu cầu revalidation khi git head đổi.
+- Permission deny một request không cancel toàn agent.
+- Plugin manifest field names khớp design schema.
+- Headless envelope contract cơ bản.
+
+Nếu một mục trong danh sách này đỏ trở lại, xử lý như regression, không coi là feature mới.

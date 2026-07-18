@@ -21,6 +21,7 @@ use codex_hooks::UserPromptSubmitOutcome;
 use codex_hooks::UserPromptSubmitRequest;
 use codex_otel::HOOK_RUN_DURATION_METRIC;
 use codex_otel::HOOK_RUN_METRIC;
+use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ResponseItem;
@@ -39,6 +40,7 @@ use codex_thread_store::ReadThreadParams;
 use serde_json::Value;
 use tracing::instrument;
 
+use crate::cccx_task_graph_state;
 use crate::context::ContextualUserFragment;
 use crate::context::HookAdditionalContext;
 use crate::event_mapping::parse_turn_item;
@@ -357,12 +359,62 @@ pub(crate) async fn run_turn_stop_hooks(
         last_assistant_message,
         target,
     };
+    if matches!(request.target, StopHookTarget::Stop) {
+        persist_cccx_mode_state(sess, turn_context).await;
+    }
+    if matches!(request.target, StopHookTarget::Stop)
+        && let Some(outcome) = cccx_stop_guard_outcome(turn_context).await
+    {
+        return outcome;
+    }
     let hooks = sess.hooks();
     emit_hook_started_events(sess, turn_context, hooks.preview_stop(&request)).await;
 
     let mut outcome = hooks.run_stop(request).await;
     emit_hook_completed_events(sess, turn_context, std::mem::take(&mut outcome.hook_events)).await;
     outcome
+}
+
+async fn persist_cccx_mode_state(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
+    #[allow(deprecated)]
+    let project_root = turn_context.cwd.as_path();
+    if let Err(error) = cccx_task_graph_state::save_mode_state(project_root, &sess.cccx_mode).await
+    {
+        tracing::warn!(%error, "failed to persist cccx mode state");
+    }
+}
+
+async fn cccx_stop_guard_outcome(turn_context: &Arc<TurnContext>) -> Option<StopOutcome> {
+    #[allow(deprecated)]
+    let project_root = turn_context.cwd.as_path();
+    let graph = match cccx_task_graph_state::load_task_graph(project_root).await {
+        Ok(Some(graph)) => graph,
+        Ok(None) => return None,
+        Err(error) => {
+            let reason = format!("cccx StopGuard could not load TaskGraph: {error}");
+            return Some(blocking_stop_outcome(reason));
+        }
+    };
+    match cccx_task_graph_state::stop_guard(&graph) {
+        Ok(()) => None,
+        Err(error) => Some(blocking_stop_outcome(format!("{error}"))),
+    }
+}
+
+fn blocking_stop_outcome(reason: String) -> StopOutcome {
+    StopOutcome {
+        hook_events: Vec::new(),
+        should_stop: false,
+        stop_reason: None,
+        should_block: true,
+        block_reason: Some(reason.clone()),
+        continuation_fragments: vec![HookPromptFragment {
+            text: format!(
+                "cccx StopGuard blocked completion. Resolve/verify remaining TaskGraph work before finalizing. Reason: {reason}"
+            ),
+            hook_run_id: "cccx-stop-guard".to_string(),
+        }],
+    }
 }
 
 pub(crate) async fn run_pre_compact_hooks(

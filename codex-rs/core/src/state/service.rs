@@ -16,6 +16,7 @@ use crate::exec_policy::ExecPolicyManager;
 use crate::guardian::GuardianRejection;
 use crate::guardian::GuardianRejectionCircuitBreaker;
 use crate::mcp::McpManager;
+use crate::permission_queue_bridge::CccxPermissionQueue;
 use crate::session::McpRuntimeSnapshot;
 use crate::tools::code_mode::CodeModeService;
 use crate::tools::handlers::ToolSearchHandlerCache;
@@ -71,6 +72,7 @@ pub(crate) struct SessionServices {
     pub(crate) models_manager: SharedModelsManager,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) tool_approvals: Mutex<ApprovalStore>,
+    pub(crate) cccx_permission_queue: CccxPermissionQueue,
     pub(crate) guardian_rejections: Mutex<HashMap<String, GuardianRejection>>,
     pub(crate) guardian_rejection_circuit_breaker: Mutex<GuardianRejectionCircuitBreaker>,
     pub(crate) runtime_handle: Handle,

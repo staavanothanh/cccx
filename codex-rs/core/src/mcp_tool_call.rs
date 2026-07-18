@@ -7,6 +7,7 @@ use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::connectors;
 use crate::exec_policy::cccx_mcp_requirement;
+use crate::exec_policy::cccx_subagent_mcp_requirement;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::GuardianMcpAnnotations;
 use crate::guardian::guardian_rejection_message;
@@ -243,7 +244,17 @@ pub(crate) async fn handle_mcp_tool_call(
                 .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
         };
     }
-    if let Some(requirement) = cccx_mcp_requirement(&server, &tool_name) {
+    let cccx_requirement = if let Some(work_spec) = sess
+        .services
+        .agent_control
+        .cccx_work_spec_for_thread(sess.thread_id)
+        .await
+    {
+        cccx_subagent_mcp_requirement(&work_spec, &server, &tool_name)
+    } else {
+        cccx_mcp_requirement(&server, &tool_name)
+    };
+    if let Some(requirement) = cccx_requirement {
         match requirement {
             ExecApprovalRequirement::Forbidden { reason } => {
                 let result = notify_mcp_tool_call_skip(

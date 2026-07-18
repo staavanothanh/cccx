@@ -3,12 +3,6 @@
 //! This module is the core-side wiring point for `cccx-task-graph`. Session
 //! runtime hooks call into this module instead of reimplementing persistence or
 //! completion semantics.
-//!
-//! TODO(cccx-phase6): Wire load/save/stop_guard into session lifecycle.
-//! Currently tested through unit tests; runtime integration deferred to
-//! the subagent/session wiring milestone.
-
-#![allow(dead_code)]
 
 use std::path::Path;
 use std::path::PathBuf;

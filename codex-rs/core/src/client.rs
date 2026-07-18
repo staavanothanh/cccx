@@ -123,6 +123,7 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::feedback_tags;
+use crate::provider_gateway_bridge::ProviderGatewayBridge;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
 use crate::util::emit_feedback_auth_recovery_tags;
@@ -379,9 +380,7 @@ fn chat_message_from_response_item(item: &ResponseItem) -> Result<Option<Value>>
 /// Merge consecutive assistant messages that carry tool_calls into a
 /// single assistant message with multiple tool_calls — required for
 /// OpenAI-compatible chat-completions payloads.
-pub(crate) fn merge_consecutive_assistant_tool_call_messages(
-    messages: Vec<Value>,
-) -> Vec<Value> {
+pub(crate) fn merge_consecutive_assistant_tool_call_messages(messages: Vec<Value>) -> Vec<Value> {
     if messages.len() <= 1 {
         return messages;
     }
@@ -1759,6 +1758,43 @@ impl ModelClientSession {
         }
     }
 
+    fn begin_gateway_provenance(
+        &self,
+        model_info: &ModelInfo,
+    ) -> (
+        ProviderGatewayBridge,
+        Option<cccx_provider_gateway::provenance::GatewayProvenance>,
+    ) {
+        let bridge = ProviderGatewayBridge::new(self.client.state.provider.info().is_9router());
+        let provenance = bridge.begin_call(&model_info.slug);
+        (bridge, provenance)
+    }
+
+    fn record_gateway_provenance(
+        &self,
+        bridge: &ProviderGatewayBridge,
+        provenance: &mut Option<cccx_provider_gateway::provenance::GatewayProvenance>,
+        model_info: &ModelInfo,
+    ) {
+        let provider_info = self.client.state.provider.info();
+        let effective_route = bridge.resolve_route(provider_info, &model_info.slug);
+        bridge.end_call(
+            provenance,
+            Some(effective_route.as_str()),
+            Some(provider_info.name.as_str()),
+            Some(model_info.slug.as_str()),
+        );
+        if let Some(provenance) = provenance.as_ref() {
+            trace!(
+                requested_route_id = %provenance.requested_route_id,
+                effective_route_id = ?provenance.effective_route_id,
+                effective_provider = ?provenance.effective_provider,
+                effective_model = ?provenance.effective_model,
+                "cccx: recorded provider gateway provenance"
+            );
+        }
+    }
+
     /// Streams a turn via the OpenAI Responses API.
     ///
     /// Handles reasoning summaries, verbosity, and the `text` controls used for output schemas.
@@ -1830,6 +1866,8 @@ impl ModelClientSession {
             let store = request.store;
             self.client
                 .prepare_response_items_for_request(&mut request.input, store);
+            let (gateway_bridge, mut gateway_provenance) =
+                self.begin_gateway_provenance(model_info);
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
             let inference_trace_attempt = inference_trace.start_attempt();
@@ -1845,6 +1883,11 @@ impl ModelClientSession {
 
             match stream_result {
                 Ok(stream) => {
+                    self.record_gateway_provenance(
+                        &gateway_bridge,
+                        &mut gateway_provenance,
+                        model_info,
+                    );
                     let (stream, _) = map_response_stream(
                         stream,
                         request_session_telemetry,
@@ -1875,6 +1918,11 @@ impl ModelClientSession {
                     continue;
                 }
                 Err(err) => {
+                    self.record_gateway_provenance(
+                        &gateway_bridge,
+                        &mut gateway_provenance,
+                        model_info,
+                    );
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
@@ -1926,6 +1974,8 @@ impl ModelClientSession {
                 model_info,
                 service_tier.clone(),
             )?;
+            let (gateway_bridge, mut gateway_provenance) =
+                self.begin_gateway_provenance(model_info);
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.record_started(&request);
 
@@ -1946,6 +1996,11 @@ impl ModelClientSession {
 
             match client.stream(request, options).await {
                 Ok(stream) => {
+                    self.record_gateway_provenance(
+                        &gateway_bridge,
+                        &mut gateway_provenance,
+                        model_info,
+                    );
                     let (stream, _) = map_response_stream(
                         stream,
                         session_telemetry.clone(),
@@ -1981,6 +2036,11 @@ impl ModelClientSession {
                     );
                 }
                 Err(err) => {
+                    self.record_gateway_provenance(
+                        &gateway_bridge,
+                        &mut gateway_provenance,
+                        model_info,
+                    );
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);

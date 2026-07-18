@@ -441,6 +441,16 @@ impl AgentControl {
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
         }
+        if let Some(cccx_runtime) = options.cccx_runtime.clone() {
+            self.cccx_runtime
+                .lock()
+                .await
+                .register_spawn(new_thread.thread_id, (*cccx_runtime).clone())
+                .await
+                .map_err(CodexErr::UnsupportedOperation)?;
+            self.cccx_runtime_active
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
 
         if let Some(SessionSource::SubAgent(
             subagent_source @ SubAgentSource::ThreadSpawn {

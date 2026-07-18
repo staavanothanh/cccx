@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::Prompt;
+use crate::cccx_task_graph_state;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
 use crate::context::world_state::WorldState;
@@ -76,13 +77,47 @@ pub(crate) async fn build_compaction_initial_context(
     // Return the rendered state with its items so history and its baseline stay identical.
     match initial_context_injection {
         InitialContextInjection::BeforeLastUserMessage(world_state) => {
-            let items = sess
+            let mut items = sess
                 .build_initial_context_with_world_state(turn_context, world_state.as_ref())
                 .await;
+            if let Some(survivor) = cccx_compaction_survivor_item(turn_context).await {
+                items.push(survivor);
+            }
             (items, Some(Arc::clone(world_state)))
         }
         InitialContextInjection::DoNotInject => (Vec::new(), None),
     }
+}
+
+async fn cccx_compaction_survivor_item(turn_context: &TurnContext) -> Option<ResponseItem> {
+    #[allow(deprecated)]
+    let project_root = turn_context.cwd.as_path();
+    let graph = match cccx_task_graph_state::load_task_graph(project_root).await {
+        Ok(Some(graph)) => graph,
+        Ok(None) => return None,
+        Err(error) => {
+            tracing::warn!(%error, "failed to load cccx TaskGraph for compaction survivor");
+            return None;
+        }
+    };
+    let json = match cccx_task_graph_state::compaction_survivor_json(&graph) {
+        Ok(json) => json,
+        Err(error) => {
+            tracing::warn!(%error, "failed to serialize cccx TaskGraph compaction survivor");
+            return None;
+        }
+    };
+    Some(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: format!(
+                "<cccx_task_graph_survivor_json>\n{json}\n</cccx_task_graph_survivor_json>"
+            ),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    })
 }
 
 pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {

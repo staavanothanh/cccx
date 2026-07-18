@@ -6,6 +6,8 @@ use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::cccx_runtime::CccxRuntimeRegistry;
+use crate::cccx_runtime::CccxSpawnRuntime;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
@@ -46,6 +48,9 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -70,6 +75,7 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
+    pub(crate) cccx_runtime: Option<Arc<CccxSpawnRuntime>>,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +111,8 @@ pub(crate) struct AgentControl {
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
+    cccx_runtime: Arc<Mutex<CccxRuntimeRegistry>>,
+    cccx_runtime_active: Arc<AtomicUsize>,
 }
 
 impl AgentControl {
@@ -121,6 +129,50 @@ impl AgentControl {
             control.rollout_budget.configure(rollout_budget);
         }
         control
+    }
+
+    pub(crate) async fn complete_cccx_subagent(
+        &self,
+        child_thread_id: ThreadId,
+        status_summary: String,
+        success: bool,
+    ) {
+        match self
+            .cccx_runtime
+            .lock()
+            .await
+            .complete_spawn(child_thread_id, status_summary, success)
+            .await
+        {
+            Ok(true) => {
+                let _ = self.cccx_runtime_active.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |count| count.checked_sub(1),
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                warn!(%error, %child_thread_id, "cccx: failed to record subagent artifact");
+            }
+        }
+    }
+
+    pub(crate) fn has_active_cccx_runtime(&self) -> bool {
+        self.cccx_runtime_active.load(Ordering::Relaxed) > 0
+    }
+
+    pub(crate) async fn cccx_work_spec_for_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<cccx_protocol::WorkSpec> {
+        if !self.has_active_cccx_runtime() {
+            return None;
+        }
+        self.cccx_runtime
+            .lock()
+            .await
+            .work_spec_for_thread(thread_id)
     }
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
@@ -463,6 +515,13 @@ impl AgentControl {
             };
             if !is_final(&status) {
                 return;
+            }
+            if control.has_active_cccx_runtime() {
+                let success = matches!(status, AgentStatus::Completed(_));
+                let status_summary = format!("{status:?}");
+                control
+                    .complete_cccx_subagent(child_thread_id, status_summary, success)
+                    .await;
             }
 
             let Ok(state) = control.upgrade() else {

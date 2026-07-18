@@ -35,6 +35,7 @@ mod agent;
 mod agent_communication;
 pub mod artifact_collector;
 mod attestation;
+mod cccx_runtime;
 pub mod cccx_spawn;
 mod cccx_task_graph_state;
 pub mod checkpoint;

@@ -1,3 +1,6 @@
+use crate::cccx_runtime::{
+    CccxSpawnRuntime, model_route_summary, parent_capability_set_for_work_spec,
+};
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
@@ -22,6 +25,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use std::sync::Arc;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -240,6 +244,42 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
             FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
         })?;
     Ok(())
+}
+
+pub(crate) fn apply_cccx_work_spec_to_spawn_config(
+    config: &mut Config,
+    turn: &TurnContext,
+    work_spec: Option<cccx_protocol::WorkSpec>,
+    task_name: Option<&str>,
+) -> Result<Option<Arc<CccxSpawnRuntime>>, FunctionCallError> {
+    if !codex_features::cccx_mvp::surface_gate_enabled() {
+        return Ok(None);
+    }
+
+    let Some(work_spec) = work_spec else {
+        return Err(FunctionCallError::RespondToModel(
+            "cccx spawn requires a structured `work_spec`. Retry spawn_agent with a WorkSpec containing task_id, harness, role, objective, scope, allowed_tools, allowed_mcp_tools, permission_policy, and model_route. Keep `message` as a compact execution brief; do not pass raw parent context."
+                .to_string(),
+        ));
+    };
+
+    #[allow(deprecated)]
+    let project_root = turn.cwd.clone().to_path_buf();
+    let parent =
+        parent_capability_set_for_work_spec(&project_root, &turn.model_info.slug, &work_spec);
+    crate::cccx_spawn::apply_cccx_harness_to_config(config, &parent, &work_spec)
+        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+    let route_summary = model_route_summary(&work_spec, &turn.model_info.slug);
+    let display_name = task_name
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}-{:?}", work_spec.task_id, work_spec.role));
+
+    Ok(Some(Arc::new(CccxSpawnRuntime {
+        project_root,
+        work_spec,
+        display_name,
+        model_route_summary: route_summary,
+    })))
 }
 
 pub(crate) async fn apply_requested_spawn_agent_model_overrides(

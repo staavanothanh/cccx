@@ -91,6 +91,12 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    let cccx_runtime = apply_cccx_work_spec_to_spawn_config(
+        &mut config,
+        turn.as_ref(),
+        args.work_spec.clone(),
+        Some(args.task_name.as_str()),
+    )?;
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -124,6 +130,7 @@ async fn handle_spawn_agent(
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
                     environments: Some(turn.environments.to_selections()),
+                    cccx_runtime,
                 },
             ),
     )
@@ -184,6 +191,7 @@ struct SpawnAgentArgs {
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
+    work_spec: Option<cccx_protocol::WorkSpec>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
 }

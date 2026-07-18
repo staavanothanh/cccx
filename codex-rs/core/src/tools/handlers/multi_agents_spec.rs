@@ -70,6 +70,7 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
     let return_value_description =
         "Returns the spawned agent id plus the user-facing nickname when available.";
     let mut properties = spawn_agent_common_properties_v1(&options.agent_type_description);
+    insert_cccx_work_spec_property(&mut properties);
     if options.hide_agent_type_model_reasoning {
         hide_spawn_agent_metadata_options(&mut properties);
     }
@@ -101,6 +102,7 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
         && !options.hide_agent_type_model_reasoning)
         .then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
     let mut properties = spawn_agent_common_properties_v2(&options.agent_type_description);
+    insert_cccx_work_spec_property(&mut properties);
     if options.hide_agent_type_model_reasoning {
         properties.remove("agent_type");
         properties.remove("service_tier");
@@ -135,6 +137,18 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
             options.hide_agent_type_model_reasoning,
         )),
     })
+}
+
+fn insert_cccx_work_spec_property(properties: &mut BTreeMap<String, JsonSchema>) {
+    if !codex_features::cccx_mvp::surface_gate_enabled() {
+        return;
+    }
+    let mut schema = JsonSchema::object(BTreeMap::new(), None, Some(true.into()));
+    schema.description = Some(
+        "Structured cccx WorkSpec for the spawned subagent. Required by cccx runtime; include task_id, harness, role, objective, scope, allowed_tools, allowed_mcp_tools, permission_policy, model_route, fallback_policy_id, and fork_policy."
+            .to_string(),
+    );
+    properties.insert("work_spec".to_string(), schema);
 }
 
 pub fn create_send_input_tool_v1() -> ToolSpec {

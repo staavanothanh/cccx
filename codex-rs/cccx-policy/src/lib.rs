@@ -509,20 +509,16 @@ pub fn evaluate_subagent(
     if matches!(action.action_type, ActionType::Edit) && !action.target_paths.is_empty() {
         let in_scope = action.target_paths.iter().any(|target| {
             let normalized = target.replace('\\', "/");
-            work_spec
-                .scope
-                .canonical_paths
-                .iter()
-                .any(|scope_path| {
-                    let scope_normalized = scope_path.replace('\\', "/");
-                    // Exact match or strict path-boundary prefix match.
-                    // "D:/repo/src/auth" must NOT match "D:/repo/src/authentication".
-                    let matches_exact = normalized == scope_normalized;
-                    let matches_prefixed = normalized.len() > scope_normalized.len()
-                        && normalized.as_bytes().get(scope_normalized.len()) == Some(&b'/')
-                        && normalized.starts_with(&scope_normalized);
-                    matches_exact || matches_prefixed
-                })
+            work_spec.scope.canonical_paths.iter().any(|scope_path| {
+                let scope_normalized = scope_path.replace('\\', "/");
+                // Exact match or strict path-boundary prefix match.
+                // "D:/repo/src/auth" must NOT match "D:/repo/src/authentication".
+                let matches_exact = normalized == scope_normalized;
+                let matches_prefixed = normalized.len() > scope_normalized.len()
+                    && normalized.as_bytes().get(scope_normalized.len()) == Some(&b'/')
+                    && normalized.starts_with(&scope_normalized);
+                matches_exact || matches_prefixed
+            })
         });
         if !in_scope {
             return PolicyDecision::Deny {
@@ -571,22 +567,32 @@ pub fn evaluate_subagent(
         }
     }
 
-    match work_spec.approval_policy {
-        Some(cccx_protocol::ApprovalPolicyKind::AutoDeny) => PolicyDecision::Deny {
-            reason: "auto_deny_policy".to_string(),
-            bypassable: true,
+    match work_spec.permission_policy {
+        cccx_protocol::PermissionPolicy::Allow => PolicyDecision::Allow {
+            tier: "work_spec_permission_policy".to_string(),
+        },
+        cccx_protocol::PermissionPolicy::Deny => PolicyDecision::Deny {
+            reason: "work_spec_permission_policy_deny".to_string(),
+            bypassable: false,
             silent: false,
         },
-        Some(cccx_protocol::ApprovalPolicyKind::AskCc) => PolicyDecision::RequireApproval {
-            reason: "subagent-require-cc-approval".to_string(),
-            digest: action.digest(),
-        },
-        Some(cccx_protocol::ApprovalPolicyKind::AskUser) | None => {
-            PolicyDecision::RequireApproval {
-                reason: "subagent-require-approval".to_string(),
+        cccx_protocol::PermissionPolicy::Ask => match work_spec.approval_policy {
+            Some(cccx_protocol::ApprovalPolicyKind::AutoDeny) => PolicyDecision::Deny {
+                reason: "auto_deny_policy".to_string(),
+                bypassable: true,
+                silent: false,
+            },
+            Some(cccx_protocol::ApprovalPolicyKind::AskCc) => PolicyDecision::RequireApproval {
+                reason: "subagent-require-cc-approval".to_string(),
                 digest: action.digest(),
+            },
+            Some(cccx_protocol::ApprovalPolicyKind::AskUser) | None => {
+                PolicyDecision::RequireApproval {
+                    reason: "subagent-require-approval".to_string(),
+                    digest: action.digest(),
+                }
             }
-        }
+        },
     }
 }
 

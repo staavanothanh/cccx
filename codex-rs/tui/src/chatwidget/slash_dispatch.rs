@@ -18,6 +18,7 @@ use cccx_ux::AgentsCommand;
 use cccx_ux::CccxCommand;
 use cccx_ux::PermissionsCommand;
 use cccx_ux::parse_cccx_command;
+use codex_core::project_memory::ProjectMemory;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -767,43 +768,13 @@ impl ChatWidget {
                         /*hint*/ None,
                     );
                 } else if let Some(cwd) = self.current_cwd.clone() {
-                    let app_event_tx = self.app_event_tx.clone();
                     let text_for_async = text.clone();
                     tokio::spawn(async move {
-                        let memory_dir = cwd.join(".cccx").join("memory");
-                        let memory_file = memory_dir.join("MEMORY.md");
-                        if let Err(err) = tokio::fs::create_dir_all(&memory_dir).await {
+                        if let Err(err) = ProjectMemory::new(&cwd).remember(&text_for_async).await {
                             tracing::warn!(
-                                "/remember failed to create dir {}: {err}",
-                                memory_dir.display()
+                                "/remember failed to write project memory under {}: {err}",
+                                cwd.display()
                             );
-                            return;
-                        }
-                        let timestamp = chrono::Utc::now().to_rfc3339();
-                        let entry = format!("\n## {timestamp}\n\n{text_for_async}\n");
-                        match tokio::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&memory_file)
-                            .await
-                        {
-                            Ok(mut file) => {
-                                use tokio::io::AsyncWriteExt;
-                                if let Err(err) = file.write_all(entry.as_bytes()).await {
-                                    tracing::warn!(
-                                        "/remember failed to write {}: {err}",
-                                        memory_file.display()
-                                    );
-                                }
-                                // Signal the App to render the confirmation message.
-                                let _ = app_event_tx;
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    "/remember failed to open {}: {err}",
-                                    memory_file.display()
-                                );
-                            }
                         }
                     });
                     self.add_info_message(
@@ -881,7 +852,10 @@ impl ChatWidget {
             }
             Ok(Some(CccxCommand::Theme(theme))) => {
                 self.add_info_message(
-                    format!("/theme {} — theme command parsed by cccx-ux.", theme.unwrap_or_default()),
+                    format!(
+                        "/theme {} — theme command parsed by cccx-ux.",
+                        theme.unwrap_or_default()
+                    ),
                     /*hint*/ None,
                 );
             }
@@ -905,7 +879,10 @@ impl ChatWidget {
             }
             Ok(Some(CccxCommand::Help { section })) => {
                 self.add_info_message(
-                    format!("/help {} — help command parsed by cccx-ux.", section.unwrap_or_default()),
+                    format!(
+                        "/help {} — help command parsed by cccx-ux.",
+                        section.unwrap_or_default()
+                    ),
                     Some("Built-in /help is also available.".to_string()),
                 );
             }

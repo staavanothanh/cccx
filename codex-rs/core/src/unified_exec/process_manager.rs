@@ -19,6 +19,7 @@ use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
 use crate::exec_env::create_env;
 use crate::exec_env::inject_permission_profile_env;
 use crate::exec_policy::ExecApprovalRequest;
+use crate::exec_policy::cccx_subagent_shell_requirement;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::ExecServerEnvConfig;
@@ -1150,23 +1151,38 @@ impl UnifiedExecProcessManager {
         };
         let mut orchestrator = ToolOrchestrator::new();
         let mut runtime = UnifiedExecRuntime::new(self, request.shell_mode.clone());
-        let exec_approval_requirement = context
+        let exec_approval_requirement = if let Some(work_spec) = context
             .session
             .services
-            .exec_policy
-            .create_exec_approval_requirement_for_command(ExecApprovalRequest {
-                command: &request.command,
-                approval_policy: context.turn.approval_policy.value(),
-                permission_profile: context.turn.permission_profile(),
-                windows_sandbox_level: context.turn.windows_sandbox_level,
-                sandbox_permissions: if request.additional_permissions_preapproved {
-                    crate::sandboxing::SandboxPermissions::UseDefault
-                } else {
-                    request.sandbox_permissions
+            .agent_control
+            .cccx_work_spec_for_thread(context.session.thread_id)
+            .await
+        {
+            cccx_subagent_shell_requirement(&work_spec, &request.command).unwrap_or(
+                crate::tools::sandboxing::ExecApprovalRequirement::Skip {
+                    bypass_sandbox: false,
+                    proposed_execpolicy_amendment: None,
                 },
-                prefix_rule: request.prefix_rule.clone(),
-            })
-            .await;
+            )
+        } else {
+            context
+                .session
+                .services
+                .exec_policy
+                .create_exec_approval_requirement_for_command(ExecApprovalRequest {
+                    command: &request.command,
+                    approval_policy: context.turn.approval_policy.value(),
+                    permission_profile: context.turn.permission_profile(),
+                    windows_sandbox_level: context.turn.windows_sandbox_level,
+                    sandbox_permissions: if request.additional_permissions_preapproved {
+                        crate::sandboxing::SandboxPermissions::UseDefault
+                    } else {
+                        request.sandbox_permissions
+                    },
+                    prefix_rule: request.prefix_rule.clone(),
+                })
+                .await
+        };
         let req = UnifiedExecToolRequest {
             command: request.command.clone(),
             shell_type: request.shell_type,

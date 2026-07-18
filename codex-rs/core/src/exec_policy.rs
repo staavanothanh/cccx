@@ -1340,10 +1340,7 @@ async fn collect_policy_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>, Exe
 /// cccx subagent permission evaluation bridge.
 ///
 /// Called when a subagent (CC-harness or CX-harness) tries to execute a tool.
-/// Uses evaluate_subagent() from cccx-policy which checks WorkSpec constraints.
 /// Architecture.md §5.9.
-// TODO(cccx-phase6): Wire into subagent permission evaluation.
-#[allow(dead_code)]
 pub(crate) fn cccx_subagent_policy_requirement(
     work_spec: &cccx_protocol::WorkSpec,
     _tool_name: &str,
@@ -1373,24 +1370,80 @@ pub(crate) fn cccx_subagent_policy_requirement(
     }
 }
 
-/// Helper: build a NormalizedAction for a tool call from a subagent.
-// TODO(cccx-phase6): Wire into cccx_spawn subagent lifecycle.
-#[allow(dead_code)]
-pub(crate) fn subagent_normalized_action(
+/// Build and evaluate a cccx WorkSpec-bound subagent tool action.
+///
+/// This is the runtime gate for CC/CX subagents. It must run before the native
+/// tool executor so allowed/forbidden tool and scope constraints are enforced
+/// in code, not only in the subagent prompt.
+pub(crate) fn cccx_subagent_tool_requirement(
+    work_spec: &cccx_protocol::WorkSpec,
     tool_name: &str,
     action_type: CccxActionType,
-    task_id: &str,
-) -> CccxNormalizedAction {
-    CccxNormalizedAction {
+    command: Option<String>,
+    target_paths: Vec<String>,
+    changed_files: usize,
+    changed_lines: usize,
+) -> Option<ExecApprovalRequirement> {
+    let action = CccxNormalizedAction {
         action_type,
         summary: format!("subagent tool: {tool_name}"),
-        command: None,
-        target_paths: Vec::new(),
+        command,
+        target_paths,
         tool_name: Some(tool_name.to_string()),
-        task_id: task_id.to_string(),
-        changed_files: 0,
-        changed_lines: 0,
-    }
+        task_id: work_spec.task_id.clone(),
+        changed_files,
+        changed_lines,
+    };
+    cccx_subagent_policy_requirement(work_spec, tool_name, &action)
+}
+
+pub(crate) fn cccx_subagent_shell_requirement(
+    work_spec: &cccx_protocol::WorkSpec,
+    command: &[String],
+) -> Option<ExecApprovalRequirement> {
+    cccx_subagent_tool_requirement(
+        work_spec,
+        "shell_command",
+        CccxActionType::Shell,
+        Some(command.join(" ")),
+        Vec::new(),
+        0,
+        0,
+    )
+}
+
+pub(crate) fn cccx_subagent_edit_requirement(
+    work_spec: &cccx_protocol::WorkSpec,
+    tool_name: &str,
+    target_paths: Vec<String>,
+) -> Option<ExecApprovalRequirement> {
+    let changed_files = target_paths.len();
+    cccx_subagent_tool_requirement(
+        work_spec,
+        tool_name,
+        CccxActionType::Edit,
+        None,
+        target_paths,
+        changed_files,
+        0,
+    )
+}
+
+pub(crate) fn cccx_subagent_mcp_requirement(
+    work_spec: &cccx_protocol::WorkSpec,
+    server_id: &str,
+    tool_name: &str,
+) -> Option<ExecApprovalRequirement> {
+    let stable_tool_name = format!("mcp:{server_id}.{tool_name}");
+    cccx_subagent_tool_requirement(
+        work_spec,
+        &stable_tool_name,
+        CccxActionType::McpCall,
+        None,
+        Vec::new(),
+        0,
+        0,
+    )
 }
 
 #[cfg(test)]

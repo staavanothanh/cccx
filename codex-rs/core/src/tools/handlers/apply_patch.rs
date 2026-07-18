@@ -404,8 +404,15 @@ impl ApplyPatchHandler {
                     )
                     .await
                     .unwrap_or_else(|_| patch_permissions_without_path_matching(&changes));
-                match apply_patch::apply_patch(turn.as_ref(), &file_system_sandbox_policy, changes)
-                    .await
+                let cccx_target_paths = file_paths.iter().map(ToString::to_string).collect();
+                match apply_patch::apply_patch(
+                    session.as_ref(),
+                    turn.as_ref(),
+                    &file_system_sandbox_policy,
+                    changes,
+                    cccx_target_paths,
+                )
+                .await
                 {
                     InternalApplyPatchInvocation::Output(item) => {
                         let content = item?;
@@ -568,8 +575,15 @@ pub(crate) async fn intercept_apply_patch(
                 )
                 .await
                 .unwrap_or_else(|_| patch_permissions_without_path_matching(&changes));
-            match apply_patch::apply_patch(turn.as_ref(), &file_system_sandbox_policy, changes)
-                .await
+            let cccx_target_paths = approval_keys.iter().map(ToString::to_string).collect();
+            match apply_patch::apply_patch(
+                session.as_ref(),
+                turn.as_ref(),
+                &file_system_sandbox_policy,
+                changes,
+                cccx_target_paths,
+            )
+            .await
             {
                 InternalApplyPatchInvocation::Output(item) => {
                     let content = item?;

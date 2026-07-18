@@ -1,6 +1,7 @@
 use super::input_queue::InputQueue;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
+use crate::cccx_task_graph_state;
 use crate::config::ConstraintError;
 use crate::environment_selection::ThreadEnvironments;
 use crate::environment_selection::TurnEnvironmentSnapshot;
@@ -48,8 +49,6 @@ pub(crate) struct Session {
     pub(super) next_internal_sub_id: AtomicU64,
     /// cccx mode state machine (architecture.md §4).
     /// Persisted alongside Task Graph to survive context compaction.
-    // TODO(cccx-phase6): Read mode from state in exec_policy/evaluate_action.
-    #[allow(dead_code)]
     pub(crate) cccx_mode: CccxModeState,
 }
 
@@ -1091,6 +1090,7 @@ impl Session {
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
                 tool_approvals: Mutex::new(ApprovalStore::default()),
+                cccx_permission_queue: crate::permission_queue_bridge::CccxPermissionQueue::new(),
                 guardian_rejections: Mutex::new(HashMap::new()),
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
                 runtime_handle: tokio::runtime::Handle::current(),
@@ -1155,6 +1155,15 @@ impl Session {
                 tool_search_handler_cache: Default::default(),
                 turn_environments: Arc::clone(&turn_environments),
             };
+            let cccx_mode =
+                match cccx_task_graph_state::load_mode_state(config.cwd.as_path()).await {
+                    Ok(Some(mode)) => mode,
+                    Ok(None) => CccxModeState::default(),
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to load persisted cccx mode state");
+                        CccxModeState::default()
+                    }
+                };
             let sess = Arc::new(Session {
                 thread_id,
                 installation_id,
@@ -1171,7 +1180,7 @@ impl Session {
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
                 next_internal_sub_id: AtomicU64::new(0),
-                cccx_mode: CccxModeState::default(),
+                cccx_mode,
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {
                 let mut guard = network_policy_decider_session.write().await;

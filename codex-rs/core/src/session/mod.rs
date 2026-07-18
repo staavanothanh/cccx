@@ -1813,6 +1813,16 @@ impl Session {
         if !is_final(&status) {
             return;
         }
+        if self.services.agent_control.has_active_cccx_runtime() {
+            self.services
+                .agent_control
+                .complete_cccx_subagent(
+                    self.thread_id,
+                    format!("{status:?}"),
+                    matches!(status, AgentStatus::Completed(_)),
+                )
+                .await;
+        }
 
         self.forward_child_completion_to_parent(
             turn_context,
@@ -2165,6 +2175,40 @@ impl Session {
         if prev_entry.is_some() {
             warn!("Overwriting existing pending approval for call_id: {effective_approval_id}");
         }
+        let command_summary = command.join(" ");
+        let cccx_action = cccx_policy::NormalizedAction {
+            action_type: cccx_policy::ActionType::Shell,
+            summary: command_summary.clone(),
+            command: Some(command_summary),
+            target_paths: Vec::new(),
+            tool_name: Some("shell_command".to_string()),
+            task_id: turn_context.sub_id.clone(),
+            changed_files: 0,
+            changed_lines: 0,
+        };
+        let cccx_request_id = self
+            .services
+            .cccx_permission_queue
+            .enqueue(
+                self.thread_id.to_string(),
+                turn_context.originator.clone(),
+                turn_context.sub_id.clone(),
+                cccx_action,
+                reason
+                    .clone()
+                    .unwrap_or_else(|| "command approval requested".to_string()),
+            )
+            .await;
+        tracing::trace!(
+            %cccx_request_id,
+            approval_id = %effective_approval_id,
+            "cccx permission queue recorded command approval request"
+        );
+        let _ = self
+            .services
+            .cccx_permission_queue
+            .active_request_id()
+            .await;
 
         let parsed_cmd = parse_command(&command);
         let proposed_network_policy_amendments = network_approval_context.as_ref().map(|context| {
@@ -2236,6 +2280,43 @@ impl Session {
         if prev_entry.is_some() {
             warn!("Overwriting existing pending approval for call_id: {approval_id}");
         }
+        let target_paths = changes
+            .keys()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        let cccx_action = cccx_policy::NormalizedAction {
+            action_type: cccx_policy::ActionType::Edit,
+            summary: format!("apply patch: {}", target_paths.join(", ")),
+            command: None,
+            target_paths,
+            tool_name: Some("apply_patch".to_string()),
+            task_id: turn_context.sub_id.clone(),
+            changed_files: changes.len(),
+            changed_lines: 0,
+        };
+        let cccx_request_id = self
+            .services
+            .cccx_permission_queue
+            .enqueue(
+                self.thread_id.to_string(),
+                turn_context.originator.clone(),
+                turn_context.sub_id.clone(),
+                cccx_action,
+                reason
+                    .clone()
+                    .unwrap_or_else(|| "patch approval requested".to_string()),
+            )
+            .await;
+        tracing::trace!(
+            %cccx_request_id,
+            approval_id = %approval_id,
+            "cccx permission queue recorded patch approval request"
+        );
+        let _ = self
+            .services
+            .cccx_permission_queue
+            .active_request_id()
+            .await;
 
         let event = EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
             call_id,

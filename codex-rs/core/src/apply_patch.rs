@@ -1,7 +1,9 @@
 use crate::exec_policy::cccx_edit_requirement;
+use crate::exec_policy::cccx_subagent_edit_requirement;
 use crate::function_tool::FunctionCallError;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_patch_safety;
+use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::sandboxing::ExecApprovalRequirement;
 use codex_apply_patch::ApplyPatchAction;
@@ -33,13 +35,26 @@ pub(crate) struct ApplyPatchRuntimeInvocation {
 }
 
 pub(crate) async fn apply_patch(
+    session: &Session,
     turn_context: &TurnContext,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     action: ApplyPatchAction,
+    cccx_target_paths: Vec<String>,
 ) -> InternalApplyPatchInvocation {
     let file_paths: Vec<String> = action.changes().keys().map(|p| p.to_string()).collect();
 
-    if let Some(requirement) = cccx_edit_requirement(&file_paths) {
+    let requirement = if let Some(work_spec) = session
+        .services
+        .agent_control
+        .cccx_work_spec_for_thread(session.thread_id)
+        .await
+    {
+        cccx_subagent_edit_requirement(&work_spec, "apply_patch", cccx_target_paths)
+    } else {
+        cccx_edit_requirement(&file_paths)
+    };
+
+    if let Some(requirement) = requirement {
         match requirement {
             ExecApprovalRequirement::Forbidden { reason } => {
                 return InternalApplyPatchInvocation::Output(Err(
