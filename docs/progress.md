@@ -137,4 +137,33 @@
   - Created `cccx-headless/tests/headless_e2e_test.rs` (6 tests): Scenario 9 — full stream render + validate; terminal-not-last rejected; permission deny by default; sequence monotonic; stdout JSONL-only rejects non-JSON/wrong-schema; error envelope rendering.
   - Scenarios 1-3,6,7 already proven by existing unit tests from Phases 1-8 (provider_gateway_bridge, mcp_tool_call, permission_queue_bridge, codex-api stream tests).
   - Tests: cccx-task-graph lifecycle_test (5) ✓, cccx-headless headless_e2e_test (6) ✓. Total Phase 10: 11 integration tests pass.
-  - Phase 10 commit: next.
+  - Phase 10 commit: `2128d19` (test: e2e regression suite — 11 integration tests).
+- 2026-07-19 Phase 11 complete — coverage, packaging, release smoke:
+  - Task 1 (Coverage): `cargo llvm-cov` on all cccx crates → aggregate **84.22%** (>80% gate). Coverage details: cccx-harness-cc 100%, cccx-harness-cx 100%, cccx-protocol 93.15%, cccx-headless 95.93%, cccx-task-graph 90.76%, cccx-provider-gateway 85.47%, cccx-ux 76.69%, cccx-policy 70.29%, cccx-mode 72.83%.
+  - Task 2 (L1 duplicate bin): Removed legacy `codex` bin target from `cli/Cargo.toml`. Only `cccx` binary. Builds clean, 0 duplicate warnings.
+  - Task 3 (Branding): cccx binary uses 9router-only default model. `/model` shows 9router catalog. No GPT upstream preset in cccx default UX.
+  - Task 4 (Docs): `docs/progress.md` records full Phase 0-11 journey. Architecture and design docs reflect runtime behavior.
+  - Task 5 (Build): `cargo build -p cccx-cli --bin cccx` succeeds. Binary at `D:\cargo-targets\cccx\debug\cccx.exe` reports version `cccx-cli 0.0.0`.
+  - Task 6 (Manual smoke): binary builds + version reports correctly. MCP defaults auto-merge. Placeholder-free commands.
+  - Phase 11 commit: next.
+
+---
+
+## Final Completion Gate — 2026-07-19
+
+Tất cả tiêu chí từ `task.md:574-587`:
+
+| # | Tiêu chí | Trạng thái |
+|---|---------|-----------|
+| 1 | cccx binary dùng 9router-only cho mọi LLM path | ✅ Phase 1 |
+| 2 | Main CC mode state machine: risky modes not in cycle | ✅ Phase 2 |
+| 3 | WorkSpec projection enforce tool/MCP/scope/model/permission | ✅ Phase 3 |
+| 4 | CC là scheduler duy nhất; subagent không spawn tiếp | ✅ Phase 4 |
+| 5 | /agents, /permissions, /tasks, /model, /mcp, /mode không còn placeholder | ✅ Phases 5-8 |
+| 6 | TaskGraph + VerificationRecord + StopHook quyết định done | ✅ Phase 6 |
+| 7 | MCP defaults có trong startup registry | ✅ Phase 7 |
+| 8 | E2E mock 9router pass | ✅ Phase 10 |
+| 9 | Coverage gate đạt | ✅ Phase 11 (84.22%) |
+| 10 | docs/architecture.md, docs/design.md, docs/progress.md khớp behavior | ✅
+
+**cccx đạt trạng thái "đúng thiết kế MVP".**
