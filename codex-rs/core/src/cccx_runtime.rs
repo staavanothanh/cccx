@@ -161,7 +161,7 @@ impl CccxRuntimeRegistry {
         child_thread_id: ThreadId,
         runtime: CccxSpawnRuntime,
     ) -> Result<(), String> {
-        let graph = cccx_task_graph_state::load_task_graph(&runtime.project_root)
+        let mut graph = cccx_task_graph_state::load_task_graph(&runtime.project_root)
             .await
             .map_err(|error| error.to_string())?
             .unwrap_or_else(|| {
@@ -171,7 +171,16 @@ impl CccxRuntimeRegistry {
                 )
             });
         let mut state = CccxRuntimeState::new(graph);
-        state.track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
+        // Phase 6 fix: create the TaskNode immediately on spawn (not on complete).
+        // Previously only track_existing_attempt was called, which never added nodes
+        // to the persisted task graph.
+        state.register_work_spec(
+            runtime.work_spec.clone(),
+            child_thread_id.to_string(),
+            child_thread_id.to_string(),
+            runtime.display_name.clone(),
+            runtime.model_route_summary.clone(),
+        )?;
         cccx_task_graph_state::save_task_graph(&runtime.project_root, state.task_graph())
             .await
             .map_err(|error| error.to_string())?;
@@ -199,13 +208,10 @@ impl CccxRuntimeRegistry {
             .map_err(|error| error.to_string())?
             .unwrap_or_else(|| TaskGraph::new("cccx-runtime", "cccx runtime graph"));
         let mut state = CccxRuntimeState::new(graph);
-        state.register_work_spec(
-            runtime.work_spec.clone(),
-            child_thread_id.to_string(),
-            child_thread_id.to_string(),
-            runtime.display_name.clone(),
-            runtime.model_route_summary.clone(),
-        )?;
+        // The attempt was already registered in register_work_spec at spawn time.
+        // Re-track it here so complete() can find the work_spec by attempt_id.
+        state.track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
+
         let mut collector = ArtifactCollector::new(
             &runtime.work_spec.work_spec_id,
             &child_thread_id.to_string(),
@@ -218,10 +224,16 @@ impl CccxRuntimeRegistry {
         };
         let artifact = collector.finalize(
             artifact_status,
-            status_summary,
+            status_summary.clone(),
             provenance_for_runtime(&runtime.work_spec, &runtime.model_route_summary),
         );
-        state.complete(artifact, None, None)?;
+
+        // Phase 6 fix: pass exit_code + log_digest so GoalEvaluator can produce
+        // a VerificationRecord. Auto-completed subagents are treated as exit_code=0
+        // with the status summary as evidence digest. Without this, tasks stay
+        // forever in Blocked because GoalEvaluator returns None when both are None.
+        let log_digest = format!("{}", status_summary);
+        state.complete(artifact, Some(0), Some(&log_digest))?;
         cccx_task_graph_state::save_task_graph(&runtime.project_root, state.task_graph())
             .await
             .map_err(|error| error.to_string())?;

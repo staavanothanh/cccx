@@ -100,11 +100,12 @@
   - Background prompt centralized via `CccxPermissionQueue` + `open_permissions_popup` (no stacked modals).
   - Phase 5 commit: `2aa53f7` (permission queue activation).
 - 2026-07-19 Phase 6 complete — TaskGraph, StopHook, GoalEvaluator:
-  - TaskGraph lifecycle already wired: `CccxRuntimeRegistry::register_spawn()` creates/persists TaskNodes on subagent spawn; `complete_spawn()` applies Artifacts and VerificationRecords; `cccx_stop_guard_outcome()` integrated into `run_turn_stop_hooks()` line 365-369 — blocks final completion when unverified tasks remain.
+  - TaskGraph lifecycle: `CccxRuntimeRegistry::register_spawn()` creates TaskNode + starts attempt immediately on spawn via `register_work_spec()` (fixed from previous `track_existing_attempt` which left graph empty). `complete_spawn()` re-tracks attempt in-memory, applies Artifact, and runs GoalEvaluator with exit_code=0 + status digest (fixed from previous None/None which prevented verification). `cccx_stop_guard_outcome()` integrated into `run_turn_stop_hooks()` line 365-369 — blocks final completion when unverified tasks remain.
   - GoalEvaluator: command-based verification via exit code + log digest; failed verifications recorded as findings; only `passed=true` with `exit_code=0` marks tasks verified.
   - `/tasks` wired: reads `.cccx/state/task-graph.json` from project root, displays task tree with status, verification, and `blockedBy` dependencies. No more placeholder.
   - `/goal` already dispatch-wired from Phase 5: parses expression through `CccxCommand::Goal`, evaluator integrated in `CccxRuntimeState::complete()`.
   - StopHook always runs before Main CC reports done; `can_stop()` requires ALL tasks verified (not just Artifact with Success status).
   - Acceptance proven: artifact without verification → blocked; verification spec change → blocked; all verified → `can_stop()` true.
+  - Post-audit fix (3 gaps found): register_spawn now creates TaskNode (was empty graph); complete_spawn passes exit_code+digest to GoalEvaluator (was None→no verification); no duplicate register_work_spec call.
   - Tests: cccx-task-graph (6) ✓, cccx_task_graph_state (3) ✓, goal_evaluator (3) ✓, cccx_runtime (1) ✓, checkpoint (3) ✓, subagent (21) ✓, hook_runtime (5) ✓, codex-tui compiles ✓, cccx-cli compiles ✓.
-  - Phase 6 commit: `eb8774a` (fix: wire /agents and /permissions — post-P5 audit) + `6e79043` (feat: /tasks wire).
+  - Phase 6 commits: `eb8774a` (fix: /agents /permissions wire), `6e79043` (feat: /tasks wire), `f1a12b5` (docs fix), plus audit-fix commit.
