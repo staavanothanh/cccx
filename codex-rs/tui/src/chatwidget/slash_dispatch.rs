@@ -828,8 +828,8 @@ impl ChatWidget {
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::Model { preset, route }))) => {
                 self.add_info_message(
-                    format!("/agents model {preset} {route} — agent model route configured via 9router."),
-                    Some("Applied to next spawn; active agents keep their existing route.".to_string()),
+                    format!("/agents model {preset} {route} — agent model route for next spawn; configured through WorkSpec.model_route at spawn time."),
+                    Some("Model route selection pinned in WorkSpec before spawn. Requires runtime session wiring for preset validation (post-MVP).".to_string()),
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::List))) => {
@@ -838,27 +838,27 @@ impl ChatWidget {
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Approve { request_id }))) => {
                 self.add_info_message(
-                    format!("/permissions approve {request_id} — routed through CccxPermissionQueue (digest-validated, circuit-breaker safe)."),
-                    Some("Queue-backed approve: only active requests with matching digest pass.".to_string()),
+                    format!("/permissions approve {request_id} — permission requests are managed through the interactive approval prompt (Y/N). The cccx PermissionRequestQueue validates digest freshness, circuit-breaker protection, and single-request isolation."),
+                    Some("Use Y/N in the approval popup for approve actions. Queue-backed approve via CccxPermissionQueue requires runtime session wiring (post-MVP).".to_string()),
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Deny { request_id }))) => {
                 self.add_info_message(
-                    format!("/permissions deny {request_id} — marked denied; next queued request promoted."),
-                    Some("Single-request deny: does not cancel siblings from same agent.".to_string()),
+                    format!("/permissions deny {request_id} — permission requests are managed through the interactive approval prompt (Y/N). Single-request deny does not cancel siblings from the same agent."),
+                    Some("Use Y/N in the approval popup for deny actions. Queue-backed deny requires runtime session wiring (post-MVP).".to_string()),
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Inspect { request_id }))) => {
                 self.add_info_message(
-                    format!("/permissions inspect {request_id} — queue detail available via CccxPermissionQueue::get()."),
-                    Some("Shows action, digest, agent id, risk level.".to_string()),
+                    format!("/permissions inspect {request_id} — active requests are displayed in the approval popup with action, scope, and risk level."),
+                    Some("Open /permissions to view the interactive queue inspector.".to_string()),
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::BatchApprove { request_ids }))) => {
                 let count = request_ids.len();
                 self.add_info_message(
-                    format!("/permissions batch-approve — {count} requests (circuit-breaker/high-risk bypassed)."),
-                    Some("Safe batch approves only non-high-risk queued items.".to_string()),
+                    format!("/permissions batch-approve — {count} requests identified. Batch approval with circuit-breaker/high-risk bypass requires runtime session wiring (post-MVP)."),
+                    Some("Use Y/N in the approval popup for individual approve actions.".to_string()),
                 );
             }
             Ok(Some(CccxCommand::Remember { note })) => {
@@ -896,14 +896,14 @@ impl ChatWidget {
                         /*hint*/ None,
                     );
                 } else if let Some(agent_id) = target {
-                    // Send interrupt via the bottom_pane's cancel path.
-                    // Codex's built-in interrupt signals all active streams,
-                    // which includes the targeted subagent without affecting
-                    // idle or queued workers.
+                    // Send a global interrupt — Codex's interrupt signals
+                    // all active streams, including the targeted subagent.
+                    // Per-worker cancellation requires session-level agent
+                    // tracking (deferred to post-MVP runtime integration).
                     self.app_event_tx.interrupt();
                     self.add_info_message(
-                        format!("/cancel {agent_id} — sent interrupt for targeted subagent."),
-                        Some("Use /agents list to verify cancellation status.".to_string()),
+                        format!("/cancel {agent_id} — sent interrupt (interrupts all active streams, including the targeted subagent)."),
+                        Some("Per-worker targeted cancel requires runtime registry integration (post-MVP).".to_string()),
                     );
                 } else {
                     self.app_event_tx.interrupt();

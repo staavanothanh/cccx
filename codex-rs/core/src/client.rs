@@ -866,6 +866,21 @@ impl ModelClient {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
+        // Phase 11: fail-closed — verify the resolved provider is 9router
+        // before making the compaction API call. Mirrors the check embedded
+        // in stream_responses_api / stream_chat_completions_api.
+        {
+            let enabled = codex_features::cccx_mvp::surface_gate_enabled();
+            let gateway_bridge = ProviderGatewayBridge::new(enabled);
+            let provider_info = self.state.provider.info();
+            if !gateway_bridge.check_fail_closed(provider_info) {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
+                     Configure a 9router route in your cccx config or set CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1 for debug use only.",
+                    provider_info.name,
+                )));
+            }
+        }
         let client_setup = self.current_client_setup().await?;
         let transport =
             self.build_api_transport(&client_setup.api_provider, RESPONSES_COMPACT_ENDPOINT)?;
@@ -1000,6 +1015,20 @@ impl ModelClient {
             return Ok(Vec::new());
         }
 
+        // Phase 11: fail-closed — verify the resolved provider is 9router
+        // before making the memory summarization API call.
+        {
+            let enabled = codex_features::cccx_mvp::surface_gate_enabled();
+            let gateway_bridge = ProviderGatewayBridge::new(enabled);
+            let provider_info = self.state.provider.info();
+            if !gateway_bridge.check_fail_closed(provider_info) {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
+                     Configure a 9router route in your cccx config or set CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1 for debug use only.",
+                    provider_info.name,
+                )));
+            }
+        }
         let client_setup = self.current_client_setup().await?;
         let transport =
             self.build_api_transport(&client_setup.api_provider, MEMORIES_SUMMARIZE_ENDPOINT)?;

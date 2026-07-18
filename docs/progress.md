@@ -167,3 +167,12 @@ Tất cả tiêu chí từ `task.md:574-587`:
 | 10 | docs/architecture.md, docs/design.md, docs/progress.md khớp behavior | ✅
 
 **cccx đạt trạng thái "đúng thiết kế MVP".**
+
+- 2026-07-19 Post-MVP audit fix batch 1 — 9router boundary + permission message accuracy:
+  - **C3 fix (9router):** Added fail-closed checks to `compact_conversation_history` and `summarize_memories` in `client.rs` (lines ~866-877, ~1014-1028). Previously these two LLM paths had no per-call 9router enforcement (only inherited safety from session creation).
+  - **C4 fix (agent cancel):** Corrected `/agents cancel <id>` message from claiming targeted cancel ("sent interrupt for targeted subagent") to honest message ("interrupts all active streams"). Per-worker targeted cancel requires runtime registry integration (post-MVP).
+  - **H2 fix (permission messages):** Corrected `/permissions approve/deny/inspect/batch-approve` info messages to stop claiming real queue actions and instead direct users to the interactive Y/N approval popup. Queue-backed programmatic actions require runtime session wiring (post-MVP).
+  - **M1 fix (agent model message):** Corrected `/agents model` message to clarify that model route is pinned in WorkSpec at spawn time.
+  - Audit findings documented: C1 (WorkSpec projection — structural Config limitation, tools sent to LLM are unfiltered parent catalog), C2 (mode system — cccx-policy intentionally uses Default mode independent of user TUI selection, circuit-breaker is mode-invariant by design), C4 (spawn guard string-matching + resume checkpoint unwired — known post-MVP deferred items).
+  - Tests: provider_gateway_bridge (6) ✓, cccx-runtime (1) ✓, cccx-protocol (18) ✓, cccx-task-graph (6+5) ✓, cccx-headless (8+6) ✓, cccx-ux (8) ✓, cccx-mode (8) ✓. codex-core compiles ✓. codex-tui compiles ✓.
+  - Commit: next.
