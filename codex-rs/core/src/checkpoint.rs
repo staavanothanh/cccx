@@ -14,6 +14,10 @@ pub struct SubagentCheckpoint {
     pub partial_diff: String,
     pub pending_steps: Vec<String>,
     pub checkpointed_at: String,
+    /// Git commit at the time the checkpoint was saved. Used to
+    /// detect resume-from-checkpoint on a different tree state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
 }
 
 #[derive(Debug)]
@@ -79,9 +83,28 @@ pub async fn delete_checkpoint(
 
 pub fn validate_checkpoint(
     checkpoint: &SubagentCheckpoint,
-    _current_git_head: &str,
+    current_git_head: &str,
     max_age_minutes: u32,
 ) -> CheckpointValidation {
+    // Old-format checkpoints (no base_commit) cannot be automatically
+    // validated — a resume must be explicitly confirmed.
+    // New-format checkpoints with a different base commit also require
+    // revalidation because the tree state has changed.
+    match &checkpoint.base_commit {
+        None => {
+            return CheckpointValidation::NeedsRevalidation {
+                base_commit: "<missing>".to_string(),
+                current_head: current_git_head.to_string(),
+            };
+        }
+        Some(base_commit) if base_commit != current_git_head => {
+            return CheckpointValidation::NeedsRevalidation {
+                base_commit: base_commit.clone(),
+                current_head: current_git_head.to_string(),
+            };
+        }
+        _ => {}
+    }
     let checkpoint_time = chrono::DateTime::parse_from_rfc3339(&checkpoint.checkpointed_at)
         .ok()
         .map(|dt| dt.with_timezone(&chrono::Utc));
@@ -128,6 +151,7 @@ mod tests {
             partial_diff: "--- a/auth.rs\n+++ b/auth.rs\n...".into(),
             pending_steps: vec!["run tests".into(), "review diff".into()],
             checkpointed_at: "2026-07-18T12:00:00Z".into(),
+            base_commit: None,
         };
         save_checkpoint(dir.path(), &ck).await.unwrap();
         let loaded = load_checkpoint(dir.path(), "a1-sess")
@@ -156,6 +180,7 @@ mod tests {
             partial_diff: String::new(),
             pending_steps: vec!["run tests".into()],
             checkpointed_at: chrono::Utc::now().to_rfc3339(),
+            base_commit: Some("head-1".to_string()),
         };
 
         assert!(matches!(
@@ -176,6 +201,7 @@ mod tests {
             partial_diff: "--- a/src/lib.rs\n+++ b/src/lib.rs".into(),
             pending_steps: vec!["run tests".into()],
             checkpointed_at: chrono::Utc::now().to_rfc3339(),
+            base_commit: Some("old-head".to_string()),
         };
 
         assert!(matches!(
