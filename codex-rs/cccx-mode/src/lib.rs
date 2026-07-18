@@ -47,6 +47,9 @@ impl CccxModeState {
 
     /// Attempt to change the mode. Only user-initiated transitions are
     /// permitted (architecture.md §4: "Chỉ user chuyển mode").
+    ///
+    /// DontAsk and Bypass require explicit confirmation/attestation and
+    /// must be entered through [`confirm_mode`] or [`attest_mode`].
     pub fn change_mode(&mut self, new: MainMode) -> Result<(), ModeTransitionError> {
         if self.locked {
             return Err(ModeTransitionError::LockedDuringTask);
@@ -54,10 +57,44 @@ impl CccxModeState {
         if self.current == new {
             return Err(ModeTransitionError::SameMode(new));
         }
-        // architecture.md §14: Bypass requires sandbox/isolation attestation
         // architecture.md §4: DontAsk requires explicit confirmation
+        if matches!(new, MainMode::DontAsk) {
+            return Err(ModeTransitionError::DontAskRequiresConfirm);
+        }
+        // architecture.md §14: Bypass requires sandbox/isolation attestation
+        if matches!(new, MainMode::Bypass) {
+            return Err(ModeTransitionError::BypassRequiresAttestation);
+        }
         self.previous = Some(self.current.clone());
         self.current = new;
+        self.transition_count += 1;
+        Ok(())
+    }
+
+    /// Enter DontAsk mode with explicit user confirmation.
+    pub fn confirm_mode(&mut self) -> Result<(), ModeTransitionError> {
+        if self.locked {
+            return Err(ModeTransitionError::LockedDuringTask);
+        }
+        if self.current == MainMode::DontAsk {
+            return Err(ModeTransitionError::SameMode(MainMode::DontAsk));
+        }
+        self.previous = Some(self.current.clone());
+        self.current = MainMode::DontAsk;
+        self.transition_count += 1;
+        Ok(())
+    }
+
+    /// Enter Bypass mode with sandbox/isolation attestation.
+    pub fn attest_mode(&mut self) -> Result<(), ModeTransitionError> {
+        if self.locked {
+            return Err(ModeTransitionError::LockedDuringTask);
+        }
+        if self.current == MainMode::Bypass {
+            return Err(ModeTransitionError::SameMode(MainMode::Bypass));
+        }
+        self.previous = Some(self.current.clone());
+        self.current = MainMode::Bypass;
         self.transition_count += 1;
         Ok(())
     }
