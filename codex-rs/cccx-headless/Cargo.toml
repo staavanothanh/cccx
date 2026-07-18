@@ -15,3 +15,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+
+[[test]]
+name = "headless_e2e_test"
+path = "tests/headless_e2e_test.rs"

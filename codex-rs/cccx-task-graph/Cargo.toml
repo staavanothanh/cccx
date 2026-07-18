@@ -16,3 +16,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 serde_json = { workspace = true }
+
+[[test]]
+name = "lifecycle_test"
+path = "tests/lifecycle_test.rs"

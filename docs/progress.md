@@ -131,4 +131,10 @@
   - Task 4: Plugin rules do not override AGENTS.md, WorkSpec, permission rules — enforced by design (plugin rules are advisory, never runtime override).
   - Added: `is_compatible_with_main_cc()` and `is_compatible_with_cx_subagent()` gates. `mcp_stable_ids()` for WorkSpec projection.
   - Tests: cccx-protocol plugin (8) ✓ — schema validation, reject unknown fields, schema version, Cx-only plugin rejects Main CC, CC-only plugin rejects CX, Both accepts both, MCP stable ids, empty stable id rejection. hook_runtime (5) ✓. codex-core compile ✓. codex-tui compile ✓. cccx-cli compile ✓.
-  - Phase 9 commit: next.
+  - Phase 9 commit: `7b7ecaa` (feat: plugin isolation — harness gating + McpToolEntry).
+- 2026-07-19 Phase 10 complete — end-to-end 9router/harness regression suite:
+  - Created `cccx-task-graph/tests/lifecycle_test.rs` (5 tests): Scenario 4+5+8 combined — Artifact without verification doesn't verify; passed VerificationRecord marks task verified + allows stop; blockedBy enforces dependency ordering; StopGuard blocks when unverified tasks remain; verification spec tamper detection.
+  - Created `cccx-headless/tests/headless_e2e_test.rs` (6 tests): Scenario 9 — full stream render + validate; terminal-not-last rejected; permission deny by default; sequence monotonic; stdout JSONL-only rejects non-JSON/wrong-schema; error envelope rendering.
+  - Scenarios 1-3,6,7 already proven by existing unit tests from Phases 1-8 (provider_gateway_bridge, mcp_tool_call, permission_queue_bridge, codex-api stream tests).
+  - Tests: cccx-task-graph lifecycle_test (5) ✓, cccx-headless headless_e2e_test (6) ✓. Total Phase 10: 11 integration tests pass.
+  - Phase 10 commit: next.
