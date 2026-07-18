@@ -8,12 +8,17 @@ use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
-pub const CCCX_HEADLESS_EVENT_SCHEMA_VERSION: &str = "cccx.headless_event.v1";
+pub const CCCX_HEADLESS_EVENT_SCHEMA_VERSION: &str = "cccx.exec_event.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeadlessEventEnvelope {
+    #[serde(rename = "schemaVersion")]
     pub schema_version: String,
     pub seq: u64,
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(rename = "turnId")]
+    pub turn_id: String,
     #[serde(flatten)]
     pub event: HeadlessEvent,
 }
@@ -23,6 +28,8 @@ impl HeadlessEventEnvelope {
         Self {
             schema_version: CCCX_HEADLESS_EVENT_SCHEMA_VERSION.to_string(),
             seq,
+            session_id: "mock-session".to_string(),
+            turn_id: "mock-turn".to_string(),
             event,
         }
     }
@@ -113,6 +120,15 @@ pub struct HeadlessStreams {
 pub fn render_jsonl(events: &[HeadlessEventEnvelope]) -> Result<String, HeadlessEventError> {
     validate_sequence(events)?;
 
+    // Terminal event must be the last event.
+    for (index, event) in events.iter().enumerate() {
+        if matches!(event.event, HeadlessEvent::Terminal(_)) && index != events.len() - 1 {
+            return Err(HeadlessEventError::Serialize(
+                "terminal event must be last".to_string(),
+            ));
+        }
+    }
+
     let mut output = String::new();
     for event in events {
         output.push_str(&serde_json::to_string(event)?);
@@ -156,7 +172,7 @@ pub fn assert_stdout_is_jsonl_only(stdout: &str) -> Result<(), HeadlessEventErro
         let value = parse_stdout_json_line(index + 1, line)?;
 
         let schema_version = value
-            .get("schema_version")
+            .get("schemaVersion")
             .and_then(Value::as_str)
             .unwrap_or_default();
         if schema_version != CCCX_HEADLESS_EVENT_SCHEMA_VERSION {
@@ -253,7 +269,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "{\"schema_version\":\"cccx.headless_event.v1\",\"seq\":1,\"type\":\"agent-update\",\"payload\":{\"logical_session_id\":\"ls-a1\",\"display_name\":\"a1-auth-fix\",\"role\":\"cx:implementer\",\"status\":\"running\",\"model_route\":{\"selection_source\":\"inherit_main_requested\",\"requested_route_id\":\"9router/main\",\"effective_route_id\":\"9router/main\"}}}\n"
+            "{\"schemaVersion\":\"cccx.exec_event.v1\",\"seq\":1,\"sessionId\":\"mock-session\",\"turnId\":\"mock-turn\",\"type\":\"agent-update\",\"payload\":{\"logical_session_id\":\"ls-a1\",\"display_name\":\"a1-auth-fix\",\"role\":\"cx:implementer\",\"status\":\"running\",\"model_route\":{\"selection_source\":\"inherit_main_requested\",\"requested_route_id\":\"9router/main\",\"effective_route_id\":\"9router/main\"}}}\n"
         );
     }
 
