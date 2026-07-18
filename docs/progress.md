@@ -58,3 +58,9 @@
   - Re-verified the chat-completions parser keeps `tool_search` as a reserved typed call instead of flattening it into a normal function tool call.
   - Confirmed the current adapter matrix remains asymmetric by design: `ToolSpec` has five model-visible variants, but runtime `ToolPayload` only has `Function`, `ToolSearch`, and `Custom`, so boundary translation correctness is mandatory for 9router/chat-completions compatibility.
 - Remaining post-plan work: replace placeholder runtime actions for `/tasks`, `/remember`, `/cancel`, and deeper config/help/update string renames that are still intentionally left on internal `codex_*` terminology.
+- 2026-07-18 test-only coverage pass:
+  - Loaded requested `tdd-workflow` and `rust-testing` skills from `C:\Users\Admin\.codex\skills`.
+  - Fixed the local Windows `v8` build blocker without admin by creating junction `D:\cargo-targets\cccx\debug\gn_root` to the Cargo registry `v8-149.2.0` source, allowing `codex-core` tests to compile on shared D target dir.
+  - Added/tightened contract tests around Artifact provenance/evidence, permission queue bridge, project memory, checkpoint validation, MCP defaults, provider gateway provenance, goal evaluator, chat-completions stream/tool handling, and OpenAI-compatible parallel tool-call history.
+  - Current state is intentionally RED. Detailed evidence and phase plan: `docs/testing/cccx-feature-coverage-red-report.md`.
+  - Numeric `>=80%` coverage is not yet proven because `cargo-llvm-cov`/`cargo-tarpaulin` are not installed and the feature suite is still RED.

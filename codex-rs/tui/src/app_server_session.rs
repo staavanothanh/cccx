@@ -114,10 +114,12 @@ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelUpgrade;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -306,11 +308,42 @@ impl AppServerSession {
             .map_err(|err| {
                 bootstrap_request_error("model/list failed during TUI bootstrap", err)
             })?;
-        let available_models = models
+        let mut available_models = models
             .data
             .into_iter()
             .map(model_preset_from_api_model)
             .collect::<Vec<_>>();
+
+        // cccx: inject the configured model (from config.toml) into the model list.
+        // The built-in Codex model catalog only contains OpenAI models — custom
+        // providers like 9router-local need their configured model explicitly
+        // added so it appears in the picker UI.
+        if let Some(configured_model) = config.model.as_ref() {
+            let already_present = available_models
+                .iter()
+                .any(|preset| preset.model == *configured_model);
+            if !already_present {
+                available_models.push(ModelPreset {
+                    id: configured_model.clone(),
+                    model: configured_model.clone(),
+                    display_name: configured_model.clone(),
+                    description: "cccx configured model".to_string(),
+                    default_reasoning_effort: ReasoningEffort::Medium,
+                    supported_reasoning_efforts: vec![],
+                    supports_personality: false,
+                    additional_speed_tiers: vec![],
+                    service_tiers: vec![],
+                    default_service_tier: None,
+                    is_default: true,
+                    upgrade: None,
+                    show_in_picker: true,
+                    multi_agent_version: None,
+                    availability_nux: None,
+                    supported_in_api: true,
+                    input_modalities: vec![InputModality::Text],
+                });
+            }
+        }
         let default_model = config
             .model
             .clone()

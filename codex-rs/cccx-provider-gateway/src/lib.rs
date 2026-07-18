@@ -342,6 +342,8 @@ pub enum ProviderGatewayError {
     HttpStatus { status: u16, body: String },
 }
 
+pub mod provenance;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +445,54 @@ mod tests {
             err,
             ProviderGatewayError::UnknownRouteId { route_id } if route_id == "missing"
         ));
+    }
+
+    #[test]
+    fn session_default_can_inherit_main_effective_route() {
+        let catalog = catalog();
+        let resolved = ModelRouteResolver::new(&catalog)
+            .resolve_subagent_route(ModelRouteResolveRequest {
+                session_default_subagent_model: Some(
+                    SubagentModelRouteRequest::InheritMainEffective,
+                ),
+                main_requested_route_id: Some("main".to_string()),
+                main_effective_route_id: Some("preset".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(resolved.route.route_id, "preset");
+        assert_eq!(
+            resolved.provenance.selection_source,
+            ModelRouteSelectionSource::InheritMainEffective
+        );
+        assert_eq!(
+            resolved.provenance.parent_requested_route_id,
+            Some("main".to_string())
+        );
+        assert_eq!(
+            resolved.provenance.parent_effective_route_id,
+            Some("preset".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_suggested_route_has_lower_priority_than_role_preset() {
+        let catalog = catalog();
+        let resolved = ModelRouteResolver::new(&catalog)
+            .resolve_subagent_route(ModelRouteResolveRequest {
+                role_preset_route_id: Some("preset".to_string()),
+                agent_suggested_route_id: Some("explicit".to_string()),
+                main_requested_route_id: Some("main".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(resolved.route.route_id, "preset");
+        assert_eq!(
+            resolved.provenance.selection_source,
+            ModelRouteSelectionSource::RolePreset
+        );
     }
 
     #[allow(deprecated)]

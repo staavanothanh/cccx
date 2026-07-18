@@ -333,6 +333,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_all_design_mode_slash_commands() {
+        for command in [
+            "/plan",
+            "/default",
+            "/accept-edits",
+            "/auto",
+            "/dont-ask",
+            "/bypass --confirm",
+        ] {
+            assert!(
+                parse_cccx_command(command).is_ok(),
+                "mode command should be registered: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_design_task_goal_and_utility_commands() {
+        for command in [
+            "/goal tests pass",
+            "/review",
+            "/theme ansi",
+            "/skills",
+            "/plugins",
+            "/mcp",
+            "/help --shortcuts",
+        ] {
+            assert!(
+                parse_cccx_command(command).is_ok(),
+                "design command should be registered: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_legacy_agent_singular_command() {
+        assert!(matches!(
+            parse_cccx_command("/agent logs a1"),
+            Err(CommandParseError::UnknownCommand(command)) if command == "/agent"
+        ));
+    }
+
+    #[test]
     fn render_status_line_snapshot() {
         let rendered = render_status_line(&StatusLineView {
             mode: "Auto".to_string(),

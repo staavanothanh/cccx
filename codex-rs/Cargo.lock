@@ -1686,6 +1686,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cccx-harness-cc"
+version = "0.0.0"
+dependencies = [
+ "cccx-protocol",
+]
+
+[[package]]
+name = "cccx-harness-cx"
+version = "0.0.0"
+dependencies = [
+ "cccx-protocol",
+]
+
+[[package]]
 name = "cccx-headless"
 version = "0.0.0"
 dependencies = [
@@ -1696,9 +1710,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cccx-mode"
+version = "0.0.0"
+dependencies = [
+ "cccx-policy",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cccx-policy"
 version = "0.0.0"
 dependencies = [
+ "cccx-protocol",
  "pretty_assertions",
  "serde",
  "thiserror 2.0.18",
@@ -2713,7 +2737,12 @@ dependencies = [
  "async-channel",
  "base64 0.22.1",
  "bm25",
+ "cccx-harness-cc",
+ "cccx-harness-cx",
+ "cccx-mode",
  "cccx-policy",
+ "cccx-protocol",
+ "cccx-provider-gateway",
  "cccx-task-graph",
  "chrono",
  "clap",
@@ -2807,6 +2836,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha1 0.10.6",
+ "sha2 0.10.9",
  "shlex",
  "similar",
  "tempfile",

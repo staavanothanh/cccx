@@ -13,6 +13,8 @@ use cccx_policy::PolicyDecision as CccxPolicyDecision;
 use cccx_policy::PolicySession as CccxPolicySession;
 use cccx_policy::PolicySet as CccxPolicySet;
 use cccx_policy::evaluate_action as cccx_evaluate_action;
+use cccx_policy::evaluate_subagent;
+use cccx_protocol;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigLayerStackOrdering;
@@ -413,9 +415,7 @@ fn cccx_full_shell_requirement(command: &[String]) -> Option<ExecApprovalRequire
 ///   Plan-mode edit, DontAsk with escalate match)
 /// - `Some(NeedsApproval)` when user approval is required
 /// - `None` when no cccx policy applies (allowlist match, or no rule matched)
-pub(crate) fn cccx_edit_requirement(
-    file_paths: &[String],
-) -> Option<ExecApprovalRequirement> {
+pub(crate) fn cccx_edit_requirement(file_paths: &[String]) -> Option<ExecApprovalRequirement> {
     let paths_summary = file_paths.join(", ");
     let action = CccxNormalizedAction {
         action_type: CccxActionType::Edit,
@@ -1335,6 +1335,58 @@ async fn collect_policy_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>, Exe
         dir.display()
     );
     Ok(policy_paths)
+}
+
+/// cccx subagent permission evaluation bridge.
+///
+/// Called when a subagent (CC-harness or CX-harness) tries to execute a tool.
+/// Uses evaluate_subagent() from cccx-policy which checks WorkSpec constraints.
+/// Architecture.md §5.9.
+pub(crate) fn cccx_subagent_policy_requirement(
+    work_spec: &cccx_protocol::WorkSpec,
+    _tool_name: &str,
+    action: &CccxNormalizedAction,
+) -> Option<ExecApprovalRequirement> {
+    let decision = evaluate_subagent(action, work_spec, &CccxPolicySet::default_m4());
+
+    match decision {
+        CccxPolicyDecision::Deny { reason, .. } => {
+            Some(ExecApprovalRequirement::Forbidden { reason })
+        }
+        CccxPolicyDecision::RequireApproval { reason, .. } => {
+            Some(ExecApprovalRequirement::NeedsApproval {
+                reason: Some(reason),
+                proposed_execpolicy_amendment: None,
+            })
+        }
+        CccxPolicyDecision::RerouteToCx { reason } => {
+            Some(ExecApprovalRequirement::NeedsApproval {
+                reason: Some(format!(
+                    "{reason} — reroute not applicable in subagent context"
+                )),
+                proposed_execpolicy_amendment: None,
+            })
+        }
+        CccxPolicyDecision::Allow { .. } => None,
+    }
+}
+
+/// Helper: build a NormalizedAction for a tool call from a subagent.
+pub(crate) fn subagent_normalized_action(
+    tool_name: &str,
+    action_type: CccxActionType,
+    task_id: &str,
+) -> CccxNormalizedAction {
+    CccxNormalizedAction {
+        action_type,
+        summary: format!("subagent tool: {tool_name}"),
+        command: None,
+        target_paths: Vec::new(),
+        tool_name: Some(tool_name.to_string()),
+        task_id: task_id.to_string(),
+        changed_files: 0,
+        changed_lines: 0,
+    }
 }
 
 #[cfg(test)]

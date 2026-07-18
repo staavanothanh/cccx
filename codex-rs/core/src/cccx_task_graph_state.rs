@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use cccx_mode::CccxModeState;
 use cccx_task_graph::TaskGraph;
 use thiserror::Error;
 use tokio::fs;
@@ -105,6 +106,51 @@ pub fn stop_guard(task_graph: &TaskGraph) -> Result<(), TaskGraphStateError> {
 
 pub fn compaction_survivor_json(task_graph: &TaskGraph) -> Result<String, TaskGraphStateError> {
     serde_json::to_string(task_graph).map_err(TaskGraphStateError::Serialize)
+}
+
+// --- Mode State Persistence ---
+
+const MODE_STATE_FILE: &str = "mode_state.json";
+
+fn mode_state_path(project_root: &Path) -> PathBuf {
+    project_root.join(CCCX_STATE_DIR).join(MODE_STATE_FILE)
+}
+
+pub async fn load_mode_state(
+    project_root: &Path,
+) -> Result<Option<CccxModeState>, TaskGraphStateError> {
+    let path = mode_state_path(project_root);
+    let bytes = match fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(TaskGraphStateError::Read { path, source }),
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|source| TaskGraphStateError::Parse { path, source })
+}
+
+pub async fn save_mode_state(
+    project_root: &Path,
+    mode: &CccxModeState,
+) -> Result<(), TaskGraphStateError> {
+    let path = mode_state_path(project_root);
+    let Some(parent) = path.parent() else {
+        return Err(TaskGraphStateError::Write {
+            path,
+            source: std::io::Error::other("mode state path has no parent"),
+        });
+    };
+    fs::create_dir_all(parent)
+        .await
+        .map_err(|source| TaskGraphStateError::CreateDir {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    let bytes = serde_json::to_vec_pretty(mode).map_err(TaskGraphStateError::Serialize)?;
+    fs::write(&path, bytes)
+        .await
+        .map_err(|source| TaskGraphStateError::Write { path, source })
 }
 
 #[cfg(test)]

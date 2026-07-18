@@ -797,6 +797,10 @@ impl App {
             None => app_server.bootstrap(&config).await?,
         };
         let bootstrap_ms = bootstrap.duration.as_millis();
+        // cccx: save the user-configured model before managed defaults or
+        // migration prompts overwrite it with a Codex catalog model.
+        let cccx_configured_model = config.model.clone();
+
         if matches!(
             &session_selection,
             SessionSelection::StartFresh | SessionSelection::Exit
@@ -808,6 +812,13 @@ impl App {
                 &harness_overrides,
             );
         }
+
+        // cccx: restore the user's configured model from config.toml.
+        // apply_managed_new_thread_defaults() overwrites config.model with
+        // the Codex enterprise-managed default (gpt-5.6-sol) when no CLI
+        // -m override is present. For cccx with 9router, the managed
+        // default is meaningless — use the configured model instead.
+        config.model = cccx_configured_model;
         let mut model = config.model.clone().unwrap_or(bootstrap.default_model);
         let available_models = bootstrap.available_models;
         let remote_connection = crate::status::remote_connection::remote_connection_status_value(
@@ -831,9 +842,6 @@ impl App {
                 })
                 .ok();
             return Ok(exit_info);
-        }
-        if let Some(updated_model) = config.model.clone() {
-            model = updated_model;
         }
         let model_catalog = Arc::new(ModelCatalog::new(available_models.clone()));
         let feedback_audience = bootstrap.feedback_audience;

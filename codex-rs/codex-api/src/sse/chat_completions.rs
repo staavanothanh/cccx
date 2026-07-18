@@ -532,11 +532,17 @@ mod tests {
     use super::ChatCompletionAccumulator;
     use super::ChatCompletionChunk;
     use super::PendingToolCall;
-    use super::split_tool_name;
     use super::ToolNameMapping;
+    use super::process_chat_completions_sse;
+    use super::split_tool_name;
     use crate::common::ResponseEvent;
+    use crate::error::ApiError;
+    use bytes::Bytes;
+    use codex_client::ByteStream;
     use codex_protocol::models::ResponseItem;
+    use futures::stream;
     use serde_json::json;
+    use std::time::Duration;
     use tokio::sync::mpsc;
 
     async fn collect_events(
@@ -603,7 +609,10 @@ mod tests {
 
     #[test]
     fn split_tool_name_preserves_tool_search_as_reserved_call() {
-        assert!(matches!(split_tool_name("tool_search"), ToolNameMapping::ToolSearch));
+        assert!(matches!(
+            split_tool_name("tool_search"),
+            ToolNameMapping::ToolSearch
+        ));
     }
 
     #[test]
@@ -615,6 +624,15 @@ mod tests {
         assert!(matches!(
             split_tool_name("image_generation"),
             ToolNameMapping::UnsupportedHosted { name } if name == "image_generation"
+        ));
+    }
+
+    #[test]
+    fn split_tool_name_preserves_mcp_server_namespace() {
+        assert!(matches!(
+            split_tool_name("mcp__codebase_memory_mcp__search_graph"),
+            ToolNameMapping::Function { namespace: Some(namespace), name }
+                if namespace == "mcp__codebase_memory_mcp" && name == "search_graph"
         ));
     }
 
@@ -640,7 +658,10 @@ mod tests {
         }
 
         assert!(
-            matches!(&events[0], ResponseEvent::OutputItemAdded(ResponseItem::ToolSearchCall { .. })),
+            matches!(
+                &events[0],
+                ResponseEvent::OutputItemAdded(ResponseItem::ToolSearchCall { .. })
+            ),
             "expected first event to be OutputItemAdded(ToolSearchCall)"
         );
         assert!(matches!(
@@ -669,7 +690,49 @@ mod tests {
             },
         );
 
-        let err = acc.finish(&tx).await.expect_err("hosted tool should be rejected");
-        assert!(err.to_string().contains("unsupported hosted tool `web_search`"));
+        let err = acc
+            .finish(&tx)
+            .await
+            .expect_err("hosted tool should be rejected");
+        assert!(
+            err.to_string()
+                .contains("unsupported hosted tool `web_search`")
+        );
+    }
+
+    #[tokio::test]
+    async fn eof_before_done_is_reported_as_stream_error_not_completed() {
+        let chunk = json!({
+            "id": "chatcmpl-1",
+            "choices": [{
+                "index": 0,
+                "finish_reason": null,
+                "delta": { "role": "assistant", "content": "partial" }
+            }]
+        });
+        let sse = format!("data: {chunk}\n\n");
+        let stream: ByteStream = Box::pin(stream::iter(vec![Ok(Bytes::from(sse))]));
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(32);
+
+        process_chat_completions_sse(stream, tx, Duration::from_secs(5), None).await;
+
+        let mut saw_error = false;
+        let mut saw_completed = false;
+        while let Some(event) = rx.recv().await {
+            match event {
+                Ok(ResponseEvent::Completed { .. }) => saw_completed = true,
+                Err(err) if err.to_string().contains("ended before [DONE]") => saw_error = true,
+                _ => {}
+            }
+        }
+
+        assert!(
+            saw_error,
+            "EOF before [DONE] must be surfaced as a stream error"
+        );
+        assert!(
+            !saw_completed,
+            "truncated streams must not be marked completed"
+        );
     }
 }

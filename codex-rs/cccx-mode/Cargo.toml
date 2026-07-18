@@ -1,0 +1,10 @@
+[package]
+name = "cccx-mode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cccx-policy = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

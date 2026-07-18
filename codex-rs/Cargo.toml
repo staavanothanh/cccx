@@ -28,8 +28,11 @@ members = [
     "cloud-tasks",
     "cloud-tasks-client",
     "cloud-tasks-mock-client",
+    "cccx-mode",
     "cccx-policy",
     "cccx-protocol",
+    "cccx-harness-cc",
+    "cccx-harness-cx",
     "cccx-headless",
     "cccx-provider-gateway",
     "cccx-task-graph",
@@ -163,8 +166,11 @@ codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
 codex-chatgpt = { path = "chatgpt" }
+cccx-mode = { path = "cccx-mode" }
 cccx-policy = { path = "cccx-policy" }
 cccx-protocol = { path = "cccx-protocol" }
+cccx-harness-cc = { path = "cccx-harness-cc" }
+cccx-harness-cx = { path = "cccx-harness-cx" }
 cccx-headless = { path = "cccx-headless" }
 cccx-provider-gateway = { path = "cccx-provider-gateway" }
 cccx-task-graph = { path = "cccx-task-graph" }

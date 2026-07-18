@@ -1,6 +1,4 @@
 use super::AuthRequestTelemetryContext;
-use super::chat_completion_tools;
-use super::chat_message_from_response_item;
 use super::CompactConversationRequestSettings;
 use super::ModelClient;
 use super::PendingUnauthorizedRetry;
@@ -11,6 +9,8 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
+use super::chat_completion_tools;
+use super::chat_message_from_response_item;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -929,8 +929,9 @@ fn chat_message_from_response_item_rejects_web_search_history() {
     .expect_err("web_search history should be rejected on chat-completions");
 
     assert!(
-        err.to_string()
-            .contains("web_search_call history is unsupported on the chat-completions runtime path")
+        err.to_string().contains(
+            "web_search_call history is unsupported on the chat-completions runtime path"
+        )
     );
 }
 
@@ -954,5 +955,40 @@ fn chat_completion_tools_flattens_namespaced_function_tools() {
     assert_eq!(
         tools[0]["function"]["name"].as_str(),
         Some("multi_agent_v1__spawn_agent")
+    );
+}
+
+#[test]
+fn parallel_function_call_history_must_serialize_as_one_assistant_message() {
+    let first = chat_message_from_response_item(&ResponseItem::FunctionCall {
+        id: None,
+        name: "spawn_agent".to_string(),
+        namespace: Some("multi_agent_v1".to_string()),
+        arguments: r#"{"task_name":"research"}"#.to_string(),
+        call_id: "call-1".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    })
+    .expect("first function call should serialize")
+    .expect("first function call message");
+    let second = chat_message_from_response_item(&ResponseItem::FunctionCall {
+        id: None,
+        name: "search_graph".to_string(),
+        namespace: Some("mcp__codebase_memory_mcp".to_string()),
+        arguments: r#"{"project":"cccx","query":"spawn"}"#.to_string(),
+        call_id: "call-2".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    })
+    .expect("second function call should serialize")
+    .expect("second function call message");
+
+    let serialized_history = vec![first, second];
+    assert_eq!(
+        serialized_history.len(),
+        1,
+        "OpenAI-compatible chat history requires parallel tool calls from one assistant turn to be grouped into a single assistant message with multiple tool_calls"
+    );
+    assert_eq!(
+        serialized_history[0]["tool_calls"].as_array().map(Vec::len),
+        Some(2)
     );
 }

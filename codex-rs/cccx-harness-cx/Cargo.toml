@@ -1,0 +1,8 @@
+[package]
+name = "cccx-harness-cx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cccx-protocol = { workspace = true }

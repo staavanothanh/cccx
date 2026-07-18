@@ -9,6 +9,7 @@ name = "cccx_policy"
 path = "src/lib.rs"
 
 [dependencies]
+cccx-protocol = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 

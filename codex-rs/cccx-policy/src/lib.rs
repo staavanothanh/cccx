@@ -233,9 +233,8 @@ impl StaticRule {
             if !cmd.contains("git push") {
                 return false;
             }
-            let has_force = cmd.contains("--force")
-                || cmd.contains("-f")
-                || cmd.contains("--force-with-lease");
+            let has_force =
+                cmd.contains("--force") || cmd.contains("-f") || cmd.contains("--force-with-lease");
             if !has_force {
                 return false;
             }
@@ -265,8 +264,13 @@ impl StaticRule {
                 return false;
             }
             let dangerous_targets = [
-                " /", " /*", " ~", " /home", "$home",
-                "\"c:\\", "c:\\windows",
+                " /",
+                " /*",
+                " ~",
+                " /home",
+                "$home",
+                "\"c:\\",
+                "c:\\windows",
             ];
             return dangerous_targets.iter().any(|t| cmd.contains(t));
         }
@@ -277,7 +281,8 @@ impl StaticRule {
                 return false;
             };
             let cmd = cmd.to_ascii_lowercase();
-            if cmd.contains("format ") || cmd.contains("mkfs")
+            if cmd.contains("format ")
+                || cmd.contains("mkfs")
                 || (cmd.contains("dd if=") && cmd.contains("of="))
                 || cmd.contains("diskpart")
                 || (cmd.contains("wmic") && cmd.contains("diskdrive") && cmd.contains("clean"))
@@ -459,6 +464,161 @@ fn classify_or_escalate(
             reason: "classifier_unavailable".to_string(),
             digest: action.digest(),
         },
+    }
+}
+
+pub fn evaluate_subagent(
+    action: &NormalizedAction,
+    work_spec: &cccx_protocol::WorkSpec,
+    policies: &PolicySet,
+) -> PolicyDecision {
+    if let Some(rule) = first_match(policies, action, RuleTier::CircuitBreaker) {
+        return PolicyDecision::Deny {
+            reason: rule.reason.clone(),
+            bypassable: false,
+            silent: false,
+        };
+    }
+
+    if let Some(ref tool_name) = action.tool_name {
+        let is_mcp = matches!(action.action_type, ActionType::McpCall);
+        let allowed = if is_mcp {
+            work_spec.allowed_mcp_tools.contains(tool_name)
+        } else {
+            work_spec.allowed_tools.contains(tool_name)
+        };
+        if !allowed {
+            return PolicyDecision::Deny {
+                reason: format!("tool_not_allowed: {}", tool_name),
+                bypassable: false,
+                silent: false,
+            };
+        }
+    }
+
+    if let Some(ref tool_name) = action.tool_name {
+        if work_spec.forbidden_tools.contains(tool_name) {
+            return PolicyDecision::Deny {
+                reason: format!("tool_forbidden: {}", tool_name),
+                bypassable: false,
+                silent: false,
+            };
+        }
+    }
+
+    if matches!(action.action_type, ActionType::Edit) && !action.target_paths.is_empty() {
+        let in_scope = action.target_paths.iter().any(|target| {
+            let normalized = target.replace('\\', "/");
+            work_spec
+                .scope
+                .canonical_paths
+                .iter()
+                .any(|scope_path| normalized.starts_with(&scope_path.replace('\\', "/")))
+        });
+        if !in_scope {
+            return PolicyDecision::Deny {
+                reason: "out_of_scope".to_string(),
+                bypassable: false,
+                silent: false,
+            };
+        }
+    }
+
+    for constraint in &work_spec.enforced_constraints {
+        if violates_subagent_constraint(action, constraint) {
+            return PolicyDecision::Deny {
+                reason: format!("constraint_violation: {}", constraint),
+                bypassable: false,
+                silent: false,
+            };
+        }
+    }
+
+    if let Some(ref threshold) = work_spec.risk_threshold {
+        if action.changed_files > threshold.max_files_changed {
+            return escalate_subagent(action, &work_spec.approval_policy, "max_files_exceeded");
+        }
+        if action.changed_lines > threshold.max_lines_changed {
+            return escalate_subagent(action, &work_spec.approval_policy, "max_lines_exceeded");
+        }
+        for pattern in &threshold.forbidden_patterns {
+            if action.target_paths.iter().any(|p| {
+                p.to_ascii_lowercase()
+                    .contains(&pattern.to_ascii_lowercase())
+            }) {
+                return escalate_subagent(action, &work_spec.approval_policy, "forbidden_pattern");
+            }
+        }
+    }
+
+    if let Some(ref action_classes) = work_spec.action_classes {
+        let at = action_type_str(action);
+        if action_classes.iter().any(|ac| ac.action_type == at) {
+            return escalate_subagent(
+                action,
+                &work_spec.approval_policy,
+                "action_class_requires_approval",
+            );
+        }
+    }
+
+    match work_spec.approval_policy {
+        Some(cccx_protocol::ApprovalPolicyKind::AutoDeny) => PolicyDecision::Deny {
+            reason: "auto_deny_policy".to_string(),
+            bypassable: true,
+            silent: false,
+        },
+        Some(cccx_protocol::ApprovalPolicyKind::AskCc) => PolicyDecision::RequireApproval {
+            reason: "subagent-require-cc-approval".to_string(),
+            digest: action.digest(),
+        },
+        Some(cccx_protocol::ApprovalPolicyKind::AskUser) | None => {
+            PolicyDecision::RequireApproval {
+                reason: "subagent-require-approval".to_string(),
+                digest: action.digest(),
+            }
+        }
+    }
+}
+
+fn escalate_subagent(
+    action: &NormalizedAction,
+    policy: &Option<cccx_protocol::ApprovalPolicyKind>,
+    reason: &str,
+) -> PolicyDecision {
+    match policy {
+        Some(cccx_protocol::ApprovalPolicyKind::AutoDeny) => PolicyDecision::Deny {
+            reason: reason.to_string(),
+            bypassable: true,
+            silent: false,
+        },
+        _ => PolicyDecision::RequireApproval {
+            reason: reason.to_string(),
+            digest: action.digest(),
+        },
+    }
+}
+
+fn violates_subagent_constraint(action: &NormalizedAction, constraint: &str) -> bool {
+    if constraint == "no-out-of-scope-edits" {
+        return false;
+    }
+    let pattern = constraint.to_ascii_lowercase();
+    action
+        .command
+        .iter()
+        .chain(action.tool_name.iter())
+        .chain(action.target_paths.iter())
+        .any(|value| value.to_ascii_lowercase().contains(&pattern))
+}
+
+fn action_type_str(action: &NormalizedAction) -> &str {
+    match action.action_type {
+        ActionType::Read => "read",
+        ActionType::Edit => "edit",
+        ActionType::Shell => "shell",
+        ActionType::McpCall => "mcp_call",
+        ActionType::Network => "network",
     }
 }
 
@@ -698,6 +858,36 @@ mod tests {
         }
     }
 
+    fn set(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn cx_work_spec() -> cccx_protocol::WorkSpec {
+        cccx_protocol::WorkSpec {
+            schema_version: cccx_protocol::CCCX_PROTOCOL_SCHEMA_VERSION.to_string(),
+            work_spec_id: "ws-1".to_string(),
+            task_id: "T1".to_string(),
+            harness: cccx_protocol::HarnessKind::Cx,
+            role: cccx_protocol::WorkRole::Implementer,
+            objective: "bounded implementation".to_string(),
+            scope: cccx_protocol::WorkScope {
+                canonical_paths: set(&["D:/repo/src/auth"]),
+                protected_paths: BTreeSet::new(),
+            },
+            allowed_tools: set(&["apply_patch"]),
+            forbidden_tools: set(&["spawn_agent"]),
+            allowed_mcp_tools: set(&["mcp:codebase-memory-mcp.search_graph"]),
+            permission_policy: cccx_protocol::PermissionPolicy::Ask,
+            model_route: cccx_protocol::ModelRouteSelection::InheritMainRequested,
+            fallback_policy_id: "compatible".to_string(),
+            fork_policy: cccx_protocol::ForkPolicy::WorkSpecOnly,
+            enforced_constraints: vec!["no-out-of-scope-edits".to_string()],
+            risk_threshold: None,
+            action_classes: None,
+            approval_policy: Some(cccx_protocol::ApprovalPolicyKind::AskCc),
+        }
+    }
+
     #[test]
     fn static_deny_beats_static_allow() {
         let decision = evaluate_action(
@@ -864,5 +1054,44 @@ mod tests {
             queue.get("pr-1").map(|request| &request.status),
             Some(&PermissionRequestStatus::Cancelled)
         );
+    }
+
+    #[test]
+    fn subagent_scope_check_requires_real_path_boundary() {
+        let mut action = edit_action();
+        action.target_paths = vec!["D:/repo/src/authentication/session.rs".to_string()];
+
+        let decision = evaluate_subagent(&action, &cx_work_spec(), &PolicySet::default_m4());
+
+        assert_eq!(
+            decision,
+            PolicyDecision::Deny {
+                reason: "out_of_scope".to_string(),
+                bypassable: false,
+                silent: false
+            }
+        );
+    }
+
+    #[test]
+    fn main_bypass_does_not_expand_subagent_tools() {
+        let action = NormalizedAction {
+            action_type: ActionType::McpCall,
+            summary: "commit ADR".to_string(),
+            command: None,
+            target_paths: Vec::new(),
+            tool_name: Some("mcp:codebase-memory-mcp.manage_adr".to_string()),
+            task_id: "T1".to_string(),
+            changed_files: 0,
+            changed_lines: 0,
+        };
+
+        let decision = evaluate_subagent(&action, &cx_work_spec(), &PolicySet::default_m4());
+
+        assert!(matches!(
+            decision,
+            PolicyDecision::Deny { reason, bypassable: false, .. }
+                if reason == "tool_not_allowed: mcp:codebase-memory-mcp.manage_adr"
+        ));
     }
 }

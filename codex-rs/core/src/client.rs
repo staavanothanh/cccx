@@ -264,7 +264,9 @@ enum ChatCompletionsItemBehavior<'a> {
     Reject(&'a str),
 }
 
-fn chat_message_behavior_from_response_item(item: &ResponseItem) -> ChatCompletionsItemBehavior<'_> {
+fn chat_message_behavior_from_response_item(
+    item: &ResponseItem,
+) -> ChatCompletionsItemBehavior<'_> {
     match item {
         ResponseItem::Message { role, content, .. } => {
             let role = if role == "developer" {
@@ -272,12 +274,15 @@ fn chat_message_behavior_from_response_item(item: &ResponseItem) -> ChatCompleti
             } else {
                 role.as_str()
             };
-            chat_message_content_value(content).map_or(ChatCompletionsItemBehavior::Drop, |content| {
-                ChatCompletionsItemBehavior::Serialize(json!({
-                    "role": role,
-                    "content": content,
-                }))
-            })
+            chat_message_content_value(content).map_or(
+                ChatCompletionsItemBehavior::Drop,
+                |content| {
+                    ChatCompletionsItemBehavior::Serialize(json!({
+                        "role": role,
+                        "content": content,
+                    }))
+                },
+            )
         }
         ResponseItem::FunctionCall {
             name,
@@ -342,12 +347,12 @@ fn chat_message_behavior_from_response_item(item: &ResponseItem) -> ChatCompleti
                 "content": content,
             }))
         }),
-        ResponseItem::WebSearchCall { .. } => {
-            ChatCompletionsItemBehavior::Reject("web_search_call history is unsupported on the chat-completions runtime path")
-        }
-        ResponseItem::ImageGenerationCall { .. } => {
-            ChatCompletionsItemBehavior::Reject("image_generation_call history is unsupported on the chat-completions runtime path")
-        }
+        ResponseItem::WebSearchCall { .. } => ChatCompletionsItemBehavior::Reject(
+            "web_search_call history is unsupported on the chat-completions runtime path",
+        ),
+        ResponseItem::ImageGenerationCall { .. } => ChatCompletionsItemBehavior::Reject(
+            "image_generation_call history is unsupported on the chat-completions runtime path",
+        ),
         ResponseItem::AdditionalTools { .. }
         | ResponseItem::AgentMessage { .. }
         | ResponseItem::Reasoning { .. }
@@ -438,10 +443,7 @@ fn chat_completion_tool_behavior(spec: &ToolSpec) -> ChatCompletionsToolBehavior
     }
 }
 
-fn extend_chat_completion_tools(
-    output: &mut Vec<Value>,
-    spec: &ToolSpec,
-) -> Result<()> {
+fn extend_chat_completion_tools(output: &mut Vec<Value>, spec: &ToolSpec) -> Result<()> {
     match chat_completion_tool_behavior(spec) {
         ChatCompletionsToolBehavior::Serialize(Value::Array(values)) => {
             output.extend(values);
@@ -1930,9 +1932,9 @@ impl ModelClientSession {
                     );
                     retry_count += 1;
                     if retry_count >= 3 {
-                        return Err(self.client.state.provider.map_api_error(
-                            ApiError::Stream("max unauthorized retries exceeded".to_string()),
-                        ));
+                        return Err(self.client.state.provider.map_api_error(ApiError::Stream(
+                            "max unauthorized retries exceeded".to_string(),
+                        )));
                     }
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(

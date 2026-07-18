@@ -7,6 +7,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshot;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
+use cccx_mode::CccxModeState;
 use codex_extension_api::ExtensionDataInit;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_protocol::SessionId;
@@ -45,6 +46,9 @@ pub(crate) struct Session {
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
     pub(super) next_internal_sub_id: AtomicU64,
+    /// cccx mode state machine (architecture.md §4).
+    /// Persisted alongside Task Graph to survive context compaction.
+    pub(crate) cccx_mode: CccxModeState,
 }
 
 #[derive(Clone)]
@@ -1165,6 +1169,7 @@ impl Session {
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
                 next_internal_sub_id: AtomicU64::new(0),
+                cccx_mode: CccxModeState::default(),
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {
                 let mut guard = network_policy_decider_session.write().await;

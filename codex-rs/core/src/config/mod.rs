@@ -3820,6 +3820,13 @@ impl Config {
         let mcp_servers = constrain_mcp_servers(cfg.mcp_servers.clone(), mcp_servers.as_ref())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}")))?;
 
+        {
+            let missing = crate::mcp_auto_init::check_cccx_mcp_defaults(&mcp_servers);
+            if !missing.is_empty() {
+                crate::mcp_auto_init::warn_missing_cccx_mcps(&missing);
+            }
+        }
+
         let network_permission_profile = constrained_permission_profile.get().clone();
         let network = build_network_proxy_spec(
             configured_network_proxy_config,

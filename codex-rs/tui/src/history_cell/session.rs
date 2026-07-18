@@ -371,14 +371,11 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
             vec![
                 make_row(vec![
-                    Span::from(" /\\_/|    "),
+                    Span::from(" /\\_/\\    "),
                     Span::from(format!("cccx v{} — CC/CX harness", self.version)).bold(),
                 ]),
                 make_row(model_spans),
-                make_row(vec![
-                    Span::from(" > ^ <    "),
-                    Span::from(dir),
-                ]),
+                make_row(vec![Span::from(" > ^ <    "), Span::from(dir)]),
             ]
         } else {
             let title_spans: Vec<Span<'static>> = vec![

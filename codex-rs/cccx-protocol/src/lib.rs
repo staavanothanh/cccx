@@ -4,6 +4,8 @@
 //! protocol and child-config safety rules can be tested without building the
 //! full runtime.
 
+pub mod plugin;
+
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -102,6 +104,28 @@ pub struct WorkScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalPolicyKind {
+    AutoDeny,
+    AskCc,
+    AskUser,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RiskThreshold {
+    pub max_files_changed: usize,
+    pub max_lines_changed: usize,
+    #[serde(default)]
+    pub forbidden_patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ActionClass {
+    pub action_type: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkSpec {
     pub schema_version: String,
     pub work_spec_id: String,
@@ -122,6 +146,15 @@ pub struct WorkSpec {
     pub fork_policy: ForkPolicy,
     #[serde(default)]
     pub enforced_constraints: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk_threshold: Option<RiskThreshold>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_classes: Option<Vec<ActionClass>>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<ApprovalPolicyKind>,
 }
 
 impl WorkSpec {
@@ -411,7 +444,10 @@ fn normalize_path(path: &str) -> String {
 }
 
 fn path_within(path: &str, root: &str) -> bool {
-    path == root || path.strip_prefix(root).is_some_and(|rest| rest.starts_with('/'))
+    path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 #[cfg(test)]
@@ -446,6 +482,9 @@ mod tests {
             fallback_policy_id: "compatible".to_string(),
             fork_policy: ForkPolicy::WorkSpecOnly,
             enforced_constraints: vec!["no-out-of-scope-edits".to_string()],
+            risk_threshold: None,
+            action_classes: None,
+            approval_policy: None,
         }
     }
 
@@ -615,6 +654,39 @@ mod tests {
             Err(ProtocolError::ModelRouteNotAllowed(
                 "9router/anthropic/claude-sonnet-4.5".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn inherited_model_route_does_not_require_child_specific_allowlist_entry() {
+        let mut work_spec = sample_work_spec();
+        work_spec.model_route = ModelRouteSelection::InheritMainEffective;
+        let mut parent = parent_capabilities();
+        parent.model_routes.clear();
+
+        let projection = project_child_config(&work_spec, &parent)
+            .expect("inherited model route is resolved by main agent runtime");
+
+        assert_eq!(
+            projection.model_route,
+            ModelRouteSelection::InheritMainEffective
+        );
+    }
+
+    #[test]
+    fn blocked_artifact_may_carry_no_success_evidence_but_still_needs_provenance() {
+        let mut artifact = sample_artifact();
+        artifact.status = ArtifactStatus::Blocked;
+        artifact.evidence.clear();
+
+        artifact
+            .validate()
+            .expect("blocked artifact can report inability with provenance only");
+
+        artifact.provenance = None;
+        assert_eq!(
+            artifact.validate(),
+            Err(ProtocolError::MissingField("provenance"))
         );
     }
 }

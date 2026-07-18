@@ -33,8 +33,11 @@ pub use codex_thread::TryStartTurnIfIdleRejectionReason;
 pub use session::turn_context::TurnContext;
 mod agent;
 mod agent_communication;
+pub mod artifact_collector;
 mod attestation;
-pub mod cccx_task_graph_state;
+pub mod cccx_spawn;
+mod cccx_task_graph_state;
+pub mod checkpoint;
 mod codex_delegate;
 mod command_canonicalization;
 pub mod config;
@@ -49,11 +52,15 @@ pub mod exec_env;
 mod exec_policy;
 #[cfg(test)]
 mod git_info_tests;
+mod goal_evaluator;
 mod guardian;
 mod hook_runtime;
 mod image_preparation;
 mod installation_id;
 pub(crate) mod landlock;
+pub mod mcp_auto_init;
+mod permission_queue_bridge;
+pub mod provider_gateway_bridge;
 pub use landlock::spawn_command_under_linux_sandbox;
 pub(crate) mod mcp;
 mod mcp_skill_dependencies;
@@ -72,6 +79,7 @@ pub use mention_syntax::PLUGIN_TEXT_MENTION_SIGIL;
 pub use mention_syntax::TOOL_MENTION_SIGIL;
 pub use utils::path_utils;
 pub(crate) mod plugins;
+pub mod project_memory;
 #[doc(hidden)]
 pub(crate) mod prompt_debug;
 #[doc(hidden)]

@@ -334,4 +334,65 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn jsonl_event_matches_design_exec_envelope_contract() {
+        let rendered = render_jsonl(&[HeadlessEventEnvelope::new(
+            1,
+            HeadlessEvent::Terminal(TerminalPayload {
+                status: TerminalStatus::Success,
+                exit_code: Some(0),
+            }),
+        )])
+        .expect("render jsonl");
+        let value: serde_json::Value =
+            serde_json::from_str(rendered.lines().next().expect("jsonl line")).unwrap();
+
+        assert_eq!(
+            value
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some("cccx.exec_event.v1")
+        );
+        assert!(
+            value.get("sessionId").is_some(),
+            "headless events must carry sessionId"
+        );
+        assert!(
+            value.get("turnId").is_some(),
+            "headless events must carry turnId"
+        );
+        assert_eq!(
+            value.get("seq").and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            value.get("type").and_then(serde_json::Value::as_str),
+            Some("terminal")
+        );
+    }
+
+    #[test]
+    fn terminal_event_must_be_last_jsonl_event() {
+        let events = [
+            HeadlessEventEnvelope::new(
+                1,
+                HeadlessEvent::Terminal(TerminalPayload {
+                    status: TerminalStatus::Success,
+                    exit_code: Some(0),
+                }),
+            ),
+            HeadlessEventEnvelope::new(
+                2,
+                HeadlessEvent::Answer(AnswerPayload {
+                    text: "late answer".to_string(),
+                }),
+            ),
+        ];
+
+        assert!(
+            render_jsonl(&events).is_err(),
+            "terminal event is the final event in the design contract"
+        );
+    }
 }

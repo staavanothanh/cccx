@@ -94,7 +94,9 @@ impl ChatWidget {
         if !self.collaboration_modes_enabled() {
             self.add_info_message(
                 "Collaboration modes are disabled.".to_string(),
-                Some(format!("Enable collaboration modes to use /{command_name}.")),
+                Some(format!(
+                    "Enable collaboration modes to use /{command_name}."
+                )),
             );
             return false;
         }

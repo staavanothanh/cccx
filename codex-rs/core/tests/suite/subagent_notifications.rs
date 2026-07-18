@@ -52,12 +52,12 @@ use tokio::time::Instant;
 use tokio::time::sleep;
 use tracing::Level;
 use tracing_test::internal::MockWriter;
-use wiremock::MockServer;
 use wiremock::Mock;
+use wiremock::MockServer;
 use wiremock::ResponseTemplate;
+use wiremock::matchers::body_string_contains;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
-use wiremock::matchers::body_string_contains;
 
 const SPAWN_CALL_ID: &str = "spawn-call-1";
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
@@ -580,11 +580,7 @@ async fn chat_completions_spawn_agent_flow_dispatches_child_without_payload_mism
         |req: &wiremock::Request| {
             body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
         },
-        chat_completions_sse(&[chat_text_chunk(
-            "chatcmpl-child-1",
-            "child done",
-            "stop",
-        )]),
+        chat_completions_sse(&[chat_text_chunk("chatcmpl-child-1", "child done", "stop")]),
     )
     .await;
 
@@ -592,11 +588,7 @@ async fn chat_completions_spawn_agent_flow_dispatches_child_without_payload_mism
     mount_chat_once_match(
         &server,
         |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
-        chat_completions_sse(&[chat_text_chunk(
-            "chatcmpl-parent-2",
-            "parent done",
-            "stop",
-        )]),
+        chat_completions_sse(&[chat_text_chunk("chatcmpl-parent-2", "parent done", "stop")]),
     )
     .await;
 
@@ -629,11 +621,15 @@ async fn chat_completions_spawn_agent_flow_dispatches_child_without_payload_mism
     // Verify requests
     let all_requests = server.received_requests().await.unwrap_or_default();
     assert!(
-        all_requests.iter().any(|req| body_contains(req, TURN_1_PROMPT)),
+        all_requests
+            .iter()
+            .any(|req| body_contains(req, TURN_1_PROMPT)),
         "expected parent request; got {} reqs",
         all_requests.len()
     );
-    let has_child = all_requests.iter().any(|req| body_contains(req, CHILD_PROMPT));
+    let has_child = all_requests
+        .iter()
+        .any(|req| body_contains(req, CHILD_PROMPT));
     assert!(has_child, "expected child request with CHILD_PROMPT");
     assert!(
         all_requests.len() >= 2,
@@ -641,7 +637,9 @@ async fn chat_completions_spawn_agent_flow_dispatches_child_without_payload_mism
         all_requests.len()
     );
     assert!(
-        all_requests.iter().all(|req| req.url.path() == "/v1/chat/completions"),
+        all_requests
+            .iter()
+            .all(|req| req.url.path() == "/v1/chat/completions"),
         "expected chat-completions-only traffic"
     );
 

@@ -356,7 +356,10 @@ mod tests {
             Ok(SlashCommand::AcceptEdits)
         );
         assert_eq!(SlashCommand::from_str("auto"), Ok(SlashCommand::Auto));
-        assert_eq!(SlashCommand::from_str("dont-ask"), Ok(SlashCommand::DontAsk));
+        assert_eq!(
+            SlashCommand::from_str("dont-ask"),
+            Ok(SlashCommand::DontAsk)
+        );
         assert_eq!(SlashCommand::from_str("bypass"), Ok(SlashCommand::Bypass));
     }
 

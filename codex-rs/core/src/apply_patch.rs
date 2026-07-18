@@ -37,11 +37,7 @@ pub(crate) async fn apply_patch(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     action: ApplyPatchAction,
 ) -> InternalApplyPatchInvocation {
-    let file_paths: Vec<String> = action
-        .changes()
-        .keys()
-        .map(|p| p.to_string())
-        .collect();
+    let file_paths: Vec<String> = action.changes().keys().map(|p| p.to_string()).collect();
 
     if let Some(requirement) = cccx_edit_requirement(&file_paths) {
         match requirement {
