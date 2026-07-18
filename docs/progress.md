@@ -117,4 +117,12 @@
   - Task 5: `/mcp` enhanced to display that cccx auto-configures two global defaults per architecture.md §10, with a hint about WorkSpec projection for subagents.
   - Acceptance: Test home fresh no longer shows `/mcp` empty if defaults are available (auto-merged at startup). CX cannot call sequential-thinking if WorkSpec does not grant it (Phase 3 deny-by-default). MCP tool names preserved through 9router namespacing.
   - Tests: mcp_auto_init (5) ✓ — contract test, check missing, partial check, empty merge, partial merge (user config preserved). codex-core compile ✓. codex-tui compile ✓. cccx-cli compile ✓. 2 pre-existing failures (config_schema_matches_fixture, guardian_mode_mcp_denial) unrelated.
-  - Phase 7 commit: next.
+  - Phase 7 commits: `b91b279` (feat: MCP defaults auto-merge), `bda8463` (fix: audit warnings).
+- 2026-07-19 Phase 8 complete — UX command completion:
+  - Audit: all commands from `design.md:715-823` checked. 0 user-facing placeholders remain.
+  - Classified: 42 commands implemented, 2 deferred (/import, /ide), 3 non-MVP (/reroute, /pets, /personality delegated to Codex built-in), 2 explicitly non-ported (/multi-agents, /agent singular).
+  - Fix: `/tasks` now routes through `dispatch_cccx_command_with_args` for both no-arg and with-arg cases. Previously `/tasks` alone (no args) hit an old placeholder message; now reads `.cccx/state/task-graph.json`.
+  - `/remember` writes to `.cccx/memory/MEMORY.md` via `ProjectMemory` (explicit-first admission, ref Phase 5).
+  - Already dispatched: `/review`, `/theme`, `/skills`, `/plugins`, `/mcp` — all through Codex built-in popups or cccx-enhanced info messages.
+  - Tests: cccx-ux (8) ✓ — all design mode, task, goal, utility command parsers. codex-tui compiles ✓. cccx-cli compiles ✓.
+  - Phase 8 commit: next.

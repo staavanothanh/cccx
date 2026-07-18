@@ -439,10 +439,9 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
             SlashCommand::Tasks => {
-                self.add_info_message(
-                    "Task Graph runtime view is wired through cccx-task-graph; TUI tree rendering is pending runtime wiring.".to_string(),
-                    /*hint*/ None,
-                );
+                // Phase 8: route no-arg /tasks through the cccx parser which reads
+                // .cccx/state/task-graph.json and displays the real tree.
+                self.dispatch_cccx_command_with_args(cmd, "");
             }
             SlashCommand::Remember => {
                 self.add_info_message(
@@ -742,6 +741,7 @@ impl ChatWidget {
                 | SlashCommand::Permissions
                 | SlashCommand::Remember
                 | SlashCommand::Cancel
+                | SlashCommand::Tasks
         ) {
             self.dispatch_cccx_command_with_args(cmd, trimmed);
             return;
