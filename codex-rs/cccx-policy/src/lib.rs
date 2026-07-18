@@ -513,7 +513,16 @@ pub fn evaluate_subagent(
                 .scope
                 .canonical_paths
                 .iter()
-                .any(|scope_path| normalized.starts_with(&scope_path.replace('\\', "/")))
+                .any(|scope_path| {
+                    let scope_normalized = scope_path.replace('\\', "/");
+                    // Exact match or strict path-boundary prefix match.
+                    // "D:/repo/src/auth" must NOT match "D:/repo/src/authentication".
+                    let matches_exact = normalized == scope_normalized;
+                    let matches_prefixed = normalized.len() > scope_normalized.len()
+                        && normalized.as_bytes().get(scope_normalized.len()) == Some(&b'/')
+                        && normalized.starts_with(&scope_normalized);
+                    matches_exact || matches_prefixed
+                })
         });
         if !in_scope {
             return PolicyDecision::Deny {
