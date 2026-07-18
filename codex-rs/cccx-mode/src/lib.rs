@@ -139,6 +139,19 @@ impl CccxModeState {
     }
 }
 
+/// Adapter: map cccx `MainMode` to the legacy Codex `ModeKind` used by
+/// collaboration mode TUI masks and policy evaluation.
+pub fn main_mode_to_mode_kind(mode: &MainMode) -> codex_protocol::config_types::ModeKind {
+    match mode {
+        MainMode::Plan => codex_protocol::config_types::ModeKind::Plan,
+        MainMode::Default => codex_protocol::config_types::ModeKind::Default,
+        MainMode::AcceptEdits => codex_protocol::config_types::ModeKind::AcceptEdits,
+        MainMode::Auto => codex_protocol::config_types::ModeKind::Auto,
+        MainMode::DontAsk => codex_protocol::config_types::ModeKind::DontAsk,
+        MainMode::Bypass => codex_protocol::config_types::ModeKind::Bypass,
+    }
+}
+
 impl Default for CccxModeState {
     fn default() -> Self {
         Self::new(MainMode::Plan)

@@ -663,8 +663,6 @@ impl ModeKind {
                 | Self::Default
                 | Self::AcceptEdits
                 | Self::Auto
-                | Self::DontAsk
-                | Self::Bypass
         )
     }
 
@@ -870,8 +868,8 @@ mod tests {
         assert!(ModeKind::Default.is_cycle_visible());
         assert!(ModeKind::AcceptEdits.is_cycle_visible());
         assert!(ModeKind::Auto.is_cycle_visible());
-        assert!(ModeKind::DontAsk.is_cycle_visible());
-        assert!(ModeKind::Bypass.is_cycle_visible());
+        assert!(!ModeKind::DontAsk.is_cycle_visible());
+        assert!(!ModeKind::Bypass.is_cycle_visible());
     }
 
     #[test]

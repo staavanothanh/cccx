@@ -14,6 +14,7 @@ use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
 use crate::goal_display::GOAL_USAGE;
 use crate::goal_files::GoalDraft;
+use cccx_mode;
 use cccx_ux::AgentsCommand;
 use cccx_ux::CccxCommand;
 use cccx_ux::PermissionsCommand;
@@ -359,6 +360,28 @@ impl ChatWidget {
                 );
             }
             SlashCommand::DontAsk => {
+                if codex_features::cccx_mvp::surface_gate_enabled() {
+                    let mut state = cccx_mode::CccxModeState::default();
+                    match state.confirm_mode() {
+                        Ok(()) => {
+                            self.add_info_message(
+                                "/dont-ask — entered via cccx-mode confirmation gate.".to_string(),
+                                /*hint*/ None,
+                            );
+                            let kind = cccx_mode::main_mode_to_mode_kind(&state.current);
+                            if let Some(mask) =
+                                collaboration_modes::mask_for_kind(self.model_catalog.as_ref(), kind)
+                            {
+                                self.set_collaboration_mask_from_user_action(mask);
+                            }
+                            return;
+                        }
+                        Err(err) => {
+                            self.add_error_message(format!("/dont-ask rejected: {err}"));
+                            return;
+                        }
+                    }
+                }
                 self.apply_collaboration_mode_slash_command(
                     ModeKind::DontAsk,
                     "dont-ask",
@@ -366,6 +389,28 @@ impl ChatWidget {
                 );
             }
             SlashCommand::Bypass => {
+                if codex_features::cccx_mvp::surface_gate_enabled() {
+                    let mut state = cccx_mode::CccxModeState::default();
+                    match state.attest_mode() {
+                        Ok(()) => {
+                            self.add_info_message(
+                                "/bypass — entered via cccx-mode attestation gate.".to_string(),
+                                /*hint*/ None,
+                            );
+                            let kind = cccx_mode::main_mode_to_mode_kind(&state.current);
+                            if let Some(mask) =
+                                collaboration_modes::mask_for_kind(self.model_catalog.as_ref(), kind)
+                            {
+                                self.set_collaboration_mask_from_user_action(mask);
+                            }
+                            return;
+                        }
+                        Err(err) => {
+                            self.add_error_message(format!("/bypass rejected: {err}"));
+                            return;
+                        }
+                    }
+                }
                 self.apply_collaboration_mode_slash_command(
                     ModeKind::Bypass,
                     "bypass",
@@ -516,8 +561,9 @@ impl ChatWidget {
                                     diff_text
                                 } else {
                                     "`/diff` — _not inside a git repository_".to_string()
-                                }
-                            }
+        }
+
+}
                             Err(e) => format!("Failed to compute diff: {e}"),
                         },
                         None => "Failed to compute diff: workspace command runner unavailable"

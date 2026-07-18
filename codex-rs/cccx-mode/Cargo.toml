@@ -6,5 +6,6 @@ license.workspace = true
 
 [dependencies]
 cccx-policy = { workspace = true }
+codex-protocol = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
