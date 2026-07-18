@@ -64,3 +64,47 @@
   - Added/tightened contract tests around Artifact provenance/evidence, permission queue bridge, project memory, checkpoint validation, MCP defaults, provider gateway provenance, goal evaluator, chat-completions stream/tool handling, and OpenAI-compatible parallel tool-call history.
   - Current state is intentionally RED. Detailed evidence and phase plan: `docs/testing/cccx-feature-coverage-red-report.md`.
   - Numeric `>=80%` coverage is not yet proven because `cargo-llvm-cov`/`cargo-tarpaulin` are not installed and the feature suite is still RED.
+- 2026-07-19 Phase 0 baseline — worktree and full targeted smoke:
+  - Worktree clean (2 untracked .vn.md translation files only).
+  - All targeted tests pass: codex-api (8), cccx-protocol (13), cccx-policy (11), cccx-provider-gateway (2), cccx-task-graph (2), cccx-mode (8), cccx-ux (8), cccx-headless (8), cccx-harness-cc (0), cccx-harness-cx (0), codex-core provider_gateway_bridge (3), codex-core cccx (10).
+  - cccx-cli binary compiles (duplicate bin target warning known as L1).
+  - Baseline HEAD: `95e9789` → ready for Phase 1 (9router-only model gateway).
+- 2026-07-19 Phase 1 complete — 9router-only model gateway hardened:
+  - **Task 1**: Binary separation — `codex` keeps upstream provider behavior; `cccx` defaults to 9router via `surface_gate_enabled()` gate already in place.
+  - **Task 2**: Fail-closed enforcement — `ProviderGatewayBridge::check_fail_closed()` rejects non-9router providers at the LLM call boundary. `stream_responses_api` and `stream_chat_completions_api` both call the fail-closed check and return `CodexErr::InvalidRequest` with a clear message when the cccx gate is on but the resolved provider is not 9router.
+  - **Task 3**: Provider resolution unified — all LLM calls go through the same `begin_gateway_provenance` / `check_cccx_gateway_fail_closed` path.
+  - **Task 4**: Provenance enriched — `GatewayProvenance` now records `fallback_policy_id`, `wire_api`, and `stream_termination_status` in addition to existing `requested_route_id`, `effective_route_id`, `effective_provider`, `effective_model`, `retry_count`, and `fallback_chain`. Wire API recorded at provenance creation; stream termination recorded on the bridge.
+  - **Task 5**: `/model` reads from cccx config — TUI `model_popups.rs` builds presets from `LocalConfigCatalog::default()` instead of upstream OpenAI catalog. Current model always included alongside local catalog entries.
+  - **Task 6**: Local config catalog — `LocalConfigCatalog` struct in `cccx-provider-gateway` holds `default_model`, `available_models`, `fallback_policy_id` with static sensible defaults (`oc/deepseek-v4-flash-free`, `oc/deepseek-v4-pro`, `Strict` fallback). `display_entries()` produces human-readable labels for the TUI.
+  - **Targeted tests**: provider_gateway_bridge (6) ✓, cccx-provider-gateway (15) ✓, codex-core cccx config (11) ✓, cccx-cli compile ✓. 8 `--lib` failures are pre-existing upstream Codex tests (not Phase 1 related).
+  - Phase 1 commits: `dcbefe8` (provenance fields), `9870f96` (fail-closed enforcement), `ab11845` (LocalConfigCatalog + /model wiring).
+- 2026-07-19 Phase 2 complete — mode state machine as source of truth:
+  - `ModeKind::is_cycle_visible()` fixed: DontAsk/Bypass removed — only Plan/Default/AcceptEdits/Auto cycle.
+  - `/dont-ask` and `/bypass` gated through `cccx-mode::CccxModeState::confirm_mode()`/`attest_mode()` when cccx gate on.
+  - `main_mode_to_mode_kind()` adapter added to `cccx-mode` for legacy Codex collaboration mask integration.
+  - Phase 2 commit: `8710a35` (mode state machine enforcement).
+- 2026-07-19 Phase 3 complete — WorkSpec-to-ChildConfig deny-by-default:
+  - `apply_cccx_harness_to_config()` now applies projection to Config: harness prompt injection + CX restrictions (orchestrator MCP disabled → no sequential-thinking; orchestrator skills disabled → no ADR write).
+  - `project_child_config()` (from `cccx-protocol`) already enforces tool/MCP whitelist, path boundary, and forbiddenTools double-deny at the projection level. These are passed to Config via `apply_cccx_harness_to_config`.
+  - Spawn fail-closed when WorkSpec missing (gate on): already enforced in `apply_cccx_work_spec_to_spawn_config()`.
+  - Phase 3 commit: `ab1b002` (deny-by-default config projection).
+- 2026-07-19 Phase 4 complete — CC scheduler and subagent lifecycle:
+  - `ActorIdentity` enum (MainCc/CcSubagent/CxSubagent) added to cccx-protocol with `can_spawn()` gate.
+  - Spawn guard in `apply_cccx_work_spec_to_spawn_config()`: rejects subagent spawns with SchedulingRequest guidance. Defense-in-depth on top of Phase 3 CX restrictions.
+  - Phase 4 commit: `60a0a02` (ActorIdentity + spawn guard).
+- 2026-07-19 Phase 5 complete — permission queue runtime:
+  - `CccxPermissionQueue` `approve`/`deny`/`get` now live (removed `#[allow(dead_code)]` stubs). Queue already has digest validation, circuit-breaker bypass protection, single-request deny without cancelling agent.
+  - Added `batch_approve_safe()`: approves queued non-high-risk non-circuit-breaker requests in bulk.
+  - Added `list_all()`: active-first sorted snapshot for `/permissions list` display.
+  - `/permissions list` dispatches to real `open_permissions_popup()`; inspect/approve/deny/batch-approve parse through `PermissionsCommand` and display action status.
+  - Background prompt centralized via `CccxPermissionQueue` + `open_permissions_popup` (no stacked modals).
+  - Phase 5 commit: `2aa53f7` (permission queue activation).
+- 2026-07-19 Phase 6 complete — TaskGraph, StopHook, GoalEvaluator:
+  - TaskGraph lifecycle already wired: `CccxRuntimeRegistry::register_spawn()` creates/persists TaskNodes on subagent spawn; `complete_spawn()` applies Artifacts and VerificationRecords; `cccx_stop_guard_outcome()` integrated into `run_turn_stop_hooks()` line 365-369 — blocks final completion when unverified tasks remain.
+  - GoalEvaluator: command-based verification via exit code + log digest; failed verifications recorded as findings; only `passed=true` with `exit_code=0` marks tasks verified.
+  - `/tasks` wired: reads `.cccx/state/task-graph.json` from project root, displays task tree with status, verification, and `blockedBy` dependencies. No more placeholder.
+  - `/goal` already dispatch-wired from Phase 5: parses expression through `CccxCommand::Goal`, evaluator integrated in `CccxRuntimeState::complete()`.
+  - StopHook always runs before Main CC reports done; `can_stop()` requires ALL tasks verified (not just Artifact with Success status).
+  - Acceptance proven: artifact without verification → blocked; verification spec change → blocked; all verified → `can_stop()` true.
+  - Tests: cccx-task-graph (6) ✓, cccx_task_graph_state (3) ✓, goal_evaluator (3) ✓, cccx_runtime (1) ✓, checkpoint (3) ✓, subagent (21) ✓, hook_runtime (5) ✓, codex-tui compiles ✓, cccx-cli compiles ✓.
+  - Phase 6 commit: `eb8774a` (fix: wire /agents and /permissions — post-P5 audit) + next commit for /tasks wire.

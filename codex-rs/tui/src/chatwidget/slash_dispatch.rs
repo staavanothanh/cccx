@@ -914,13 +914,83 @@ impl ChatWidget {
                 }
             }
             Ok(Some(CccxCommand::Tasks)) => {
-                // Display a task-graph summary. Full TUI tree rendering
-                // requires wiring cccx_task_graph_state into session state,
-                // but the module is tested and ready for integration.
-                self.add_info_message(
-                    "/tasks — cccx-task-graph module is integrated; TUI tree renderer is pending session wiring.".to_string(),
-                    /*hint*/ None,
-                );
+                // Read the task graph from .cccx/state/task-graph.json.
+                // Phase 6: display verified/pending/blocked tasks with their
+                // objectives, statuses, and dependency relationships.
+                if let Some(ref cwd) = self.current_cwd {
+                    let tasks_path = cwd.join(".cccx").join("state").join("task-graph.json");
+                    match std::fs::read_to_string(&tasks_path) {
+                        Ok(json) => match serde_json::from_str::<cccx_task_graph::TaskGraph>(&json) {
+                            Ok(graph) => {
+                                if graph.tasks.is_empty() {
+                                    self.add_info_message(
+                                        "/tasks — task graph is empty. No subagents spawned yet."
+                                            .to_string(),
+                                        Some(
+                                            "Spawn a subagent or use /plan to create tasks."
+                                                .to_string(),
+                                        ),
+                                    );
+                                } else {
+                                    let verified = graph.tasks.values().filter(|t| t.is_verified()).count();
+                                    let total = graph.tasks.len();
+                                    let mut lines: Vec<String> = vec![
+                                        format!("/tasks — {total} task(s) in graph: {verified} verified, {} unverified", total - verified),
+                                        String::new(),
+                                    ];
+                                    for task in graph.tasks.values() {
+                                        let blocked = if task.blocked_by.is_empty() {
+                                            String::new()
+                                        } else {
+                                            let deps: Vec<String> = task.blocked_by.iter().cloned().collect();
+                                            format!(" ← blocked by [{}]", deps.join(", "))
+                                        };
+                                        let verified_at = task.verified_at.as_deref().unwrap_or("");
+                                        let verified_display = if task.is_verified() {
+                                            format!(" ✓ verified {verified_at}")
+                                        } else {
+                                            String::new()
+                                        };
+                                        lines.push(format!(
+                                            "● {} [{:?}]{}{}",
+                                            task.task_id, task.status, verified_display, blocked
+                                        ));
+                                        lines.push(format!("  └─ \"{}\"", task.objective));
+                                    }
+                                    self.add_info_message(lines.join("\n"), None);
+                                }
+                            }
+                            Err(err) => {
+                                self.add_info_message(
+                                    format!("/tasks — could not parse task-graph.json: {err}"),
+                                    /*hint*/ None,
+                                );
+                            }
+                        },
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                            self.add_info_message(
+                                "/tasks — no task graph found. Create tasks via subagent spawn or /plan."
+                                    .to_string(),
+                                Some(
+                                    "Tasks are auto-persisted to .cccx/state/task-graph.json."
+                                        .to_string(),
+                                ),
+                            );
+                        }
+                        Err(err) => {
+                            self.add_info_message(
+                                format!("/tasks — failed to read task-graph.json: {err}"),
+                                /*hint*/ None,
+                            );
+                        }
+                    }
+                } else {
+                    self.add_info_message(
+                        "/tasks — no project directory available to read task graph."
+                            .to_string(),
+                        /*hint*/ None,
+                    );
+                }
             }
             Ok(Some(CccxCommand::Mode(mode))) => {
                 let label = match mode {
