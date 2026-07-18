@@ -59,7 +59,7 @@ pub fn merge_cccx_mcp_defaults(
 }
 
 /// Log a warning for each missing cccx global MCP server.
-#[deprecated = "Phase 7: merge_cccx_mcp_defaults auto-inserts them; this is a fallback for when the gate is off."]
+/// Used when the cccx gate is off to alert users that global MCP defaults are missing.
 pub fn warn_missing_cccx_mcps(missing: &[&str]) {
     for name in missing {
         tracing::warn!(

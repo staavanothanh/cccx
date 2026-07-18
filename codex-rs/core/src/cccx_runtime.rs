@@ -161,7 +161,7 @@ impl CccxRuntimeRegistry {
         child_thread_id: ThreadId,
         runtime: CccxSpawnRuntime,
     ) -> Result<(), String> {
-        let mut graph = cccx_task_graph_state::load_task_graph(&runtime.project_root)
+        let graph = cccx_task_graph_state::load_task_graph(&runtime.project_root)
             .await
             .map_err(|error| error.to_string())?
             .unwrap_or_else(|| {
