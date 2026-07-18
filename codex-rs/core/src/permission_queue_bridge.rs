@@ -39,25 +39,14 @@ impl CccxPermissionQueue {
         request_id
     }
 
-    // Deferred until the cccx-specific `/permissions approve` command surface
-    // replaces or wraps the native Codex approval callback. Runtime Phase 6
-    // wires enqueue/serialization; approving still flows through Codex's
-    // existing pending approval map to avoid a protocol split.
-    #[allow(dead_code)]
     pub async fn approve(&self, request_id: &str, observed_digest: &str) -> Result<(), QueueError> {
         self.inner.lock().await.approve(request_id, observed_digest)
     }
 
-    // Deferred until the cccx-specific `/permissions deny` command surface
-    // is wired to native pending approval callbacks.
-    #[allow(dead_code)]
     pub async fn deny(&self, request_id: &str) -> Result<(), QueueError> {
         self.inner.lock().await.deny(request_id)
     }
 
-    // Deferred with `approve`: cancellation requires the `/agents cancel`
-    // command surface to bridge queue state and native pending callbacks.
-    #[allow(dead_code)]
     pub async fn cancel_agent_requests(&self, agent_session_id: &str) {
         self.inner
             .lock()
@@ -73,10 +62,19 @@ impl CccxPermissionQueue {
             .map(String::from)
     }
 
-    // Deferred inspection helper for `/permissions inspect`.
-    #[allow(dead_code)]
     pub async fn get(&self, request_id: &str) -> Option<PermissionRequest> {
         self.inner.lock().await.get(request_id).cloned()
+    }
+
+    /// Batch-approve queued requests that are NOT circuit-breaker/high-risk.
+    /// Returns the IDs that were approved.
+    pub async fn batch_approve_safe(&self) -> Vec<String> {
+        self.inner.lock().await.batch_approve_safe()
+    }
+
+    /// List all active + queued requests for `/permissions list` display.
+    pub async fn list_all(&self) -> Vec<PermissionRequest> {
+        self.inner.lock().await.list_all()
     }
 }
 

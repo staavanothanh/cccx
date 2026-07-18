@@ -815,6 +815,55 @@ impl PermissionRequestQueue {
             }
         }
     }
+
+    /// Batch-approve all queued requests that are NOT circuit-breaker/high-risk.
+    /// Returns the IDs that were approved. High-risk/circuit-breaker requests remain queued.
+    pub fn batch_approve_safe(&mut self) -> Vec<String> {
+        let mut approved = Vec::new();
+        // Collect non-high-risk queued IDs first.
+        let safe_ids: Vec<String> = self
+            .queue_order
+            .iter()
+            .filter(|id| {
+                self.requests
+                    .get(*id)
+                    .is_some_and(|req| req.risk != PermissionRisk::High
+                        && req.risk != PermissionRisk::CircuitBreaker
+                        && req.status == PermissionRequestStatus::Queued)
+            })
+            .cloned()
+            .collect();
+
+        for id in safe_ids {
+            if let Some(request) = self.requests.get_mut(&id) {
+                request.status = PermissionRequestStatus::Approved;
+                approved.push(id);
+            }
+        }
+        self.queue_order.retain(|id| {
+            !self
+                .requests
+                .get(id)
+                .is_some_and(|req| req.status == PermissionRequestStatus::Approved)
+        });
+        approved
+    }
+
+    /// Return a snapshot of all requests for display in `/permissions list`.
+    pub fn list_all(&self) -> Vec<PermissionRequest> {
+        let mut requests: Vec<_> = self.requests.values().cloned().collect();
+        requests.sort_by(|a, b| {
+            fn ord(s: &PermissionRequestStatus) -> u8 {
+                match s {
+                    PermissionRequestStatus::Active => 0,
+                    PermissionRequestStatus::Queued => 1,
+                    _ => 2,
+                }
+            }
+            ord(&a.status).cmp(&ord(&b.status))
+        });
+        requests
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
