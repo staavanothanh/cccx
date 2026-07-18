@@ -15,6 +15,28 @@ pub enum CccxCommand {
     Permissions(PermissionsCommand),
     Remember { note: Option<String> },
     Cancel { all: bool, target: Option<String> },
+    // Mode commands (design.md §8 + architecture.md §4)
+    Mode(MainModeKind),
+    // Goal verification
+    Goal { expression: String },
+    // Utility commands
+    Review,
+    Theme(Option<String>),
+    Skills,
+    Plugins,
+    Mcp,
+    Help { section: Option<String> },
+}
+
+/// User-visible mode names that match the 6-mode system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MainModeKind {
+    Plan,
+    Default,
+    AcceptEdits,
+    Auto,
+    DontAsk,
+    Bypass,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +98,50 @@ pub fn parse_cccx_command(input: &str) -> Result<Option<CccxCommand>, CommandPar
                 .map(str::to_string),
         })),
         "/cancel" => parse_cancel(parts.collect()).map(Some),
+        // Mode commands
+        "/plan" => Ok(Some(CccxCommand::Mode(MainModeKind::Plan))),
+        "/default" => Ok(Some(CccxCommand::Mode(MainModeKind::Default))),
+        "/accept-edits" => Ok(Some(CccxCommand::Mode(MainModeKind::AcceptEdits))),
+        "/auto" => Ok(Some(CccxCommand::Mode(MainModeKind::Auto))),
+        "/dont-ask" => {
+            let rest: Vec<&str> = parts.collect();
+            if rest.first() == Some(&"--confirm") {
+                Ok(Some(CccxCommand::Mode(MainModeKind::DontAsk)))
+            } else {
+                Ok(Some(CccxCommand::Mode(MainModeKind::DontAsk)))
+            }
+        }
+        "/bypass" => {
+            let rest: Vec<&str> = parts.collect();
+            if rest.first() == Some(&"--confirm") {
+                Ok(Some(CccxCommand::Mode(MainModeKind::Bypass)))
+            } else {
+                Ok(Some(CccxCommand::Mode(MainModeKind::Bypass)))
+            }
+        }
+        // Goal / review / theme / skills / plugins / mcp / help
+        "/goal" => {
+            let rest: Vec<&str> = parts.collect();
+            Ok(Some(CccxCommand::Goal {
+                expression: rest.join(" "),
+            }))
+        }
+        "/review" => Ok(Some(CccxCommand::Review)),
+        "/theme" => {
+            let rest: Vec<&str> = parts.collect();
+            Ok(Some(CccxCommand::Theme(
+                rest.first().map(|s| s.to_string()),
+            )))
+        }
+        "/skills" => Ok(Some(CccxCommand::Skills)),
+        "/plugins" => Ok(Some(CccxCommand::Plugins)),
+        "/mcp" => Ok(Some(CccxCommand::Mcp)),
+        "/help" => {
+            let rest: Vec<&str> = parts.collect();
+            Ok(Some(CccxCommand::Help {
+                section: rest.first().map(|s| s.to_string()),
+            }))
+        }
         other => Err(CommandParseError::UnknownCommand(other.to_string())),
     }
 }
