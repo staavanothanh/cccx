@@ -107,4 +107,4 @@
   - StopHook always runs before Main CC reports done; `can_stop()` requires ALL tasks verified (not just Artifact with Success status).
   - Acceptance proven: artifact without verification → blocked; verification spec change → blocked; all verified → `can_stop()` true.
   - Tests: cccx-task-graph (6) ✓, cccx_task_graph_state (3) ✓, goal_evaluator (3) ✓, cccx_runtime (1) ✓, checkpoint (3) ✓, subagent (21) ✓, hook_runtime (5) ✓, codex-tui compiles ✓, cccx-cli compiles ✓.
-  - Phase 6 commit: `eb8774a` (fix: wire /agents and /permissions — post-P5 audit) + next commit for /tasks wire.
+  - Phase 6 commit: `eb8774a` (fix: wire /agents and /permissions — post-P5 audit) + `6e79043` (feat: /tasks wire).
