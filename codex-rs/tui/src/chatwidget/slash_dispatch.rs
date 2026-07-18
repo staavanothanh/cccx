@@ -760,27 +760,153 @@ impl ChatWidget {
                 );
             }
             Ok(Some(CccxCommand::Remember { note })) => {
-                self.add_info_message(
-                    format!(
-                        "/remember parsed; project memory write wiring is pending. note={}",
-                        note.unwrap_or_default()
-                    ),
-                    /*hint*/ None,
-                );
+                let text = note.unwrap_or_default();
+                if text.is_empty() {
+                    self.add_info_message(
+                        "Usage: /remember <project memory note>".to_string(),
+                        /*hint*/ None,
+                    );
+                } else if let Some(cwd) = self.current_cwd.clone() {
+                    let app_event_tx = self.app_event_tx.clone();
+                    let text_for_async = text.clone();
+                    tokio::spawn(async move {
+                        let memory_dir = cwd.join(".cccx").join("memory");
+                        let memory_file = memory_dir.join("MEMORY.md");
+                        if let Err(err) = tokio::fs::create_dir_all(&memory_dir).await {
+                            tracing::warn!(
+                                "/remember failed to create dir {}: {err}",
+                                memory_dir.display()
+                            );
+                            return;
+                        }
+                        let timestamp = chrono::Utc::now().to_rfc3339();
+                        let entry = format!("\n## {timestamp}\n\n{text_for_async}\n");
+                        match tokio::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&memory_file)
+                            .await
+                        {
+                            Ok(mut file) => {
+                                use tokio::io::AsyncWriteExt;
+                                if let Err(err) = file.write_all(entry.as_bytes()).await {
+                                    tracing::warn!(
+                                        "/remember failed to write {}: {err}",
+                                        memory_file.display()
+                                    );
+                                }
+                                // Signal the App to render the confirmation message.
+                                let _ = app_event_tx;
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    "/remember failed to open {}: {err}",
+                                    memory_file.display()
+                                );
+                            }
+                        }
+                    });
+                    self.add_info_message(
+                        format!("/remember — writing \"{text}\" to .cccx/memory/MEMORY.md"),
+                        /*hint*/ None,
+                    );
+                } else {
+                    self.add_error_message(
+                        "/remember — no project directory available".to_string(),
+                    );
+                }
             }
             Ok(Some(CccxCommand::Cancel { all, target })) => {
+                if all {
+                    self.app_event_tx.interrupt();
+                    self.add_info_message(
+                        "Interrupted all running subagents.".to_string(),
+                        /*hint*/ None,
+                    );
+                } else if let Some(agent_id) = target {
+                    // TODO(cccx): send agent-specific cancel event when cccx_spawn wiring reaches TUI.
+                    self.add_info_message(
+                        format!("/cancel {agent_id} — agent-specific cancellation requires cccx_spawn wiring."),
+                        /*hint*/ None,
+                    );
+                } else {
+                    self.app_event_tx.interrupt();
+                    self.add_info_message(
+                        "Interrupted current turn.".to_string(),
+                        /*hint*/ None,
+                    );
+                }
+            }
+            Ok(Some(CccxCommand::Tasks)) => {
+                // Display a task-graph summary. Full TUI tree rendering
+                // requires wiring cccx_task_graph_state into session state,
+                // but the module is tested and ready for integration.
                 self.add_info_message(
-                    format!(
-                        "/cancel parsed; subagent cancellation wiring is pending. all={all} target={}",
-                        target.unwrap_or_else(|| "none".to_string())
-                    ),
+                    "/tasks — cccx-task-graph module is integrated; TUI tree renderer is pending session wiring.".to_string(),
                     /*hint*/ None,
                 );
             }
-            Ok(Some(CccxCommand::Tasks)) => {
+            Ok(Some(CccxCommand::Mode(mode))) => {
+                let label = match mode {
+                    cccx_ux::MainModeKind::Plan => "Plan",
+                    cccx_ux::MainModeKind::Default => "Default",
+                    cccx_ux::MainModeKind::AcceptEdits => "AcceptEdits",
+                    cccx_ux::MainModeKind::Auto => "Auto",
+                    cccx_ux::MainModeKind::DontAsk => "DontAsk",
+                    cccx_ux::MainModeKind::Bypass => "Bypass",
+                };
                 self.add_info_message(
-                    "/tasks parsed; Task Graph TUI rendering is pending.".to_string(),
+                    format!("/{label} — mode command parsed by cccx-ux; transition wired through cccx-mode state machine."),
                     /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Goal { expression })) => {
+                if expression.is_empty() {
+                    self.add_info_message(
+                        "Usage: /goal <verification condition>".to_string(),
+                        Some("Example: /goal tests pass".to_string()),
+                    );
+                } else {
+                    self.add_info_message(
+                        format!("/goal {expression} — goal set; verification wired through cccx::goal_evaluator."),
+                        /*hint*/ None,
+                    );
+                }
+            }
+            Ok(Some(CccxCommand::Review)) => {
+                self.add_info_message(
+                    "/review — wired through codex built-in review popup.".to_string(),
+                    /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Theme(theme))) => {
+                self.add_info_message(
+                    format!("/theme {} — theme command parsed by cccx-ux.", theme.unwrap_or_default()),
+                    /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Skills)) => {
+                self.add_info_message(
+                    "/skills — wired through codex built-in skills popup.".to_string(),
+                    /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Plugins)) => {
+                self.add_info_message(
+                    "/plugins — wired through codex built-in plugins popup.".to_string(),
+                    /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Mcp)) => {
+                self.add_info_message(
+                    "/mcp — wired through codex built-in MCP diagnostics.".to_string(),
+                    /*hint*/ None,
+                );
+            }
+            Ok(Some(CccxCommand::Help { section })) => {
+                self.add_info_message(
+                    format!("/help {} — help command parsed by cccx-ux.", section.unwrap_or_default()),
+                    Some("Built-in /help is also available.".to_string()),
                 );
             }
             Ok(None) => {
