@@ -1765,9 +1765,33 @@ impl ModelClientSession {
         ProviderGatewayBridge,
         Option<cccx_provider_gateway::provenance::GatewayProvenance>,
     ) {
-        let bridge = ProviderGatewayBridge::new(self.client.state.provider.info().is_9router());
-        let provenance = bridge.begin_call(&model_info.slug);
+        let enabled = codex_features::cccx_mvp::surface_gate_enabled();
+        let bridge = ProviderGatewayBridge::new(enabled);
+        let wire_api_label = match self.client.state.provider.info().wire_api {
+            codex_model_provider_info::WireApi::Responses => "responses",
+            codex_model_provider_info::WireApi::ChatCompletions => "chat_completions",
+        };
+        let provenance = bridge.begin_call_with_wire_api(&model_info.slug, wire_api_label);
         (bridge, provenance)
+    }
+
+    /// Returns `Ok(())` when the provider is 9router-compatible. When the cccx
+    /// surface gate is enabled and the provider is NOT 9router, returns a clear
+    /// error so the call fails closed instead of silently routing to an upstream
+    /// provider.
+    fn check_cccx_gateway_fail_closed(
+        &self,
+        bridge: &ProviderGatewayBridge,
+    ) -> codex_protocol::error::Result<()> {
+        let provider_info = self.client.state.provider.info();
+        if !bridge.check_fail_closed(provider_info) {
+            return Err(CodexErr::InvalidRequest(format!(
+                "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
+                 Configure a 9router route in your cccx config or set CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1 for debug use only.",
+                provider_info.name,
+            )));
+        }
+        Ok(())
     }
 
     fn record_gateway_provenance(
@@ -1868,6 +1892,8 @@ impl ModelClientSession {
                 .prepare_response_items_for_request(&mut request.input, store);
             let (gateway_bridge, mut gateway_provenance) =
                 self.begin_gateway_provenance(model_info);
+            // Fail-closed: refuse to make a non-9router LLM call when cccx gate is on.
+            self.check_cccx_gateway_fail_closed(&gateway_bridge)?;
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
             let inference_trace_attempt = inference_trace.start_attempt();
@@ -1976,6 +2002,8 @@ impl ModelClientSession {
             )?;
             let (gateway_bridge, mut gateway_provenance) =
                 self.begin_gateway_provenance(model_info);
+            // Fail-closed: refuse to make a non-9router LLM call when cccx gate is on.
+            self.check_cccx_gateway_fail_closed(&gateway_bridge)?;
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.record_started(&request);
 
