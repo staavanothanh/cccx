@@ -256,6 +256,26 @@ pub(crate) fn apply_cccx_work_spec_to_spawn_config(
         return Ok(None);
     }
 
+    // Task 2: guard — reject spawn if caller is not Main CC.
+    // Subagents (CC-harness or CX-harness) are forbidden from spawning more workers.
+    // This is defense-in-depth: CX already has orchestrator_mcp_enabled=false (Phase 3),
+    // but this gate ensures the scheduler boundary is enforced at the runtime level.
+    if let Some(harness) = config.developer_instructions.as_ref()
+        .and_then(|s| if s.contains("cccx_harness_cx") {
+            Some("CX")
+        } else if s.contains("cccx_harness_cc") {
+            Some("CC-subagent")
+        } else {
+            None
+        })
+    {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "cccx: {} workers cannot spawn additional agents. Only Main CC has scheduler authority. \
+             Return a SchedulingRequest Artifact describing what additional worker/scope you need; the scheduler will dispatch it.",
+            harness
+        )));
+    }
+
     let Some(work_spec) = work_spec else {
         return Err(FunctionCallError::RespondToModel(
             "cccx spawn requires a structured `work_spec`. Retry spawn_agent with a WorkSpec containing task_id, harness, role, objective, scope, allowed_tools, allowed_mcp_tools, permission_policy, and model_route. Keep `message` as a compact execution brief; do not pass raw parent context."

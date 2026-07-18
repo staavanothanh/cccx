@@ -21,6 +21,26 @@ pub enum HarnessKind {
     Cx,
 }
 
+/// Who is making the current LLM/spawn call.
+///
+/// architecture.md: "Main CC là scheduler duy nhất. CX/CC subagent không tự spawn."
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActorIdentity {
+    /// The root Main CC agent — has full scheduling authority.
+    MainCc,
+    /// A CC-harness subagent — cannot spawn further agents.
+    CcSubagent,
+    /// A CX-harness subagent — no spawn, no ADR, no sequential-thinking.
+    CxSubagent,
+}
+
+impl ActorIdentity {
+    /// Returns `true` when this actor is permitted to spawn subagents.
+    pub fn can_spawn(&self) -> bool {
+        matches!(self, Self::MainCc)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkRole {
