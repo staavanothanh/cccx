@@ -5,8 +5,12 @@ use cccx_task_graph::TaskNode;
 ///
 /// MVP behavior: only supports command-based verification (run test command, check exit code).
 /// Prose-based evaluation (using a separate model) is deferred.
+// TODO(cccx-phase6): Wire GoalEvaluator into subagent completion path and
+// task graph verification hooks. Currently tested through unit tests only.
+#[allow(dead_code)]
 pub struct GoalEvaluator;
 
+#[allow(dead_code)]
 impl GoalEvaluator {
     /// Evaluate whether a task meets its goal condition.
     /// Returns a VerificationRecord that TaskGraph::record_verification() can use.

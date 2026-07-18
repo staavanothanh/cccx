@@ -1342,6 +1342,8 @@ async fn collect_policy_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>, Exe
 /// Called when a subagent (CC-harness or CX-harness) tries to execute a tool.
 /// Uses evaluate_subagent() from cccx-policy which checks WorkSpec constraints.
 /// Architecture.md §5.9.
+// TODO(cccx-phase6): Wire into subagent permission evaluation.
+#[allow(dead_code)]
 pub(crate) fn cccx_subagent_policy_requirement(
     work_spec: &cccx_protocol::WorkSpec,
     _tool_name: &str,
@@ -1372,6 +1374,8 @@ pub(crate) fn cccx_subagent_policy_requirement(
 }
 
 /// Helper: build a NormalizedAction for a tool call from a subagent.
+// TODO(cccx-phase6): Wire into cccx_spawn subagent lifecycle.
+#[allow(dead_code)]
 pub(crate) fn subagent_normalized_action(
     tool_name: &str,
     action_type: CccxActionType,

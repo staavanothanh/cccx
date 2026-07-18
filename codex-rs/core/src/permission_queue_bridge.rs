@@ -7,11 +7,16 @@ use cccx_policy::{
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Wraps cccx-policy's PermissionRequestQueue for thread-safe use in session.
+/// Wraps cccx-policy's PermissionRequestQueue for thread-safe use in session.
+// TODO(cccx-phase6): Instantiate in Session::new() and wire into
+// exec_policy permission dispatch path.
+#[allow(dead_code)]
 pub struct CccxPermissionQueue {
     inner: Arc<AsyncMutex<PermissionRequestQueue>>,
     counter: AtomicU64,
 }
 
+#[allow(dead_code)]
 impl CccxPermissionQueue {
     pub fn new() -> Self {
         Self {

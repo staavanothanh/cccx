@@ -48,6 +48,8 @@ pub(crate) struct Session {
     pub(super) next_internal_sub_id: AtomicU64,
     /// cccx mode state machine (architecture.md §4).
     /// Persisted alongside Task Graph to survive context compaction.
+    // TODO(cccx-phase6): Read mode from state in exec_policy/evaluate_action.
+    #[allow(dead_code)]
     pub(crate) cccx_mode: CccxModeState,
 }
 
