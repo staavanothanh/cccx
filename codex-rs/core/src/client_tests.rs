@@ -11,6 +11,7 @@ use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
 use super::chat_completion_tools;
 use super::chat_message_from_response_item;
+use super::merge_consecutive_assistant_tool_call_messages;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -981,7 +982,7 @@ fn parallel_function_call_history_must_serialize_as_one_assistant_message() {
     .expect("second function call should serialize")
     .expect("second function call message");
 
-    let serialized_history = vec![first, second];
+    let serialized_history = merge_consecutive_assistant_tool_call_messages(vec![first, second]);
     assert_eq!(
         serialized_history.len(),
         1,

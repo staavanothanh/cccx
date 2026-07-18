@@ -376,6 +376,35 @@ fn chat_message_from_response_item(item: &ResponseItem) -> Result<Option<Value>>
     }
 }
 
+/// Merge consecutive assistant messages that carry tool_calls into a
+/// single assistant message with multiple tool_calls — required for
+/// OpenAI-compatible chat-completions payloads.
+pub(crate) fn merge_consecutive_assistant_tool_call_messages(
+    messages: Vec<Value>,
+) -> Vec<Value> {
+    if messages.len() <= 1 {
+        return messages;
+    }
+    let mut merged: Vec<Value> = Vec::with_capacity(messages.len());
+    for msg in messages {
+        if let Some(prev) = merged.last_mut()
+            && prev.get("role").and_then(Value::as_str) == Some("assistant")
+            && msg.get("role").and_then(Value::as_str) == Some("assistant")
+            && prev.get("tool_calls").is_some()
+            && msg.get("tool_calls").is_some()
+        {
+            if let Some(prev_tc) = prev.get_mut("tool_calls").and_then(Value::as_array_mut)
+                && let Some(new_tc) = msg.get("tool_calls").and_then(Value::as_array)
+            {
+                prev_tc.extend(new_tc.iter().cloned());
+                continue;
+            }
+        }
+        merged.push(msg);
+    }
+    merged
+}
+
 enum ChatCompletionsToolBehavior {
     Serialize(Value),
     Reject(&'static str),
@@ -1221,6 +1250,11 @@ impl ModelClient {
                 messages.push(message);
             }
         }
+
+        // OpenAI-compatible chat-completions requires all tool calls from
+        // one assistant turn to be in a single message with a tool_calls
+        // array. Merge consecutive assistant messages that carry tool_calls.
+        messages = merge_consecutive_assistant_tool_call_messages(messages);
 
         let mut request = json!({
             "model": model_info.slug,
