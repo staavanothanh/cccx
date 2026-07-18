@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 /// cccx extended plugin manifest.
 /// Architecture.md §15 — separate from Codex native plugin.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CccxPluginManifest {
     /// Must be "1" for this schema version.
+    #[serde(rename = "cccxSchemaVersion")]
     pub cccx_schema_version: String,
 
     /// Which harness(es) this plugin applies to.
@@ -22,7 +24,7 @@ pub struct CccxPluginManifest {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum PluginHarness {
     Cc,
     Cx,
@@ -38,15 +40,17 @@ impl Default for PluginHarness {
 /// Agent preset — a WorkSpec template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentPreset {
+    #[serde(rename = "role")]
     pub role: WorkRole,
+    #[serde(rename = "allowedTools")]
     pub allowed_tools: Vec<String>,
-    #[serde(default)]
+    #[serde(default, rename = "model")]
     pub model: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename = "allowedModelRoutes")]
     pub allowed_model_routes: Vec<String>,
-    #[serde(default)]
+    #[serde(default, rename = "fallbackPolicyId")]
     pub fallback_policy_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename = "constraints")]
     pub constraints: Vec<String>,
 }
 
