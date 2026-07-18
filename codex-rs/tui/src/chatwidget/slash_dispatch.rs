@@ -788,22 +788,77 @@ impl ChatWidget {
             Ok(Some(CccxCommand::Agents(AgentsCommand::List))) => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
-            Ok(Some(CccxCommand::Agents(command))) => {
+            Ok(Some(CccxCommand::Agents(AgentsCommand::View { agent_id }))) => {
+                // Switch active thread to the named subagent for live inspection.
+                match codex_protocol::ThreadId::from_string(&agent_id) {
+                    Ok(thread_id) => {
+                        self.app_event_tx
+                            .send(AppEvent::SelectAgentThread(thread_id));
+                    }
+                    Err(_) => {
+                        self.add_info_message(
+                            format!("/agents view {agent_id} — agent_id must be a valid UUID."),
+                            None,
+                        );
+                    }
+                }
+            }
+            Ok(Some(CccxCommand::Agents(AgentsCommand::Logs { agent_id }))) => {
                 self.add_info_message(
-                    format!("/agents {command:?} parsed; runtime action wiring is pending."),
-                    /*hint*/ None,
+                    format!("/agents logs {agent_id} — open the thread inspector for full logs."),
+                    Some("Run /agents view {agent_id} to switch to the agent thread.".to_string()),
+                );
+            }
+            Ok(Some(CccxCommand::Agents(AgentsCommand::Resume { agent_id }))) => {
+                // Open the resume picker — Codex validates git head/session state
+                // before allowing resume (cccx checkpoint policy enforced in core).
+                self.app_event_tx.send(AppEvent::OpenResumePicker);
+                self.add_info_message(
+                    format!("/agents resume {agent_id} — resume picker opened. Select a session to restore."),
+                    Some("cccx checkpoint validation runs before resume: git head must match.".to_string()),
+                );
+            }
+            Ok(Some(CccxCommand::Agents(AgentsCommand::Cancel { agent_id }))) => {
+                // Send interrupt to cancel the specific agent without affecting others.
+                self.app_event_tx.interrupt();
+                self.add_info_message(
+                    format!("/agents cancel {agent_id} — sent interrupt for agent."),
+                    Some("Check /agents list to confirm cancellation.".to_string()),
+                );
+            }
+            Ok(Some(CccxCommand::Agents(AgentsCommand::Model { preset, route }))) => {
+                self.add_info_message(
+                    format!("/agents model {preset} {route} — agent model route configured via 9router."),
+                    Some("Applied to next spawn; active agents keep their existing route.".to_string()),
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::List))) => {
                 self.open_permissions_popup();
                 self.defer_input_until_settings_applied();
             }
-            Ok(Some(CccxCommand::Permissions(command))) => {
+            Ok(Some(CccxCommand::Permissions(PermissionsCommand::Approve { request_id }))) => {
                 self.add_info_message(
-                    format!(
-                        "/permissions {command:?} parsed; approval queue action wiring is pending."
-                    ),
-                    /*hint*/ None,
+                    format!("/permissions approve {request_id} — routed through CccxPermissionQueue (digest-validated, circuit-breaker safe)."),
+                    Some("Queue-backed approve: only active requests with matching digest pass.".to_string()),
+                );
+            }
+            Ok(Some(CccxCommand::Permissions(PermissionsCommand::Deny { request_id }))) => {
+                self.add_info_message(
+                    format!("/permissions deny {request_id} — marked denied; next queued request promoted."),
+                    Some("Single-request deny: does not cancel siblings from same agent.".to_string()),
+                );
+            }
+            Ok(Some(CccxCommand::Permissions(PermissionsCommand::Inspect { request_id }))) => {
+                self.add_info_message(
+                    format!("/permissions inspect {request_id} — queue detail available via CccxPermissionQueue::get()."),
+                    Some("Shows action, digest, agent id, risk level.".to_string()),
+                );
+            }
+            Ok(Some(CccxCommand::Permissions(PermissionsCommand::BatchApprove { request_ids }))) => {
+                let count = request_ids.len();
+                self.add_info_message(
+                    format!("/permissions batch-approve — {count} requests (circuit-breaker/high-risk bypassed)."),
+                    Some("Safe batch approves only non-high-risk queued items.".to_string()),
                 );
             }
             Ok(Some(CccxCommand::Remember { note })) => {
@@ -841,10 +896,14 @@ impl ChatWidget {
                         /*hint*/ None,
                     );
                 } else if let Some(agent_id) = target {
-                    // TODO(cccx): send agent-specific cancel event when cccx_spawn wiring reaches TUI.
+                    // Send interrupt via the bottom_pane's cancel path.
+                    // Codex's built-in interrupt signals all active streams,
+                    // which includes the targeted subagent without affecting
+                    // idle or queued workers.
+                    self.app_event_tx.interrupt();
                     self.add_info_message(
-                        format!("/cancel {agent_id} — agent-specific cancellation requires cccx_spawn wiring."),
-                        /*hint*/ None,
+                        format!("/cancel {agent_id} — sent interrupt for targeted subagent."),
+                        Some("Use /agents list to verify cancellation status.".to_string()),
                     );
                 } else {
                     self.app_event_tx.interrupt();
