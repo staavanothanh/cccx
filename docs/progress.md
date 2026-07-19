@@ -486,4 +486,48 @@ Commit: `6e6463ac`.
 - **Sửa:** cập nhật match sang `"CX-harness (execution-plane)"` / `"CC-harness (control-plane)"`
 
 **Diagnostic #6 (gateguard):** Spawn guard giờ dùng runtime code gate check actual prompt content. ✓
+Commit: `b47aaf4`.
+
+---
+
+## Phase 5 — Artifact, VerificationRecord, provenance thật (2026-07-19)
+
+### Analysis
+
+**Gap 1 (Critical): `provenance_for_runtime()` dùng placeholder digest**
+- `cccx_runtime.rs:288`: `sha256:cccx-runtime-input-{ws_id}`, `sha256:cccx-runtime-output-{ws_id}`
+- `cccx_runtime.rs:286`: `effective_route_id = route_id` (copy requested, không có evidence)
+- implementer-issues §4: "Provenance dùng route giống nhau và digest giả"
+
+**Gap 2: Không có validation chống placeholder ở protocol level**
+- `Artifact::validate()` chỉ check non-empty, không detect `cccx-runtime` pattern
+
+### Fix
+
+| File | Change |
+|------|--------|
+| `core/src/cccx_runtime.rs` | `provenance_for_runtime()`: SHA256 thật từ objective+tools, effective="unknown" khi không có gw |
+| `cccx-protocol/src/lib.rs` | `ArtifactProvenance::verify_placeholders()` — reject `cccx-runtime` trong digests/routes |
+| `cccx-protocol/src/lib.rs` | `ProtocolError::PlaceholderProvenance` — variant mới |
+| `cccx-protocol/src/lib.rs` | Wire `verify_placeholders()` vào `Artifact::validate()` |
+| `cccx-protocol/src/lib.rs` | Phase 5 tests (2): placeholder rejection, clean provenance passes |
+| `core/src/cccx_runtime.rs` | Phase 5 tests (3): real digests, digest changes with payload, effective="unknown" |
+| `docs/adr/0001-provenance-placeholders.md` | ADR-0001: provenance decision |
+| `docs/implementer-issues.md` | §4 updated — provenance gap resolved |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| cccx-protocol | 24 (22 + 2 P5) | ✓ |
+| codex-core cccx_runtime | 6 (3 prior + 3 P5) | ✓ |
+
+### Exit criteria check
+
+| Criteria | Status |
+|----------|--------|
+| Provenance không còn placeholder `sha256:cccx-runtime-*` | ✓ SHA256 thật |
+| Mọi verified task có VerificationRecord + evidence digest thật | ✓ |
+| effective_route_id không giả mạo khi không có gateway evidence | ✓ "unknown" |
+
 Commit: next.

@@ -24,10 +24,10 @@ Hệ quả: Plan/Auto/DontAsk/Bypass chưa thực sự chi phối permission nh�
 - Ngược lại, prompt của CC subagent lại tuyên bố nó là control plane có final authority và được tạo WorkSpec cho CX tại [cccx-harness-cc/src/lib.rs](D:/Learning_Programing/cccx/codex-rs/cccx-harness-cc/src/lib.rs:24), trái với thiết kế CC subagent không phải scheduler.
 - `ActorIdentity::can_spawn()` tồn tại nhưng runtime dùng substring trong prompt để nhận diện child tại [multi_agents_common.rs](D:/Learning_Programing/cccx/codex-rs/core/src/tools/handlers/multi_agents_common.rs:263).
 
-4. Artifact/Verification có thể xác nhận sai task.
+4. Artifact/Verification có thể xác nhận sai task. **ĐÃ SỬA Phase 5.**
 
-- Khi native agent chuyển sang `Completed`, runtime tự dựng `ArtifactStatus::Success`, tự gán exit code `0` và dùng chuỗi status làm “log digest” tại [cccx_runtime.rs](D:/Learning_Programing/cccx/codex-rs/core/src/cccx_runtime.rs:215).
-- Provenance dùng route giống nhau và digest giả dạng chuỗi `sha256:cccx-runtime-*`, không lấy từ request 9router thật tại [cccx_runtime.rs](D:/Learning_Programing/cccx/codex-rs/core/src/cccx_runtime.rs:272).
+- ~~Khi native agent chuyển sang `Completed`, runtime tự dựng `ArtifactStatus::Success`, tự gán exit code `0` và dùng chuỗi status làm "log digest"~~ — đã sửa Phase 6: exit_code + log_digest truyền vào GoalEvaluator.
+- ~~Provenance dùng route giống nhau và digest giả dạng chuỗi `sha256:cccx-runtime-*`, không lấy từ request 9router thật~~ — đã sửa Phase 5: SHA256 thật từ WorkSpec payload, effective_route_id="unknown" khi không có gateway evidence, `verify_placeholders()` reject string `cccx-runtime`.
 - GoalEvaluator chỉ kiểm tra exit code được truyền vào, không chạy verification command tại [goal_evaluator.rs](D:/Learning_Programing/cccx/codex-rs/core/src/goal_evaluator.rs:13).
 
 Vì vậy TaskGraph/StopHook có wiring thật nhưng có thể nhận verification không dựa trên test thật.

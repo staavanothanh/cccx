@@ -264,6 +264,8 @@ impl Artifact {
 
         if let Some(provenance) = &self.provenance {
             provenance.validate()?;
+            // Phase 5: reject placeholder digests like sha256:cccx-runtime-*
+            provenance.verify_placeholders()?;
         }
 
         for evidence in &self.evidence {
@@ -291,6 +293,26 @@ impl ArtifactProvenance {
         require_non_empty("provenance.effective_route_id", &self.effective_route_id)?;
         require_non_empty("provenance.input_digest", &self.input_digest)?;
         require_non_empty("provenance.output_digest", &self.output_digest)
+    }
+
+    /// Phase 5: reject provenance entries that carry placeholder-style digests.
+    /// architecture.md §12: "Provenance không còn placeholder `sha256:cccx-runtime-*`."
+    pub fn verify_placeholders(&self) -> Result<(), ProtocolError> {
+        let fields: [(&str, &str); 4] = [
+            ("input_digest", &self.input_digest),
+            ("output_digest", &self.output_digest),
+            ("requested_route_id", &self.requested_route_id),
+            ("effective_route_id", &self.effective_route_id),
+        ];
+        for (name, value) in &fields {
+            if value.contains("cccx-runtime") {
+                return Err(ProtocolError::PlaceholderProvenance(
+                    name,
+                    value.to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -441,6 +463,9 @@ pub enum ProtocolError {
     FullHistoryCxWorker,
     #[error("model route `{0}` is not allowed by the parent capability set")]
     ModelRouteNotAllowed(String),
+    /// Phase 5: provenance cannot contain placeholder digests.
+    #[error("provenance field `{0}` contains placeholder value `{1}`")]
+    PlaceholderProvenance(&'static str, String),
 }
 
 fn require_version(version: &str) -> Result<(), ProtocolError> {
@@ -732,5 +757,56 @@ mod tests {
         assert!(ActorIdentity::MainCc.can_spawn());
         assert!(!ActorIdentity::CcSubagent.can_spawn());
         assert!(!ActorIdentity::CxSubagent.can_spawn());
+    }
+
+    // ── Phase 5: provenance placeholder rejection ──
+
+    /// Phase 5: Artifact::validate() must reject provenance with cccx-runtime placeholders.
+    /// task.md Phase 5 exit criteria: "Provenance không còn placeholder sha256:cccx-runtime-*".
+    #[test]
+    fn p5_artifact_rejects_cccx_runtime_placeholder_in_provenance_digest() {
+        // Placeholder in input_digest
+        let mut artifact = sample_artifact();
+        artifact.provenance.as_mut().unwrap().input_digest =
+            "sha256:cccx-runtime-input-ws-x".to_string();
+        assert_eq!(
+            artifact.validate(),
+            Err(ProtocolError::PlaceholderProvenance(
+                "input_digest",
+                "sha256:cccx-runtime-input-ws-x".to_string()
+            ))
+        );
+
+        // Placeholder in output_digest
+        let mut artifact = sample_artifact();
+        artifact.provenance.as_mut().unwrap().output_digest =
+            "sha256:cccx-runtime-output-ws-x".to_string();
+        assert_eq!(
+            artifact.validate(),
+            Err(ProtocolError::PlaceholderProvenance(
+                "output_digest",
+                "sha256:cccx-runtime-output-ws-x".to_string()
+            ))
+        );
+
+        // Placeholder in requested_route_id
+        let mut artifact = sample_artifact();
+        artifact.provenance.as_mut().unwrap().requested_route_id =
+            "cccx-runtime-default".to_string();
+        assert!(artifact.validate().is_err());
+
+        // Placeholder in effective_route_id
+        let mut artifact = sample_artifact();
+        artifact.provenance.as_mut().unwrap().effective_route_id =
+            "cccx-runtime-effective".to_string();
+        assert!(artifact.validate().is_err());
+    }
+
+    /// Phase 5: ArtifactProvenance::verify_placeholders() passes clean provenance.
+    #[test]
+    fn p5_clean_provenance_passes_placeholder_check() {
+        let artifact = sample_artifact();
+        // sample_artifact uses sha256:input/sha256:output — no cccx-runtime
+        assert!(artifact.validate().is_ok());
     }
 }
