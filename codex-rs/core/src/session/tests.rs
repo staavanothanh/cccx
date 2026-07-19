@@ -1,6 +1,11 @@
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
+use crate::attestation::AttestationContext;
+use crate::attestation::AttestationProvider;
+use crate::attestation::BypassSandboxAttestation;
+use crate::attestation::BypassSandboxAttestationFuture;
+use crate::attestation::GenerateAttestationFuture;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
@@ -5532,6 +5537,110 @@ async fn cccx_thread_settings_rejects_bypass_without_backend_attestation() {
     let project = tempfile::tempdir().expect("create temp project");
     let (session, _turn_context, rx) =
         make_session_and_context_with_rx_in_cwd(project.path().to_path_buf()).await;
+    let collaboration_mode = CollaborationMode {
+        mode: ModeKind::Bypass,
+        settings: Settings {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: None,
+            developer_instructions: None,
+        },
+    };
+
+    super::handlers::update_thread_settings(
+        &session,
+        "mode-update".to_string(),
+        ThreadSettingsOverrides {
+            collaboration_mode: Some(collaboration_mode),
+            ..ThreadSettingsOverrides::default()
+        },
+    )
+    .await;
+
+    assert_eq!(
+        session.cccx_mode.read().await.current,
+        cccx_policy::MainMode::Plan
+    );
+    let event = rx.recv().await.expect("expected error event");
+    assert!(matches!(
+        event.msg,
+        EventMsg::Error(ErrorEvent { message, .. })
+            if message.contains("Bypass mode requires backend-created sandbox/isolation attestation")
+    ));
+}
+
+#[derive(Debug)]
+struct TestBypassAttestationProvider {
+    isolated: bool,
+}
+
+impl AttestationProvider for TestBypassAttestationProvider {
+    fn header_for_request(&self, _context: AttestationContext) -> GenerateAttestationFuture<'_> {
+        Box::pin(async { None })
+    }
+
+    fn bypass_sandbox_attestation_for(
+        &self,
+        context: AttestationContext,
+    ) -> BypassSandboxAttestationFuture<'_> {
+        let isolated = self.isolated;
+        Box::pin(async move {
+            Some(BypassSandboxAttestation::backend_sandbox_isolation(
+                context.thread_id,
+                isolated,
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn cccx_thread_settings_enters_bypass_with_backend_sandbox_attestation() {
+    let project = tempfile::tempdir().expect("create temp project");
+    let (mut session, _turn_context) =
+        make_session_and_context_in_cwd(Some(project.path().to_path_buf())).await;
+    let (tx_event, _rx_event) = async_channel::unbounded();
+    session.tx_event = tx_event;
+    session.services.attestation_provider =
+        Some(Arc::new(TestBypassAttestationProvider { isolated: true }));
+    let session = Arc::new(session);
+    let collaboration_mode = CollaborationMode {
+        mode: ModeKind::Bypass,
+        settings: Settings {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: None,
+            developer_instructions: None,
+        },
+    };
+
+    super::handlers::update_thread_settings(
+        &session,
+        "mode-update".to_string(),
+        ThreadSettingsOverrides {
+            collaboration_mode: Some(collaboration_mode),
+            ..ThreadSettingsOverrides::default()
+        },
+    )
+    .await;
+
+    assert_eq!(
+        session.cccx_mode.read().await.current,
+        cccx_policy::MainMode::Bypass
+    );
+    assert!(
+        project.path().join(".cccx/state/mode_state.json").exists(),
+        "attested Bypass mode should persist under the test project root"
+    );
+}
+
+#[tokio::test]
+async fn cccx_thread_settings_rejects_bypass_with_unisolated_backend_attestation() {
+    let project = tempfile::tempdir().expect("create temp project");
+    let (mut session, _turn_context) =
+        make_session_and_context_in_cwd(Some(project.path().to_path_buf())).await;
+    let (tx_event, rx) = async_channel::unbounded();
+    session.tx_event = tx_event;
+    session.services.attestation_provider =
+        Some(Arc::new(TestBypassAttestationProvider { isolated: false }));
+    let session = Arc::new(session);
     let collaboration_mode = CollaborationMode {
         mode: ModeKind::Bypass,
         settings: Settings {

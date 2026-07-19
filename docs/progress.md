@@ -1796,3 +1796,94 @@ Results:
 - Auto classifier through 9router remains unimplemented.
 - PostToolUse-blocked hook path is protected by commit ordering in registry,
   but does not yet have a dedicated hook-config integration regression test.
+
+---
+
+## Phase 3G — Backend-created Bypass sandbox attestation (2026-07-20)
+
+Scope:
+
+- `codex-rs/cccx-mode/src/lib.rs`
+- `codex-rs/core/src/attestation.rs`
+- `codex-rs/core/src/session/handlers.rs`
+- `codex-rs/core/src/session/tests.rs`
+
+Skills/roles used:
+
+- `gateguard`
+- `agent-harness-construction`
+- `error-handling`
+- `ai-regression-testing`
+- ECC role references: `tdd-guide`, `security-reviewer`, `code-reviewer`
+
+### Implemented
+
+1. `CccxModeState::attest_mode(...)` no longer enters Bypass without a typed
+   `BypassModeAttestation` marker.
+2. Added a separate `BypassSandboxAttestation` contract in core. This is
+   intentionally distinct from the upstream `x-oai-attestation` request header,
+   because model-request attestation does not prove local sandbox/isolation.
+3. Extended `AttestationProvider` with
+   `bypass_sandbox_attestation_for(...)`, defaulting to `None`. Existing
+   providers remain fail-closed unless a backend explicitly implements local
+   sandbox/isolation proof.
+4. `apply_cccx_mode_update(...)` now:
+   - reads target mode without holding the write lock;
+   - requests Bypass attestation before entering the write-locked transition;
+   - validates the proof against the current `thread_id`;
+   - rejects missing or unisolated proof with the existing user-facing error.
+5. Circuit breaker behavior remains stronger than Bypass.
+
+### RED/GREEN evidence
+
+Initial RED:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo test -p codex-core cccx_thread_settings_enters_bypass_with_backend_sandbox_attestation --lib
+```
+
+Result:
+
+- Failed to compile because `BypassSandboxAttestation`,
+  `BypassSandboxAttestationFuture`, and
+  `AttestationProvider::bypass_sandbox_attestation_for(...)` did not exist.
+
+Final GREEN:
+
+```powershell
+cargo test -p cccx-mode
+cargo test -p codex-core cccx_thread_settings_enters_bypass_with_backend_sandbox_attestation --lib
+cargo test -p codex-core cccx_thread_settings_rejects_bypass_without_backend_attestation --lib
+cargo test -p codex-core cccx_thread_settings_rejects_bypass_with_unisolated_backend_attestation --lib
+cargo test -p codex-core p2_bypass_blocks_circuit_breaker --lib
+```
+
+Results:
+
+- `cccx-mode`: 7 passed.
+- `cccx_thread_settings_enters_bypass_with_backend_sandbox_attestation`: passed.
+- `cccx_thread_settings_rejects_bypass_without_backend_attestation`: passed.
+- `cccx_thread_settings_rejects_bypass_with_unisolated_backend_attestation`: passed.
+- `p2_bypass_blocks_circuit_breaker`: passed.
+
+Formatting:
+
+```powershell
+cargo fmt --all
+```
+
+Result:
+
+- Completed. Rustfmt emitted the existing stable-toolchain warning for
+  `imports_granularity = Item`.
+
+### Remaining Phase 3 gaps
+
+- Auto classifier through 9router remains unimplemented.
+- PostToolUse-blocked hook path is protected by commit ordering in registry,
+  but does not yet have a dedicated hook-config integration regression test.
+- Production Bypass remains disabled unless the host backend implements
+  `AttestationProvider::bypass_sandbox_attestation_for(...)`, which is the
+  intended fail-closed behavior.

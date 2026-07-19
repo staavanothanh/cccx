@@ -15,6 +15,7 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::session::SessionSettingsUpdate;
 
+use crate::attestation::AttestationContext;
 use crate::cccx_task_graph_state;
 use crate::config::Config;
 use crate::review_prompts::resolve_review_request;
@@ -193,6 +194,33 @@ async fn apply_cccx_mode_update(
         let state = sess.state.lock().await;
         state.session_configuration.cwd().clone()
     };
+    if sess.cccx_mode.read().await.current == target {
+        return Ok(());
+    }
+
+    let bypass_attestation = if target == cccx_policy::MainMode::Bypass {
+        let Some(provider) = sess.services.attestation_provider.as_ref() else {
+            return Err(
+                "Bypass mode requires backend-created sandbox/isolation attestation".to_string(),
+            );
+        };
+        let context = AttestationContext {
+            thread_id: sess.thread_id(),
+        };
+        let Some(attestation) = provider
+            .bypass_sandbox_attestation_for(context)
+            .await
+            .and_then(|attestation| attestation.mode_attestation_for(context.thread_id))
+        else {
+            return Err(
+                "Bypass mode requires backend-created sandbox/isolation attestation".to_string(),
+            );
+        };
+        Some(attestation)
+    } else {
+        None
+    };
+
     let mut mode_state = sess.cccx_mode.write().await;
     if mode_state.current == target {
         return Ok(());
@@ -201,9 +229,9 @@ async fn apply_cccx_mode_update(
     let transition = match target {
         cccx_policy::MainMode::DontAsk => mode_state.confirm_mode(),
         cccx_policy::MainMode::Bypass => {
-            return Err(
-                "Bypass mode requires backend-created sandbox/isolation attestation".to_string(),
-            );
+            mode_state.attest_mode(bypass_attestation.as_ref().ok_or_else(|| {
+                "Bypass mode requires backend-created sandbox/isolation attestation".to_string()
+            })?)
         }
         mode => mode_state.change_mode(mode),
     };

@@ -34,6 +34,29 @@ pub enum ModeTransitionError {
     DontAskRequiresConfirm,
 }
 
+/// Backend-created proof marker required to enter Bypass mode.
+///
+/// The mode crate intentionally does not manufacture this from user input or
+/// config. Runtime integrations must validate their own sandbox/isolation proof
+/// and then pass this typed marker into [`CccxModeState::attest_mode`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BypassModeAttestation {
+    source: BypassModeAttestationSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BypassModeAttestationSource {
+    BackendSandboxIsolation,
+}
+
+impl BypassModeAttestation {
+    pub fn backend_sandbox_isolation() -> Self {
+        Self {
+            source: BypassModeAttestationSource::BackendSandboxIsolation,
+        }
+    }
+}
+
 impl CccxModeState {
     /// Create a new mode state with the given initial mode.
     pub fn new(initial: MainMode) -> Self {
@@ -86,7 +109,10 @@ impl CccxModeState {
     }
 
     /// Enter Bypass mode with sandbox/isolation attestation.
-    pub fn attest_mode(&mut self) -> Result<(), ModeTransitionError> {
+    pub fn attest_mode(
+        &mut self,
+        _attestation: &BypassModeAttestation,
+    ) -> Result<(), ModeTransitionError> {
         if self.locked {
             return Err(ModeTransitionError::LockedDuringTask);
         }
@@ -237,6 +263,10 @@ mod tests {
             Err(ModeTransitionError::BypassRequiresAttestation)
         ));
         assert_eq!(state.current, MainMode::Default);
+
+        let attestation = BypassModeAttestation::backend_sandbox_isolation();
+        state.attest_mode(&attestation).unwrap();
+        assert_eq!(state.current, MainMode::Bypass);
     }
 
     #[test]
