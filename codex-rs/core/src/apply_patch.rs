@@ -9,8 +9,11 @@ use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 
 pub(crate) enum InternalApplyPatchInvocation {
@@ -40,6 +43,32 @@ pub(crate) async fn apply_patch(
     action: ApplyPatchAction,
     cccx_target_paths: Vec<String>,
 ) -> InternalApplyPatchInvocation {
+    if let Err(reason) =
+        cccx_validate_write_scope(&turn_context.config.cccx_child_writable_scope, &action)
+    {
+        return InternalApplyPatchInvocation::Output(Err(FunctionCallError::RespondToModel(
+            format!("patch rejected by cccx child scope: {reason}"),
+        )));
+    }
+    for target in action.changes().keys() {
+        let target = match resolve_path_for_scope(&target.to_path_buf(), &action.cwd.to_path_buf())
+        {
+            Ok(target) => target,
+            Err(reason) => {
+                return InternalApplyPatchInvocation::Output(Err(
+                    FunctionCallError::RespondToModel(format!(
+                        "patch rejected by cccx stale-read gate: {reason}"
+                    )),
+                ));
+            }
+        };
+        if let Err(reason) = turn_context.verify_cccx_read_fresh(&target).await {
+            return InternalApplyPatchInvocation::Output(Err(FunctionCallError::RespondToModel(
+                format!("patch rejected by cccx stale-read gate: {reason}"),
+            )));
+        }
+    }
+
     let file_paths: Vec<String> = action.changes().keys().map(|p| p.to_string()).collect();
     let projected_changed_lines = changed_lines_in_action(&action);
     let cumulative_changed_lines = turn_context
@@ -127,6 +156,83 @@ pub(crate) async fn apply_patch(
             FunctionCallError::RespondToModel(format!("patch rejected: {reason}")),
         )),
     }
+}
+
+/// Enforce the WorkSpec-projected writable roots at the patch executor. Each
+/// target is resolved through its existing filesystem ancestors so a new file
+/// below a symlink/junction cannot escape its child's scope.
+fn cccx_validate_write_scope(
+    writable_roots: &BTreeSet<String>,
+    action: &ApplyPatchAction,
+) -> Result<(), String> {
+    if writable_roots.is_empty() {
+        return Ok(());
+    }
+
+    let cwd = action.cwd.to_path_buf();
+    let roots = writable_roots
+        .iter()
+        .map(|root| resolve_path_for_scope(Path::new(root), &cwd))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for target in cccx_action_write_targets(action) {
+        let target = resolve_path_for_scope(&target, &cwd)?;
+        if !roots.iter().any(|root| target.starts_with(root)) {
+            return Err(format!(
+                "target `{}` is outside the projected writable scope",
+                target.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn cccx_action_write_targets(action: &ApplyPatchAction) -> Vec<PathBuf> {
+    let mut targets = Vec::new();
+    for (path, change) in action.changes() {
+        targets.push(path.to_path_buf());
+        if let ApplyPatchFileChange::Update {
+            move_path: Some(move_path),
+            ..
+        } = change
+        {
+            targets.push(move_path.to_path_buf());
+        }
+    }
+    targets
+}
+
+/// Canonicalize an existing path, or the nearest existing ancestor for a new
+/// path. Remaining segments are appended only after symlinks/junctions in the
+/// existing chain have been resolved.
+fn resolve_path_for_scope(path: &Path, cwd: &Path) -> Result<PathBuf, String> {
+    let absolute =
+        AbsolutePathBuf::resolve_path_against_base(path.to_path_buf(), cwd).into_path_buf();
+    let mut existing = absolute.as_path();
+    let mut missing_segments = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            return Err(format!(
+                "cannot resolve target path `{}`",
+                absolute.display()
+            ));
+        };
+        missing_segments.push(name.to_os_string());
+        existing = existing
+            .parent()
+            .ok_or_else(|| format!("cannot resolve target path `{}`", absolute.display()))?;
+    }
+
+    let mut resolved = std::fs::canonicalize(existing).map_err(|error| {
+        format!(
+            "cannot canonicalize target ancestor `{}`: {error}",
+            existing.display()
+        )
+    })?;
+    for segment in missing_segments.iter().rev() {
+        resolved.push(segment);
+    }
+    Ok(resolved)
 }
 
 fn changed_lines_in_action(action: &ApplyPatchAction) -> usize {

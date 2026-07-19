@@ -55,6 +55,8 @@ use crate::tools::sandboxing::ExecApprovalRequirement;
 use codex_shell_command::bash::parse_shell_lc_plain_commands;
 use codex_shell_command::bash::parse_shell_lc_single_command_prefix;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use sha2::Digest;
+use sha2::Sha256;
 use shlex::try_join as shlex_try_join;
 
 const PROMPT_CONFLICT_REASON: &str =
@@ -1643,13 +1645,14 @@ pub(crate) fn cccx_subagent_tool_requirement(
 pub(crate) fn cccx_subagent_shell_requirement(
     work_spec: &cccx_protocol::WorkSpec,
     command: &[String],
+    cwd: &Path,
 ) -> Option<ExecApprovalRequirement> {
     cccx_subagent_tool_requirement(
         work_spec,
         "shell_command",
         CccxActionType::Shell,
         Some(command.join(" ")),
-        Vec::new(),
+        cccx_resolve_target_paths(cccx_extract_shell_target_paths(command), cwd),
         0,
         0,
     )
@@ -1676,22 +1679,263 @@ pub(crate) fn cccx_subagent_mcp_requirement(
     work_spec: &cccx_protocol::WorkSpec,
     server_id: &str,
     tool_name: &str,
+    input_schema: &serde_json::Value,
+    target_paths: Vec<String>,
 ) -> Option<ExecApprovalRequirement> {
     let stable_tool_name = format!("mcp:{server_id}.{tool_name}");
+    if let Err(reason) = cccx_validate_mcp_tool_grant(
+        &work_spec.tool_grants,
+        &stable_tool_name,
+        server_id,
+        input_schema,
+    ) {
+        return Some(ExecApprovalRequirement::Forbidden { reason });
+    }
     cccx_subagent_tool_requirement(
         work_spec,
         &stable_tool_name,
         CccxActionType::McpCall,
         None,
-        Vec::new(),
+        target_paths,
         0,
         0,
     )
 }
 
+pub(crate) fn cccx_extract_mcp_target_paths(arguments: &serde_json::Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    cccx_collect_mcp_target_paths(arguments, None, &mut paths);
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+pub(crate) fn cccx_resolve_target_paths(paths: Vec<String>, cwd: &Path) -> Vec<String> {
+    paths
+        .into_iter()
+        .map(|path| {
+            AbsolutePathBuf::resolve_path_against_base(PathBuf::from(path), cwd)
+                .into_path_buf()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+fn cccx_collect_mcp_target_paths(
+    value: &serde_json::Value,
+    field_name: Option<&str>,
+    paths: &mut Vec<String>,
+) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (name, value) in object {
+                cccx_collect_mcp_target_paths(value, Some(name), paths);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                cccx_collect_mcp_target_paths(value, field_name, paths);
+            }
+        }
+        serde_json::Value::String(value)
+            if field_name.is_some_and(cccx_mcp_field_can_hold_path) && !value.trim().is_empty() =>
+        {
+            paths.push(value.to_string());
+        }
+        _ => {}
+    }
+}
+
+fn cccx_mcp_field_can_hold_path(field_name: &str) -> bool {
+    let field_name = field_name.to_ascii_lowercase();
+    matches!(
+        field_name.as_str(),
+        "path"
+            | "paths"
+            | "file"
+            | "files"
+            | "directory"
+            | "directories"
+            | "dir"
+            | "cwd"
+            | "target"
+            | "targets"
+    ) || field_name.ends_with("_path")
+        || field_name.ends_with("_paths")
+        || field_name.ends_with("_file")
+        || field_name.ends_with("_files")
+        || field_name.ends_with("_directory")
+}
+
+fn cccx_extract_shell_target_paths(command: &[String]) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for argument in command {
+        // A command-array argument may itself be a Windows path. Do not send
+        // it through shlex first: backslashes are shell escapes there and
+        // would turn `..\\outside.txt` into a different target.
+        if cccx_shell_token_looks_like_path(argument) {
+            candidates.push(argument.clone());
+            continue;
+        }
+        let tokens = shlex::split(argument).unwrap_or_else(|| vec![argument.clone()]);
+        candidates.extend(
+            tokens
+                .into_iter()
+                .filter(|token| cccx_shell_token_looks_like_path(token)),
+        );
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn cccx_shell_token_looks_like_path(token: &str) -> bool {
+    !token.starts_with('-')
+        && (token.starts_with('.')
+            || token.contains('/')
+            || token.contains('\\')
+            || (token.len() > 2 && token.as_bytes()[1] == b':'))
+}
+
+/// Validate the immutable grant issued in a WorkSpec against the live MCP tool
+/// identity before it is invoked. Empty grants remain compatible with legacy
+/// WorkSpecs; once a grant list is present every MCP call must name the exact
+/// stable tool, server, and (when pinned) canonical input schema digest.
+pub(crate) fn cccx_validate_mcp_tool_grant(
+    grants: &[cccx_protocol::ToolGrant],
+    stable_id: &str,
+    server_id: &str,
+    input_schema: &serde_json::Value,
+) -> Result<(), String> {
+    if grants.is_empty() {
+        return Ok(());
+    }
+    let grant = grants
+        .iter()
+        .find(|grant| grant.stable_id == stable_id)
+        .ok_or_else(|| format!("MCP tool grant `{stable_id}` is absent from WorkSpec"))?;
+    if let Some(expected_server_id) = &grant.server_id
+        && expected_server_id != server_id
+    {
+        return Err(format!(
+            "MCP tool grant server mismatch: expected `{expected_server_id}`, got `{server_id}`"
+        ));
+    }
+    if let Some(expected_digest) = &grant.schema_digest {
+        let actual_digest = cccx_mcp_schema_digest(input_schema);
+        if expected_digest != &actual_digest {
+            return Err(format!(
+                "MCP tool grant schema digest mismatch for `{stable_id}`: expected `{expected_digest}`, got `{actual_digest}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn cccx_mcp_schema_digest(input_schema: &serde_json::Value) -> String {
+    let canonical = cccx_canonical_json(input_schema);
+    let serialized = serde_json::to_vec(&canonical).unwrap_or_default();
+    format!("sha256:{:x}", Sha256::digest(serialized))
+}
+
+fn cccx_canonical_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(object) => {
+            let ordered = object
+                .iter()
+                .map(|(key, value)| (key.clone(), cccx_canonical_json(value)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            serde_json::Value::Object(ordered.into_iter().collect())
+        }
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(cccx_canonical_json).collect())
+        }
+        _ => value.clone(),
+    }
+}
+
 #[cfg(test)]
 mod cccx_policy_wiring_tests {
     use super::*;
+
+    #[test]
+    fn cccx_mcp_grant_rejects_schema_drift_before_invocation() {
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}});
+        let grants = vec![cccx_protocol::ToolGrant {
+            stable_id: "mcp:memory.search_graph".to_string(),
+            server_id: Some("memory".to_string()),
+            schema_digest: Some("sha256:incorrect".to_string()),
+        }];
+
+        let result =
+            cccx_validate_mcp_tool_grant(&grants, "mcp:memory.search_graph", "memory", &schema);
+
+        assert!(
+            result.is_err_and(|reason| reason.contains("schema digest mismatch")),
+            "a changed live MCP schema must be denied before the call"
+        );
+    }
+
+    #[test]
+    fn cccx_mcp_grant_requires_exact_stable_id_when_grants_are_present() {
+        let schema = serde_json::json!({"type": "object"});
+        let grants = vec![cccx_protocol::ToolGrant {
+            stable_id: "mcp:memory.search_graph".to_string(),
+            server_id: Some("memory".to_string()),
+            schema_digest: None,
+        }];
+
+        let result =
+            cccx_validate_mcp_tool_grant(&grants, "mcp:memory.manage_adr", "memory", &schema);
+
+        assert!(
+            result.is_err_and(|reason| reason.contains("is absent from WorkSpec")),
+            "a grant list must deny a different MCP stable id"
+        );
+    }
+
+    #[test]
+    fn cccx_extracts_every_nested_mcp_path_argument() {
+        let arguments = serde_json::json!({
+            "paths": ["src/lib.rs", "src/main.rs"],
+            "options": {"target_file": "Cargo.toml"},
+            "query": "not a path"
+        });
+
+        assert_eq!(
+            cccx_extract_mcp_target_paths(&arguments),
+            vec!["Cargo.toml", "src/lib.rs", "src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn cccx_extracts_multiple_shell_path_arguments() {
+        assert_eq!(
+            cccx_extract_shell_target_paths(&[
+                "git".to_string(),
+                "diff".to_string(),
+                "src/lib.rs".to_string(),
+                "..\\outside.txt".to_string(),
+            ]),
+            vec!["..\\outside.txt", "src/lib.rs"]
+        );
+    }
+
+    #[test]
+    fn cccx_resolves_relative_targets_against_worker_cwd() {
+        let cwd = Path::new("D:/repo");
+        assert_eq!(
+            cccx_resolve_target_paths(vec!["src/lib.rs".to_string()], cwd),
+            vec![
+                AbsolutePathBuf::resolve_path_against_base(PathBuf::from("src/lib.rs"), cwd)
+                    .into_path_buf()
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+    }
 
     #[test]
     fn cccx_circuit_breaker_blocks_rm_rf_root_before_exec_policy() {

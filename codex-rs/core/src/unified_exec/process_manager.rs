@@ -1158,12 +1158,13 @@ impl UnifiedExecProcessManager {
             .cccx_work_spec_for_thread(context.session.thread_id)
             .await
         {
-            cccx_subagent_shell_requirement(&work_spec, &request.command).unwrap_or(
-                crate::tools::sandboxing::ExecApprovalRequirement::Skip {
+            #[allow(deprecated)]
+            let cccx_target_cwd = context.turn.cwd.to_path_buf();
+            cccx_subagent_shell_requirement(&work_spec, &request.command, cccx_target_cwd.as_path())
+                .unwrap_or(crate::tools::sandboxing::ExecApprovalRequirement::Skip {
                     bypass_sandbox: false,
                     proposed_execpolicy_amendment: None,
-                },
-            )
+                })
         } else {
             context
                 .session

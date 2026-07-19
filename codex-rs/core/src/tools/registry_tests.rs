@@ -117,6 +117,25 @@ impl CoreToolRuntime for CccxPostToolUseCounterTestHandler {
     }
 }
 
+#[test]
+fn cccx_read_tracking_canonicalizes_relative_read_paths() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let file = temp.path().join("src").join("lib.rs");
+    std::fs::create_dir_all(file.parent().expect("parent")).expect("create parent");
+    std::fs::write(&file, "fn main() {}\n").expect("write fixture");
+    let payload = PostToolUsePayload {
+        tool_name: HookToolName::new("mcp__filesystem__read_file"),
+        tool_use_id: "read-1".to_string(),
+        tool_input: serde_json::json!({"path": "src/lib.rs"}),
+        tool_response: serde_json::json!("ok"),
+    };
+
+    assert_eq!(
+        cccx_read_paths_from_post_tool_use_payload(&payload, temp.path()),
+        vec![std::fs::canonicalize(file).expect("canonical file")]
+    );
+}
+
 fn install_blocking_post_tool_use_hook_for_counter_test(
     config: &crate::config::Config,
 ) -> anyhow::Result<String> {

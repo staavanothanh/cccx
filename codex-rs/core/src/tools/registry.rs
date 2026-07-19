@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -599,6 +601,13 @@ impl ToolRegistry {
         } else {
             None
         };
+        #[allow(deprecated)]
+        let cccx_read_paths = post_tool_use_payload
+            .as_ref()
+            .map(|payload| {
+                cccx_read_paths_from_post_tool_use_payload(payload, invocation.turn.cwd.as_path())
+            })
+            .unwrap_or_default();
         let (
             post_tool_use_outcome,
             cccx_post_tool_use_changed_lines,
@@ -693,6 +702,11 @@ impl ToolRegistry {
                         )
                         .await;
                 }
+                for path in cccx_read_paths {
+                    if let Ok(bytes) = tokio::fs::read(&path).await {
+                        invocation.turn.record_cccx_read(path, &bytes).await;
+                    }
+                }
                 dispatch_trace.record_completed(
                     &invocation,
                     &result.call_id,
@@ -707,6 +721,32 @@ impl ToolRegistry {
             }
         }
     }
+}
+
+fn cccx_read_paths_from_post_tool_use_payload(
+    payload: &PostToolUsePayload,
+    cwd: &Path,
+) -> Vec<PathBuf> {
+    let tool_name = payload.tool_name.name().to_ascii_lowercase();
+    if !(tool_name.contains("read")
+        || tool_name.contains("view")
+        || tool_name.contains("search")
+        || tool_name.contains("grep")
+        || tool_name.contains("glob"))
+    {
+        return Vec::new();
+    }
+    crate::exec_policy::cccx_extract_mcp_target_paths(&payload.tool_input)
+        .into_iter()
+        .filter_map(|path| {
+            let absolute = codex_utils_absolute_path::AbsolutePathBuf::resolve_path_against_base(
+                PathBuf::from(path),
+                cwd,
+            )
+            .into_path_buf();
+            std::fs::canonicalize(absolute).ok()
+        })
+        .collect()
 }
 
 fn cccx_changed_lines_from_post_tool_use_payload(payload: &PostToolUsePayload) -> usize {

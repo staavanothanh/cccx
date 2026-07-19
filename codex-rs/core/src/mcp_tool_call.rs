@@ -6,6 +6,8 @@ use crate::config::Config;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::connectors;
+use crate::exec_policy::cccx_extract_mcp_target_paths;
+use crate::exec_policy::cccx_resolve_target_paths;
 use crate::exec_policy::cccx_subagent_mcp_requirement;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::GuardianMcpAnnotations;
@@ -249,7 +251,32 @@ pub(crate) async fn handle_mcp_tool_call(
         .cccx_work_spec_for_thread(sess.thread_id)
         .await
     {
-        cccx_subagent_mcp_requirement(&work_spec, &server, &tool_name)
+        let Some(live_tool) = manager.tool_info(&server, &tool_name).await else {
+            return HandledMcpToolCall {
+                result: CallToolResult::from_error_text(format!(
+                    "cccx policy denied MCP tool call: live schema for `{server}/{tool_name}` is unavailable"
+                )),
+                tool_input: arguments_value
+                    .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
+            };
+        };
+        let input_schema =
+            serde_json::to_value(&live_tool.tool.input_schema).unwrap_or(JsonValue::Null);
+        #[allow(deprecated)]
+        let cccx_target_cwd = turn_context.cwd.to_path_buf();
+        cccx_subagent_mcp_requirement(
+            &work_spec,
+            &server,
+            &tool_name,
+            &input_schema,
+            cccx_resolve_target_paths(
+                arguments_value
+                    .as_ref()
+                    .map(cccx_extract_mcp_target_paths)
+                    .unwrap_or_default(),
+                &cccx_target_cwd,
+            ),
+        )
     } else {
         sess.services
             .exec_policy

@@ -6,6 +6,8 @@ use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
+use crate::session::turn::built_tools;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
@@ -26,6 +28,7 @@ use codex_protocol::user_input::UserInput;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -246,7 +249,10 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     Ok(())
 }
 
-pub(crate) fn apply_cccx_work_spec_to_spawn_config(
+pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
+    session: &Session,
+    step_context: &StepContext,
+    cancellation_token: &CancellationToken,
     config: &mut Config,
     turn: &TurnContext,
     work_spec: Option<cccx_protocol::WorkSpec>,
@@ -277,16 +283,41 @@ pub(crate) fn apply_cccx_work_spec_to_spawn_config(
 
     #[allow(deprecated)]
     let project_root = turn.cwd.clone().to_path_buf();
-    // Phase 3: parent_allowed_tools/parent_allowed_mcp_tools should come from
-    // Main CC's actual tool/MCP catalog at spawn time. Currently pass empty
-    // defaults — the real tool registry integration is deferred (requires
-    // access to AgentControlService/McpManager at the spawn call-site).
+    let parent_router = built_tools(session, step_context, cancellation_token)
+        .await
+        .map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "cccx could not snapshot the parent tool catalog before spawn: {error}"
+            ))
+        })?;
+    let parent_allowed_tools = parent_router
+        .model_visible_specs()
+        .into_iter()
+        .map(|spec| spec.name().to_string())
+        .collect();
+    let parent_allowed_mcp_tools = step_context
+        .mcp_tools()
+        .await
+        .iter()
+        .flat_map(|tool| {
+            [
+                tool.server_name.clone(),
+                tool.tool.name.to_string(),
+                tool.canonical_tool_name().to_string(),
+                format!("mcp:{}.{}", tool.server_name, tool.tool.name),
+            ]
+        })
+        .collect();
+
+    // Parent capability is captured from the live turn registry, never from
+    // the child's requested WorkSpec. A child can only receive the strict
+    // intersection at this exact spawn boundary.
     let parent = parent_capability_set_for_work_spec(
         &project_root,
         &turn.model_info.slug,
         &work_spec,
-        Default::default(),
-        Default::default(),
+        parent_allowed_tools,
+        parent_allowed_mcp_tools,
     );
     crate::cccx_spawn::apply_cccx_harness_to_config(config, &parent, &work_spec)
         .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;

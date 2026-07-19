@@ -5,6 +5,8 @@ use crate::exec_policy::CccxAutoClassifier;
 use crate::exec_policy::CccxAutoClassifierFuture;
 use crate::exec_policy::CccxClassifierOutcome;
 use crate::exec_policy::ExecPolicyManager;
+use codex_apply_patch::MaybeApplyPatchVerified;
+use codex_exec_server::LOCAL_FS;
 use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 
@@ -36,6 +38,143 @@ fn convert_apply_patch_maps_add_variant() {
         Some(&FileChange::Add {
             content: "hello".to_string()
         })
+    );
+}
+
+#[test]
+fn cccx_child_write_scope_rejects_target_outside_projected_root() {
+    let tmp = tempdir().expect("tmp");
+    let allowed = tmp.path().join("allowed");
+    let outside = tmp.path().join("outside").join("escape.txt");
+    std::fs::create_dir_all(&allowed).expect("allowed root");
+    std::fs::create_dir_all(outside.parent().expect("outside parent")).expect("outside root");
+    let action = ApplyPatchAction::new_add_for_test(
+        &PathUri::from_host_native_path(&outside).expect("absolute path"),
+        "blocked".to_string(),
+    );
+
+    let result = cccx_validate_write_scope(
+        &[allowed.to_string_lossy().to_string()]
+            .into_iter()
+            .collect(),
+        &action,
+    );
+
+    assert!(
+        result.is_err_and(|reason| reason.contains("outside the projected writable scope")),
+        "child executor must reject a patch target outside its projected writable root"
+    );
+}
+
+#[test]
+fn cccx_child_write_scope_rejects_parent_traversal() {
+    let tmp = tempdir().expect("tmp");
+    let allowed = tmp.path().join("allowed");
+    std::fs::create_dir_all(&allowed).expect("allowed root");
+    let escaped = allowed.join("..").join("outside.txt");
+    let action = ApplyPatchAction::new_add_for_test(
+        &PathUri::from_host_native_path(&escaped).expect("absolute path"),
+        "blocked".to_string(),
+    );
+
+    let result = cccx_validate_write_scope(
+        &[allowed.to_string_lossy().to_string()]
+            .into_iter()
+            .collect(),
+        &action,
+    );
+
+    assert!(
+        result.is_err(),
+        "path traversal must not escape child scope"
+    );
+}
+
+#[tokio::test]
+async fn cccx_child_write_scope_rejects_move_destination_outside_projected_root() {
+    let tmp = tempdir().expect("tmp");
+    let allowed = tmp.path().join("allowed");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&allowed).expect("allowed root");
+    std::fs::create_dir_all(&outside).expect("outside root");
+    std::fs::write(allowed.join("source.txt"), "before\n").expect("source file");
+    let patch = r#"*** Begin Patch
+*** Update File: allowed/source.txt
+*** Move to: outside/escaped.txt
+@@
+-before
++after
+*** End Patch"#;
+    let cwd = PathUri::from_host_native_path(tmp.path()).expect("absolute cwd");
+    let action = match codex_apply_patch::maybe_parse_apply_patch_verified(
+        &["apply_patch".to_string(), patch.to_string()],
+        &cwd,
+        LOCAL_FS.as_ref(),
+        None,
+    )
+    .await
+    {
+        MaybeApplyPatchVerified::Body(action) => action,
+        other => panic!("expected verified patch, got {other:?}"),
+    };
+
+    let result = cccx_validate_write_scope(
+        &[allowed.to_string_lossy().to_string()]
+            .into_iter()
+            .collect(),
+        &action,
+    );
+
+    assert!(
+        result.is_err_and(|reason| reason.contains("outside the projected writable scope")),
+        "a move destination outside the child scope must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn cccx_stale_read_gate_blocks_patch_before_runtime_execution() {
+    let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+    let tmp = tempdir().expect("tmp");
+    let file = tmp.path().join("tracked.txt");
+    std::fs::write(&file, "before\n").expect("initial file");
+    let patch = r#"*** Begin Patch
+*** Update File: tracked.txt
+@@
+-before
++after
+*** End Patch"#;
+    let cwd = PathUri::from_host_native_path(tmp.path()).expect("absolute cwd");
+    let action = match codex_apply_patch::maybe_parse_apply_patch_verified(
+        &["apply_patch".to_string(), patch.to_string()],
+        &cwd,
+        LOCAL_FS.as_ref(),
+        None,
+    )
+    .await
+    {
+        MaybeApplyPatchVerified::Body(action) => action,
+        other => panic!("expected verified patch, got {other:?}"),
+    };
+    turn_context
+        .record_cccx_read(
+            std::fs::canonicalize(&file).expect("canonical file"),
+            b"before\n",
+        )
+        .await;
+    std::fs::write(&file, "changed elsewhere\n").expect("external change");
+
+    let result = apply_patch(
+        &session,
+        &turn_context,
+        &FileSystemSandboxPolicy::unrestricted(),
+        action,
+        vec![file.to_string_lossy().to_string()],
+    )
+    .await;
+
+    assert!(
+        matches!(result, InternalApplyPatchInvocation::Output(Err(FunctionCallError::RespondToModel(message))) if message.contains("stale-read gate")),
+        "a direct re-read mismatch must stop the patch before it reaches the runtime"
     );
 }
 

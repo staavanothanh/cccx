@@ -506,10 +506,11 @@ pub fn evaluate_subagent(
         }
     }
 
-    if matches!(action.action_type, ActionType::Edit) && !action.target_paths.is_empty() {
-        // Phase 3: all() instead of any() — every path must be in scope.
-        // If a multi-file edit includes even one out-of-scope path, the
-        // entire edit is denied (implementer-issues §2).
+    if !action.target_paths.is_empty() {
+        // Every target extracted from an edit, shell, or MCP invocation must
+        // be in scope. A multi-target request with one escaped path is denied
+        // as a unit; executor-specific canonicalization supplies the physical
+        // symlink/junction proof for filesystem writes.
         let in_scope = action.target_paths.iter().all(|target| {
             let normalized = target.replace('\\', "/");
             work_spec.scope.canonical_paths.iter().any(|scope_path| {
@@ -1160,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_scope_check_requires_real_path_boundary() {
+    fn cccx_subagent_scope_check_requires_real_path_boundary() {
         let mut action = edit_action();
         action.target_paths = vec!["D:/repo/src/authentication/session.rs".to_string()];
 
@@ -1174,6 +1175,29 @@ mod tests {
                 silent: false
             }
         );
+    }
+
+    #[test]
+    fn cccx_subagent_scope_checks_every_mcp_target() {
+        let action = NormalizedAction {
+            action_type: ActionType::McpCall,
+            summary: "MCP writes two files".to_string(),
+            command: None,
+            target_paths: vec![
+                "D:/repo/src/auth/session.rs".to_string(),
+                "D:/repo/outside.txt".to_string(),
+            ],
+            tool_name: Some("mcp:codebase-memory-mcp.search_graph".to_string()),
+            task_id: "T1".to_string(),
+            changed_files: 0,
+            changed_lines: 0,
+        };
+
+        let decision = evaluate_subagent(&action, &cx_work_spec(), &PolicySet::default_m4());
+        assert!(matches!(
+            decision,
+            PolicyDecision::Deny { reason, .. } if reason == "out_of_scope"
+        ));
     }
 
     #[test]

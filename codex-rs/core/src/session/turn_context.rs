@@ -22,6 +22,8 @@ use codex_utils_path_uri::PathUri;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::future::Shared;
+use sha2::Digest;
+use sha2::Sha256;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use tracing::instrument;
@@ -73,6 +75,58 @@ impl CccxPostToolUseCounters {
 
     pub(crate) async fn changed_lines(&self) -> usize {
         self.state.lock().await.changed_lines
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CccxReadSet {
+    digests: Mutex<HashMap<PathBuf, String>>,
+}
+
+impl CccxReadSet {
+    pub(crate) async fn record(&self, path: PathBuf, bytes: &[u8]) {
+        self.digests
+            .lock()
+            .await
+            .insert(path, format!("sha256:{:x}", Sha256::digest(bytes)));
+    }
+
+    pub(crate) async fn verify_if_observed(&self, path: &Path) -> Result<(), String> {
+        let expected = self.digests.lock().await.get(path).cloned();
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let bytes = std::fs::read(path).map_err(|error| {
+            format!("cannot re-read `{}` before write: {error}", path.display())
+        })?;
+        let actual = format!("sha256:{:x}", Sha256::digest(bytes));
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(format!("stale read detected for `{}`", path.display()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod cccx_read_set_tests {
+    use super::CccxReadSet;
+
+    #[tokio::test]
+    async fn stale_read_record_blocks_write_after_external_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tracked.rs");
+        std::fs::write(&path, "before").expect("initial file");
+        let read_set = CccxReadSet::default();
+        read_set.record(path.clone(), b"before").await;
+
+        std::fs::write(&path, "after").expect("external change");
+        let result = read_set.verify_if_observed(&path).await;
+
+        assert!(
+            result.is_err_and(|reason| reason.contains("stale read detected")),
+            "a file changed after its observed read must be blocked before write"
+        );
     }
 }
 
@@ -192,6 +246,7 @@ pub struct TurnContext {
     pub(crate) turn_skills: TurnSkillsContext,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) cccx_post_tool_use_counters: Arc<CccxPostToolUseCounters>,
+    pub(crate) cccx_read_set: Arc<CccxReadSet>,
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
@@ -247,6 +302,14 @@ impl TurnContext {
 
     pub(crate) async fn cccx_post_tool_use_changed_lines(&self) -> usize {
         self.cccx_post_tool_use_counters.changed_lines().await
+    }
+
+    pub(crate) async fn record_cccx_read(&self, path: PathBuf, bytes: &[u8]) {
+        self.cccx_read_set.record(path, bytes).await;
+    }
+
+    pub(crate) async fn verify_cccx_read_fresh(&self, path: &Path) -> Result<(), String> {
+        self.cccx_read_set.verify_if_observed(path).await
     }
 
     #[cfg(test)]
@@ -391,6 +454,7 @@ impl TurnContext {
             turn_skills: self.turn_skills.clone(),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
             cccx_post_tool_use_counters: Arc::clone(&self.cccx_post_tool_use_counters),
+            cccx_read_set: Arc::clone(&self.cccx_read_set),
             terminal_error: Arc::clone(&self.terminal_error),
             server_model_warning_emitted: AtomicBool::new(
                 self.server_model_warning_emitted.load(Ordering::Relaxed),
@@ -675,6 +739,7 @@ impl Session {
             turn_skills: TurnSkillsContext::new(skills_snapshot),
             turn_timing_state: Arc::new(TurnTimingState::default()),
             cccx_post_tool_use_counters: Arc::new(CccxPostToolUseCounters::default()),
+            cccx_read_set: Arc::new(CccxReadSet::default()),
             terminal_error: Arc::new(Mutex::new(None)),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),

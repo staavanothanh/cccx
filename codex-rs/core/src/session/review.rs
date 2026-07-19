@@ -154,6 +154,7 @@ pub(super) async fn spawn_review_thread(
         cccx_post_tool_use_counters: Arc::new(
             crate::session::turn_context::CccxPostToolUseCounters::default(),
         ),
+        cccx_read_set: Arc::new(crate::session::turn_context::CccxReadSet::default()),
         terminal_error: Arc::new(Mutex::new(None)),
         server_model_warning_emitted: AtomicBool::new(false),
         model_verification_emitted: AtomicBool::new(false),

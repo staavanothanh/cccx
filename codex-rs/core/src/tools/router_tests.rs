@@ -309,8 +309,7 @@ async fn tools_without_handlers_do_not_support_parallel() -> anyhow::Result<()> 
 }
 
 #[tokio::test]
-async fn cccx_child_tool_projection_filters_registry_and_model_visible_specs() -> anyhow::Result<()>
-{
+async fn cccx_tool_projection_filters_registry_and_model_visible_specs() -> anyhow::Result<()> {
     let (_, mut turn) = make_session_and_context().await;
     Arc::make_mut(&mut turn.config)
         .cccx_child_allowed_tools

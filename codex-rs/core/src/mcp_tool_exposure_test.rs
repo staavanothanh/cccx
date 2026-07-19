@@ -200,7 +200,7 @@ async fn excludes_tools_hidden_from_model_exposure() {
 }
 
 #[tokio::test]
-async fn cccx_child_mcp_projection_filters_runtime_tools() {
+async fn cccx_tool_projection_filters_mcp_runtime_tools() {
     let mut config = test_config().await;
     config
         .cccx_child_allowed_mcp_tools

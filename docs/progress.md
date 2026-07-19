@@ -2355,3 +2355,42 @@ Remaining Phase 4 work:
 - MCP stable-id/schema-digest enforcement before call.
 - Path escape and multi-target argument extraction checks in edit/MCP
   executor gates.
+
+---
+
+## 2026-07-20 — Phase 4 completed: live capability projection and executor gates
+
+Implemented the remaining Phase 4 authority boundary as one coherent slice:
+
+1. Spawn snapshots the live parent tool router and MCP manager before applying
+   WorkSpec projection; child grants are therefore intersected with actual
+   parent capabilities rather than empty/default catalogs.
+2. Child tool planning filters both the model-visible catalog and runtime
+   registry, including the dynamic `tool_search` route. MCP tool exposure is
+   independently filtered per child.
+3. MCP calls now validate the immutable `mcp:{server}.{tool}` stable id, server
+   identity, and canonical-schema SHA-256 digest before invocation. MCP and
+   shell path extraction checks every nested/multiple target.
+4. Patch writes canonicalize their existing ancestor chain, reject `..`,
+   junction/symlink escapes, and validate both source and `Move to` targets.
+   The projected sandbox remains an independent OS-level write ceiling.
+5. Successful direct read-like tool calls record canonical file content
+   digests. A patch re-reads any previously observed target immediately before
+   dispatch and emits a deterministic stale-read denial if it changed.
+6. Renamed projection/scope tests so the exact Phase 4 validation commands no
+   longer produce vacuous `0 tests` output.
+
+Validation (all green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p cccx-protocol
+cargo +1.95.0 test -p cccx-policy
+cargo +1.95.0 test -p codex-core cccx_spawn --lib
+cargo +1.95.0 test -p codex-core cccx_tool_projection --lib
+cargo +1.95.0 test -p codex-core cccx_subagent_scope --lib
+cargo +1.95.0 test -p codex-core cccx_child_write_scope --lib
+cargo +1.95.0 test -p codex-core cccx_stale_read_gate --lib
+```
+
+The only observed output was the pre-existing dead-code warning in
+`permission_queue_bridge.rs` and the stable-rustfmt nightly-option warning.

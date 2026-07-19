@@ -43,8 +43,10 @@ async fn handle_spawn_agent(
     let ToolInvocation {
         session,
         turn,
+        step_context,
         payload,
         call_id,
+        cancellation_token,
         ..
     } = invocation;
     let arguments = function_arguments(payload)?;
@@ -92,11 +94,15 @@ async fn handle_spawn_agent(
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
     let cccx_runtime = apply_cccx_work_spec_to_spawn_config(
+        session.as_ref(),
+        step_context.as_ref(),
+        &cancellation_token,
         &mut config,
         turn.as_ref(),
         args.work_spec.clone(),
         Some(args.task_name.as_str()),
-    )?;
+    )
+    .await?;
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
