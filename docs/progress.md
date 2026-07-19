@@ -2280,3 +2280,78 @@ Remaining Phase 4 work:
 - MCP stable-id/schema-digest enforcement before call.
 - Path escape and multi-target argument extraction checks.
 - OS sandbox writable-root narrowing from `cccx_child_writable_scope`.
+
+## Phase 4C — Child writable scope narrows OS sandbox projection
+
+Status: complete.
+
+Scope:
+
+- `codex-rs/cccx-protocol/src/lib.rs`
+- `codex-rs/core/src/cccx_spawn.rs`
+
+Skills / workflow used:
+
+- `agent-harness-construction`
+- `path-types`
+- `gateguard`
+- `code-breaking-changes`
+- MCP-first discovery through `codebase-memory-mcp`; direct file reads were
+  used after MCP identified config sandbox APIs and spawn adapter call-sites.
+
+Implemented:
+
+1. Added `ProtocolError::RuntimeProjection(String)` so runtime projection
+   failures can be returned instead of panicking.
+2. Added `apply_child_writable_scope_to_sandbox(...)` in the WorkSpec spawn
+   adapter.
+3. When `cccx_child_writable_scope` is non-empty, the child config now receives
+   a narrowed `SandboxPolicy::WorkspaceWrite`:
+   - writable roots are resolved against child `cwd`;
+   - network access is disabled;
+   - temp-dir implicit write roots are excluded.
+4. Extended the existing writable-scope runtime projection test to assert:
+   - projected root reaches config;
+   - projected root is present in child workspace roots;
+   - parent-wide roots do not leak into child workspace roots;
+   - legacy OS sandbox policy is narrowed to the projected writable root.
+
+RED/GREEN evidence:
+
+Initial RED:
+
+```powershell
+cargo +1.95.0 test -p codex-core runtime_projection_writable_scope_must_reach_config --lib
+```
+
+Results:
+
+- First compile failure: `AbsolutePathBuf` was referenced through a private
+  re-export path. Fixed by importing `codex_utils_absolute_path::AbsolutePathBuf`.
+- Next assertion failure: test expected `workspace_roots` to equal only the
+  projected root, but runtime workspace roots intentionally retain `cwd`.
+  Corrected the test to assert the projected root is included and parent-wide
+  roots do not leak; the strict writable-root proof is the sandbox policy.
+
+Final GREEN:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 fmt --all
+cargo +1.95.0 test -p codex-core runtime_projection_writable_scope_must_reach_config --lib
+cargo +1.95.0 test -p codex-core runtime_projection_ --lib
+```
+
+Results:
+
+- `runtime_projection_writable_scope_must_reach_config`: passed.
+- `runtime_projection_`: 5 passed.
+- Formatting completed. Rustfmt emitted the existing stable-toolchain warning
+  for `imports_granularity = Item`.
+
+Remaining Phase 4 work:
+
+- MCP stable-id/schema-digest enforcement before call.
+- Path escape and multi-target argument extraction checks in edit/MCP
+  executor gates.

@@ -11,6 +11,9 @@ use cccx_protocol::ProtocolError;
 use cccx_protocol::WorkRole;
 use cccx_protocol::WorkSpec;
 use cccx_protocol::{ActorIdentity, HarnessKind};
+use codex_protocol::protocol::SandboxPolicy;
+use codex_utils_absolute_path::AbsolutePathBuf;
+use std::path::PathBuf;
 
 use crate::config::Config;
 
@@ -35,6 +38,7 @@ pub fn apply_cccx_harness_to_config(
     config.cccx_child_allowed_tools = projection.allowed_tools.clone();
     config.cccx_child_allowed_mcp_tools = projection.allowed_mcp_tools.clone();
     config.cccx_child_writable_scope = projection.writable_scope.clone();
+    apply_child_writable_scope_to_sandbox(config)?;
 
     // --- harness prompt fragment ---
     let harness_prompt = match work_spec.harness {
@@ -86,6 +90,29 @@ pub fn apply_cccx_harness_to_config(
     );
 
     Ok(())
+}
+
+fn apply_child_writable_scope_to_sandbox(config: &mut Config) -> Result<(), ProtocolError> {
+    if config.cccx_child_writable_scope.is_empty() {
+        return Ok(());
+    }
+
+    let writable_roots = config
+        .cccx_child_writable_scope
+        .iter()
+        .map(|path| {
+            AbsolutePathBuf::resolve_path_against_base(PathBuf::from(path), config.cwd.as_path())
+        })
+        .collect::<Vec<_>>();
+
+    config
+        .set_legacy_sandbox_policy(SandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        })
+        .map_err(|err| ProtocolError::RuntimeProjection(err.to_string()))
 }
 
 /// Determine which harness a `WorkSpec` mandates.
@@ -338,6 +365,10 @@ mod phase0_tests {
         parent
             .writable_roots
             .insert("reduced-scope-path".to_string());
+        let expected_root = AbsolutePathBuf::resolve_path_against_base(
+            PathBuf::from("reduced-scope-path"),
+            config.cwd.as_path(),
+        );
 
         apply_cccx_harness_to_config(&mut config, &parent, &ws).unwrap();
 
@@ -345,6 +376,29 @@ mod phase0_tests {
             config.cccx_child_writable_scope,
             BTreeSet::from(["reduced-scope-path".into()]),
             "Projected WorkSpec writable scope must reach child Config"
+        );
+        assert!(
+            config.workspace_roots.contains(&expected_root),
+            "Projected WorkSpec writable scope must be present in child workspace roots: {:?}",
+            config.workspace_roots
+        );
+        assert!(
+            !config
+                .workspace_roots
+                .iter()
+                .any(|root| root.to_string_lossy().contains("parent-wide-root")),
+            "Parent writable roots must not leak into child workspace roots: {:?}",
+            config.workspace_roots
+        );
+        assert_eq!(
+            config.legacy_sandbox_policy(),
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots: vec![expected_root],
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+            },
+            "Projected WorkSpec writable scope must narrow child OS sandbox policy"
         );
     }
 

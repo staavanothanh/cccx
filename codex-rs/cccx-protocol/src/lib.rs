@@ -720,6 +720,8 @@ pub enum ProtocolError {
     },
     #[error("duplicate tool grant stable id `{0}`")]
     DuplicateToolGrant(String),
+    #[error("runtime projection failed: {0}")]
+    RuntimeProjection(String),
     /// Phase 5: provenance cannot contain placeholder digests.
     #[error("provenance field `{0}` contains placeholder value `{1}`")]
     PlaceholderProvenance(&'static str, String),
