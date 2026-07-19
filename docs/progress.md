@@ -1428,3 +1428,87 @@ Known warning still present from earlier phases:
 - Auto classifier through 9router is not implemented.
 - `codex-core cccx_mode` and `cccx_permission` filters currently match no tests;
   future tests should use those names or task validation should be updated.
+
+---
+
+## Phase 3B — Core-owned mode-change path (2026-07-19)
+
+Scope:
+
+- `codex-rs/cccx-mode/src/lib.rs`
+- `codex-rs/core/src/session/session.rs`
+- `codex-rs/core/src/session/turn_context.rs`
+- `codex-rs/core/src/session/handlers.rs`
+- `codex-rs/core/src/session/tests.rs`
+- `codex-rs/core/src/hook_runtime.rs`
+- `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+
+Skills/roles used:
+
+- `gateguard`
+- `agent-harness-construction`
+- `error-handling`
+- `ai-regression-testing`
+- ECC role references: `tdd-guide`, `security-reviewer`, `code-reviewer`
+
+### Implemented
+
+1. `Session.cccx_mode` is now protected by `tokio::sync::RwLock`, so runtime mode
+   changes are core-owned state instead of mutable TUI-only state.
+2. `Session::new_turn_context_from_configuration()` snapshots the current locked
+   mode into each new turn.
+3. Stop-hook mode persistence now reads the locked mode state before writing
+   `.cccx/state/mode_state.json`.
+4. Added `cccx_mode::mode_kind_to_main_mode()` to map all six protocol
+   `ModeKind` values into `cccx_policy::MainMode`.
+5. `update_thread_settings()` and `user_input_or_turn_inner()` now route
+   collaboration-mode overrides through a core mode transition helper before
+   applying session settings.
+6. `/dont-ask` no longer performs a local fake TUI transition. It now uses the
+   same typed collaboration-mode update path as the other mode commands.
+7. `/bypass` no longer performs local attestation in the TUI. The core rejects it
+   fail-closed until backend-created sandbox/isolation attestation exists.
+8. Added temp-project test helpers so mode-state persistence tests do not create
+   `.cccx` artifacts under `codex-rs/core`.
+
+### Tests
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo fmt --all
+cargo test -p cccx-mode
+cargo test -p codex-core cccx_new_turn_snapshots_live_session_mode --lib
+cargo test -p codex-core cccx_policy_wiring_tests --lib
+cargo test -p codex-core cccx_thread_settings_ --lib
+cargo check -p codex-tui --lib
+```
+
+Results:
+
+- `cargo fmt --all`: completed; rustfmt emitted existing stable-toolchain warnings
+  for `imports_granularity = Item`.
+- `cccx-mode`: 7 passed.
+- `cccx_new_turn_snapshots_live_session_mode`: 1 passed.
+- `cccx_policy_wiring_tests`: 9 passed.
+- `cccx_thread_settings_`: 2 passed.
+- `cargo check -p codex-tui --lib`: passed.
+
+Operational note:
+
+- The first retry of `cccx_new_turn_snapshots_live_session_mode` timed out at
+  120s while `rustc` was still compiling after `cargo fmt`; the orphan compile
+  finished, then the rerun passed in 17s.
+- Verified `codex-rs/core/.cccx` was not generated after the new temp-project
+  tests.
+
+### Remaining gaps
+
+- `/bypass` is intentionally fail-closed until the backend attestation provider
+  exists. The current error path is correct for safety, but UX rollback after a
+  rejected mode-change still needs a dedicated TUI state reconciliation pass.
+- Shift+Tab has not yet been revalidated with a TUI-level regression test across
+  all six designed modes.
+- Auto mode classifier through 9router remains unimplemented.
+- Permission queue bridge still has dead production methods; this remains part
+  of the later permission-queue wiring work.

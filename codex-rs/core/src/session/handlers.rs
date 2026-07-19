@@ -15,6 +15,7 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::session::SessionSettingsUpdate;
 
+use crate::cccx_task_graph_state;
 use crate::config::Config;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
@@ -22,6 +23,7 @@ use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
+use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -94,7 +96,20 @@ pub async fn update_thread_settings(
     sub_id: String,
     thread_settings: ThreadSettingsOverrides,
 ) {
-    let updates = thread_settings_update(sess, thread_settings).await;
+    let updates = match thread_settings_update(sess, thread_settings).await {
+        Ok(updates) => updates,
+        Err(err) => {
+            sess.send_event_raw(Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: format!("invalid cccx mode override: {err}"),
+                    codex_error_info: Some(CodexErrorInfo::BadRequest),
+                }),
+            })
+            .await;
+            return;
+        }
+    };
     match sess.update_settings(updates).await {
         Ok(()) => {
             sess.send_event_raw_without_materializing_rollout(Event {
@@ -119,7 +134,7 @@ pub async fn update_thread_settings(
 async fn thread_settings_update(
     sess: &Session,
     thread_settings: ThreadSettingsOverrides,
-) -> SessionSettingsUpdate {
+) -> Result<SessionSettingsUpdate, String> {
     let ThreadSettingsOverrides {
         environments,
         profile_workspace_roots,
@@ -136,6 +151,7 @@ async fn thread_settings_update(
         collaboration_mode,
         personality,
     } = thread_settings;
+    let requested_collaboration_mode = collaboration_mode.clone();
     let collaboration_mode = match collaboration_mode {
         Some(collaboration_mode) => collaboration_mode,
         None => {
@@ -148,7 +164,10 @@ async fn thread_settings_update(
                 .with_updates(model, effort, /*developer_instructions*/ None)
         }
     };
-    SessionSettingsUpdate {
+    if let Some(requested_collaboration_mode) = requested_collaboration_mode.as_ref() {
+        apply_cccx_mode_update(sess, requested_collaboration_mode).await?;
+    }
+    Ok(SessionSettingsUpdate {
         environments,
         profile_workspace_roots,
         approval_policy,
@@ -162,7 +181,40 @@ async fn thread_settings_update(
         service_tier,
         personality,
         ..Default::default()
+    })
+}
+
+async fn apply_cccx_mode_update(
+    sess: &Session,
+    collaboration_mode: &CollaborationMode,
+) -> Result<(), String> {
+    let target = cccx_mode::mode_kind_to_main_mode(collaboration_mode.mode);
+    let project_root = {
+        let state = sess.state.lock().await;
+        state.session_configuration.cwd().clone()
+    };
+    let mut mode_state = sess.cccx_mode.write().await;
+    if mode_state.current == target {
+        return Ok(());
     }
+
+    let transition = match target {
+        cccx_policy::MainMode::DontAsk => mode_state.confirm_mode(),
+        cccx_policy::MainMode::Bypass => {
+            return Err(
+                "Bypass mode requires backend-created sandbox/isolation attestation".to_string(),
+            );
+        }
+        mode => mode_state.change_mode(mode),
+    };
+    match transition {
+        Ok(()) | Err(cccx_mode::ModeTransitionError::SameMode(_)) => {}
+        Err(err) => return Err(err.to_string()),
+    }
+
+    cccx_task_graph_state::save_mode_state(project_root.as_path(), &mode_state)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 async fn thread_settings_applied_event(sess: &Session) -> EventMsg {
@@ -207,7 +259,20 @@ pub(super) async fn user_input_or_turn_inner(
     };
     let emit_thread_settings_applied = thread_settings != ThreadSettingsOverrides::default();
     let mut updates = if emit_thread_settings_applied {
-        thread_settings_update(sess, thread_settings).await
+        match thread_settings_update(sess, thread_settings).await {
+            Ok(updates) => updates,
+            Err(err) => {
+                sess.send_event_raw(Event {
+                    id: sub_id,
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: format!("invalid cccx mode override: {err}"),
+                        codex_error_info: Some(CodexErrorInfo::BadRequest),
+                    }),
+                })
+                .await;
+                return;
+            }
+        }
     } else {
         SessionSettingsUpdate::default()
     };

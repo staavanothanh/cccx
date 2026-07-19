@@ -152,6 +152,17 @@ pub fn main_mode_to_mode_kind(mode: &MainMode) -> codex_protocol::config_types::
     }
 }
 
+pub fn mode_kind_to_main_mode(kind: codex_protocol::config_types::ModeKind) -> MainMode {
+    match kind {
+        codex_protocol::config_types::ModeKind::Plan => MainMode::Plan,
+        codex_protocol::config_types::ModeKind::Default => MainMode::Default,
+        codex_protocol::config_types::ModeKind::AcceptEdits => MainMode::AcceptEdits,
+        codex_protocol::config_types::ModeKind::Auto => MainMode::Auto,
+        codex_protocol::config_types::ModeKind::DontAsk => MainMode::DontAsk,
+        codex_protocol::config_types::ModeKind::Bypass => MainMode::Bypass,
+    }
+}
+
 impl Default for CccxModeState {
     fn default() -> Self {
         Self::new(MainMode::Plan)
@@ -276,13 +287,10 @@ mod tests {
     /// the permission pipeline.
     #[test]
     fn p0_tui_mode_to_kind_maps_all_six_modes() {
-        use codex_protocol::config_types::ModeKind;
         use cccx_policy::MainMode;
+        use codex_protocol::config_types::ModeKind;
 
-        assert_eq!(
-            main_mode_to_mode_kind(&MainMode::Plan),
-            ModeKind::Plan
-        );
+        assert_eq!(main_mode_to_mode_kind(&MainMode::Plan), ModeKind::Plan);
         assert_eq!(
             main_mode_to_mode_kind(&MainMode::Default),
             ModeKind::Default
@@ -291,18 +299,12 @@ mod tests {
             main_mode_to_mode_kind(&MainMode::AcceptEdits),
             ModeKind::AcceptEdits
         );
-        assert_eq!(
-            main_mode_to_mode_kind(&MainMode::Auto),
-            ModeKind::Auto
-        );
+        assert_eq!(main_mode_to_mode_kind(&MainMode::Auto), ModeKind::Auto);
         assert_eq!(
             main_mode_to_mode_kind(&MainMode::DontAsk),
             ModeKind::DontAsk
         );
-        assert_eq!(
-            main_mode_to_mode_kind(&MainMode::Bypass),
-            ModeKind::Bypass
-        );
+        assert_eq!(main_mode_to_mode_kind(&MainMode::Bypass), ModeKind::Bypass);
 
         // GREEN: adapter exists and maps correctly.
         // RED: cccx exec_policy hardcodes `ModeKind::Default` at
@@ -313,5 +315,20 @@ mod tests {
             "Phase 0 note: main_mode_to_mode_kind correctly maps all 6 modes. \
              TUI gap is at slashes/exec_policy integration, not at the adapter."
         );
+    }
+
+    #[test]
+    fn p3_mode_kind_to_main_mode_maps_all_six_modes() {
+        use codex_protocol::config_types::ModeKind;
+
+        assert_eq!(mode_kind_to_main_mode(ModeKind::Plan), MainMode::Plan);
+        assert_eq!(mode_kind_to_main_mode(ModeKind::Default), MainMode::Default);
+        assert_eq!(
+            mode_kind_to_main_mode(ModeKind::AcceptEdits),
+            MainMode::AcceptEdits
+        );
+        assert_eq!(mode_kind_to_main_mode(ModeKind::Auto), MainMode::Auto);
+        assert_eq!(mode_kind_to_main_mode(ModeKind::DontAsk), MainMode::DontAsk);
+        assert_eq!(mode_kind_to_main_mode(ModeKind::Bypass), MainMode::Bypass);
     }
 }

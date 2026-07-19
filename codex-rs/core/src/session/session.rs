@@ -23,6 +23,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use std::sync::OnceLock;
+use tokio::sync::RwLock;
 use tokio::sync::Semaphore;
 
 /// Context for an initialized model agent
@@ -50,7 +51,7 @@ pub(crate) struct Session {
     pub(super) next_internal_sub_id: AtomicU64,
     /// cccx mode state machine (architecture.md §4).
     /// Persisted alongside Task Graph to survive context compaction.
-    pub(crate) cccx_mode: CccxModeState,
+    pub(crate) cccx_mode: RwLock<CccxModeState>,
 }
 
 #[derive(Clone)]
@@ -1183,7 +1184,7 @@ impl Session {
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
                 next_internal_sub_id: AtomicU64::new(0),
-                cccx_mode,
+                cccx_mode: RwLock::new(cccx_mode),
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {
                 let mut guard = network_policy_decider_session.write().await;

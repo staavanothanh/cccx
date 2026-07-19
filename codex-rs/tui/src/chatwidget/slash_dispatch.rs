@@ -14,7 +14,6 @@ use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
 use crate::goal_display::GOAL_USAGE;
 use crate::goal_files::GoalDraft;
-use cccx_mode;
 use cccx_ux::AgentsCommand;
 use cccx_ux::CccxCommand;
 use cccx_ux::PermissionsCommand;
@@ -360,28 +359,6 @@ impl ChatWidget {
                 );
             }
             SlashCommand::DontAsk => {
-                if codex_features::cccx_mvp::surface_gate_enabled() {
-                    let mut state = cccx_mode::CccxModeState::default();
-                    match state.confirm_mode() {
-                        Ok(()) => {
-                            self.add_info_message(
-                                "/dont-ask — entered via cccx-mode confirmation gate.".to_string(),
-                                /*hint*/ None,
-                            );
-                            let kind = cccx_mode::main_mode_to_mode_kind(&state.current);
-                            if let Some(mask) =
-                                collaboration_modes::mask_for_kind(self.model_catalog.as_ref(), kind)
-                            {
-                                self.set_collaboration_mask_from_user_action(mask);
-                            }
-                            return;
-                        }
-                        Err(err) => {
-                            self.add_error_message(format!("/dont-ask rejected: {err}"));
-                            return;
-                        }
-                    }
-                }
                 self.apply_collaboration_mode_slash_command(
                     ModeKind::DontAsk,
                     "dont-ask",
@@ -389,28 +366,6 @@ impl ChatWidget {
                 );
             }
             SlashCommand::Bypass => {
-                if codex_features::cccx_mvp::surface_gate_enabled() {
-                    let mut state = cccx_mode::CccxModeState::default();
-                    match state.attest_mode() {
-                        Ok(()) => {
-                            self.add_info_message(
-                                "/bypass — entered via cccx-mode attestation gate.".to_string(),
-                                /*hint*/ None,
-                            );
-                            let kind = cccx_mode::main_mode_to_mode_kind(&state.current);
-                            if let Some(mask) =
-                                collaboration_modes::mask_for_kind(self.model_catalog.as_ref(), kind)
-                            {
-                                self.set_collaboration_mask_from_user_action(mask);
-                            }
-                            return;
-                        }
-                        Err(err) => {
-                            self.add_error_message(format!("/bypass rejected: {err}"));
-                            return;
-                        }
-                    }
-                }
                 self.apply_collaboration_mode_slash_command(
                     ModeKind::Bypass,
                     "bypass",
@@ -560,9 +515,8 @@ impl ChatWidget {
                                     diff_text
                                 } else {
                                     "`/diff` — _not inside a git repository_".to_string()
-        }
-
-}
+                                }
+                            }
                             Err(e) => format!("Failed to compute diff: {e}"),
                         },
                         None => "Failed to compute diff: workspace command runner unavailable"
@@ -854,7 +808,9 @@ impl ChatWidget {
                     Some("Open /permissions to view the interactive queue inspector.".to_string()),
                 );
             }
-            Ok(Some(CccxCommand::Permissions(PermissionsCommand::BatchApprove { request_ids }))) => {
+            Ok(Some(CccxCommand::Permissions(PermissionsCommand::BatchApprove {
+                request_ids,
+            }))) => {
                 let count = request_ids.len();
                 self.add_info_message(
                     format!("/permissions batch-approve — {count} requests identified. Batch approval with circuit-breaker/high-risk bypass requires runtime session wiring (post-MVP)."),
@@ -920,7 +876,8 @@ impl ChatWidget {
                 if let Some(ref cwd) = self.current_cwd {
                     let tasks_path = cwd.join(".cccx").join("state").join("task-graph.json");
                     match std::fs::read_to_string(&tasks_path) {
-                        Ok(json) => match serde_json::from_str::<cccx_task_graph::TaskGraph>(&json) {
+                        Ok(json) => match serde_json::from_str::<cccx_task_graph::TaskGraph>(&json)
+                        {
                             Ok(graph) => {
                                 if graph.tasks.is_empty() {
                                     self.add_info_message(
@@ -932,17 +889,22 @@ impl ChatWidget {
                                         ),
                                     );
                                 } else {
-                                    let verified = graph.tasks.values().filter(|t| t.is_verified()).count();
+                                    let verified =
+                                        graph.tasks.values().filter(|t| t.is_verified()).count();
                                     let total = graph.tasks.len();
                                     let mut lines: Vec<String> = vec![
-                                        format!("/tasks — {total} task(s) in graph: {verified} verified, {} unverified", total - verified),
+                                        format!(
+                                            "/tasks — {total} task(s) in graph: {verified} verified, {} unverified",
+                                            total - verified
+                                        ),
                                         String::new(),
                                     ];
                                     for task in graph.tasks.values() {
                                         let blocked = if task.blocked_by.is_empty() {
                                             String::new()
                                         } else {
-                                            let deps: Vec<String> = task.blocked_by.iter().cloned().collect();
+                                            let deps: Vec<String> =
+                                                task.blocked_by.iter().cloned().collect();
                                             format!(" ← blocked by [{}]", deps.join(", "))
                                         };
                                         let verified_at = task.verified_at.as_deref().unwrap_or("");
@@ -986,8 +948,7 @@ impl ChatWidget {
                     }
                 } else {
                     self.add_info_message(
-                        "/tasks — no project directory available to read task graph."
-                            .to_string(),
+                        "/tasks — no project directory available to read task graph.".to_string(),
                         /*hint*/ None,
                     );
                 }

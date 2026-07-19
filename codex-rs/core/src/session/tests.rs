@@ -4158,10 +4158,15 @@ fn text_block(s: &str) -> serde_json::Value {
 }
 
 async fn build_test_config(codex_home: &Path) -> Config {
+    build_test_config_with_cwd(codex_home, None).await
+}
+
+async fn build_test_config_with_cwd(codex_home: &Path, cwd: Option<PathBuf>) -> Config {
     ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.to_path_buf())
         .harness_overrides(ConfigOverrides {
             model: Some("gpt-5.5".to_string()),
+            cwd,
             ..Default::default()
         })
         .build()
@@ -5215,9 +5220,15 @@ pub(crate) async fn build_world_state_from_turn_context(
 
 // todo: use online model info
 pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
+    make_session_and_context_in_cwd(None).await
+}
+
+pub(crate) async fn make_session_and_context_in_cwd(
+    cwd: Option<PathBuf>,
+) -> (Session, TurnContext) {
     let (tx_event, _rx_event) = async_channel::unbounded();
     let codex_home = tempfile::tempdir().expect("create temp dir");
-    let config = build_test_config(codex_home.path()).await;
+    let config = build_test_config_with_cwd(codex_home.path(), cwd).await;
     let config = Arc::new(config);
     let thread_id = ThreadId::default();
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
@@ -5452,7 +5463,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         next_internal_sub_id: AtomicU64::new(0),
-        cccx_mode: cccx_mode::CccxModeState::default(),
+        cccx_mode: tokio::sync::RwLock::new(cccx_mode::CccxModeState::default()),
     };
 
     (session, turn_context)
@@ -5472,12 +5483,84 @@ async fn cccx_root_turn_context_carries_main_cc_identity() {
 
 #[tokio::test]
 async fn cccx_new_turn_snapshots_live_session_mode() {
-    let (mut session, _turn_context) = make_session_and_context().await;
-    session.cccx_mode = cccx_mode::CccxModeState::new(cccx_policy::MainMode::Auto);
+    let (session, _turn_context) = make_session_and_context().await;
+    *session.cccx_mode.write().await = cccx_mode::CccxModeState::new(cccx_policy::MainMode::Auto);
 
     let turn_context = session.new_default_turn().await;
 
     assert_eq!(turn_context.cccx_main_mode(), cccx_policy::MainMode::Auto);
+}
+
+#[tokio::test]
+async fn cccx_thread_settings_update_changes_core_mode_state() {
+    let project = tempfile::tempdir().expect("create temp project");
+    let (session, _turn_context, _rx) =
+        make_session_and_context_with_rx_in_cwd(project.path().to_path_buf()).await;
+    let collaboration_mode = CollaborationMode {
+        mode: ModeKind::Auto,
+        settings: Settings {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: None,
+            developer_instructions: None,
+        },
+    };
+
+    super::handlers::update_thread_settings(
+        &session,
+        "mode-update".to_string(),
+        ThreadSettingsOverrides {
+            collaboration_mode: Some(collaboration_mode),
+            ..ThreadSettingsOverrides::default()
+        },
+    )
+    .await;
+
+    assert_eq!(
+        session.cccx_mode.read().await.current,
+        cccx_policy::MainMode::Auto
+    );
+    let turn_context = session.new_default_turn().await;
+    assert_eq!(turn_context.cccx_main_mode(), cccx_policy::MainMode::Auto);
+    assert!(
+        project.path().join(".cccx/state/mode_state.json").exists(),
+        "mode state should persist under the test project root"
+    );
+}
+
+#[tokio::test]
+async fn cccx_thread_settings_rejects_bypass_without_backend_attestation() {
+    let project = tempfile::tempdir().expect("create temp project");
+    let (session, _turn_context, rx) =
+        make_session_and_context_with_rx_in_cwd(project.path().to_path_buf()).await;
+    let collaboration_mode = CollaborationMode {
+        mode: ModeKind::Bypass,
+        settings: Settings {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: None,
+            developer_instructions: None,
+        },
+    };
+
+    super::handlers::update_thread_settings(
+        &session,
+        "mode-update".to_string(),
+        ThreadSettingsOverrides {
+            collaboration_mode: Some(collaboration_mode),
+            ..ThreadSettingsOverrides::default()
+        },
+    )
+    .await;
+
+    assert_eq!(
+        session.cccx_mode.read().await.current,
+        cccx_policy::MainMode::Plan
+    );
+    let event = rx.recv().await.expect("expected error event");
+    assert!(matches!(
+        event.msg,
+        EventMsg::Error(ErrorEvent { message, .. })
+            if message.contains("Bypass mode requires backend-created sandbox/isolation attestation")
+    ));
 }
 
 #[tokio::test]
@@ -7618,7 +7701,7 @@ where
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         next_internal_sub_id: AtomicU64::new(0),
-        cccx_mode: cccx_mode::CccxModeState::default(),
+        cccx_mode: tokio::sync::RwLock::new(cccx_mode::CccxModeState::default()),
     });
 
     (session, turn_context, rx_event)
@@ -7647,6 +7730,23 @@ pub(crate) async fn make_session_and_context_with_rx() -> (
     async_channel::Receiver<Event>,
 ) {
     make_session_and_context_with_dynamic_tools_and_rx(Vec::new()).await
+}
+
+pub(crate) async fn make_session_and_context_with_rx_in_cwd(
+    cwd: PathBuf,
+) -> (
+    Arc<Session>,
+    Arc<TurnContext>,
+    async_channel::Receiver<Event>,
+) {
+    let (session, turn_context) = make_session_and_context_in_cwd(Some(cwd)).await;
+    let (tx_event, rx_event) = async_channel::unbounded();
+    let session = Arc::new(Session {
+        tx_event,
+        ..session
+    });
+    let turn_context = Arc::new(turn_context);
+    (session, turn_context, rx_event)
 }
 
 #[tokio::test]

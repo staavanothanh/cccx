@@ -378,8 +378,8 @@ pub(crate) async fn run_turn_stop_hooks(
 async fn persist_cccx_mode_state(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
     #[allow(deprecated)]
     let project_root = turn_context.cwd.as_path();
-    if let Err(error) = cccx_task_graph_state::save_mode_state(project_root, &sess.cccx_mode).await
-    {
+    let mode_state = sess.cccx_mode.read().await;
+    if let Err(error) = cccx_task_graph_state::save_mode_state(project_root, &mode_state).await {
         tracing::warn!(%error, "failed to persist cccx mode state");
     }
 }

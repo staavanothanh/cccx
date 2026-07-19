@@ -1,8 +1,8 @@
 use super::*;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
-use cccx_protocol::{ActorIdentity, HarnessKind};
 use cccx_policy::MainMode as CccxMainMode;
+use cccx_protocol::{ActorIdentity, HarnessKind};
 use codex_core_skills::HostSkillsSnapshot;
 use codex_file_system::FileSystemSandboxContext;
 use codex_model_provider::SharedModelProvider;
@@ -812,7 +812,7 @@ impl Session {
                 }),
             turn_environments,
             cwd,
-            self.cccx_mode.current.clone(),
+            self.cccx_mode.read().await.current.clone(),
             sub_id,
             skills_snapshot,
         );
