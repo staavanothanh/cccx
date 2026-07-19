@@ -230,4 +230,60 @@ dùng khi spawn subagent.
 - TUI tests không thể chạy do v8 build issue (documented trong task.md)
 - codex-tui, codex-exec không compile được → TUI + exec RED tests chỉ là contract validation
 
+Commit: `d32537f`.
+
+---
+
+## Phase 1 — 9router-only ProviderGateway là hard boundary (2026-07-19)
+
+### Analysis
+
+**Current state (pre-Phase 1):**
+- `ProviderGatewayBridge.check_fail_closed()` exists and works correctly ✓
+- `check_cccx_gateway_fail_closed()` called from `stream_responses_api` + `stream_chat_completions_api` ✓
+- `compact_conversation_history()` had post-audit fail-closed at line 872-883 ✓
+- `summarize_memories()` had post-audit fail-closed at line 1018-1028 ✓
+
+**Critical gap found:**
+- `begin_gateway_provenance()`, `compact_conversation_history()`, and `summarize_memories()` all used `surface_gate_enabled()` → `ProviderGatewayBridge::new(enabled)`.
+- `surface_gate_enabled()` reads `CCCX_MVP_ALLOW_UPSTREAM_SURFACES` env var — when set to 1, returns `false`.
+- When `bridge.enabled=false`, `check_fail_closed()` unconditionally returns true → **entire 9router boundary bypassed**.
+- This contradicts architecture.md §2b step 2: "Kết nối 9router: kiểm tra API key... Nếu fail → error" — boundary must be non-bypassable.
+
+### Fix
+
+**New function:** `provider_boundary_active()` → always returns `true`, never reads env var.
+
+**Files changed:**
+| File | Change | Call-sites affected |
+|------|--------|---------------------|
+| `features/src/cccx_mvp.rs` | Added `provider_boundary_active()` (always true) + 2 tests | N/A |
+| `core/src/client.rs` | `begin_gateway_provenance()`: `surface_gate_enabled()` → `provider_boundary_active()` | Main, subagent LLM calls |
+| `core/src/client.rs` | `compact_conversation_history()`: same fix | Context compaction |
+| `core/src/client.rs` | `summarize_memories()`: same fix | Memory summarization |
+| `core/src/client.rs` | Error messages: removed mention of env var bypass | All 3 sites |
+
+**Semantic separation:**
+- `surface_gate_enabled()` → controls UI surface visibility (bypassable for debug)
+- `provider_boundary_active()` → controls 9router boundary (non-bypassable)
+
+### Test results
+
+| ID | Test | Result |
+|----|------|--------|
+| P1-T1 | `p1_env_var_must_not_disable_provider_boundary` | GREEN ✓ |
+| P1-T2 | `p1_surface_gate_does_not_imply_provider_boundary_off` | GREEN ✓ |
+| | All provider_gateway_bridge tests (6) | GREEN ✓ |
+| | All cccx-provider-gateway tests (15) | GREEN ✓ |
+| | Phase 0 runtime test (harness_prompt_reaches_config) | GREEN ✓ |
+| | Phase 0 RED tests (3) — structural gap, deferred to Phase 3 | RED (expected) |
+
+### Remaining gaps (documented, deferred)
+
+| Gap | Reason |
+|-----|--------|
+| Classifier LLM call not implemented | Deferred — no non-9router call-sites to lock in MVP |
+| GoalEvaluator doesn't make LLM calls | Only maps exit_code+digest; no boundary risk |
+| Spawn subagent with non-9router route | Phase 3 gap — model_route validation in project_child_config |
+
 Commit: next.

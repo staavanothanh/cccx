@@ -866,17 +866,17 @@ impl ModelClient {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
-        // Phase 11: fail-closed — verify the resolved provider is 9router
-        // before making the compaction API call. Mirrors the check embedded
-        // in stream_responses_api / stream_chat_completions_api.
+        // Phase 1: fail-closed — provider boundary cannot be disabled.
+        // Mirrors the check embedded in stream_responses_api /
+        // stream_chat_completions_api.
         {
-            let enabled = codex_features::cccx_mvp::surface_gate_enabled();
+            let enabled = codex_features::cccx_mvp::provider_boundary_active();
             let gateway_bridge = ProviderGatewayBridge::new(enabled);
             let provider_info = self.state.provider.info();
             if !gateway_bridge.check_fail_closed(provider_info) {
                 return Err(CodexErr::InvalidRequest(format!(
                     "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
-                     Configure a 9router route in your cccx config or set CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1 for debug use only.",
+                     Configure a 9router route in your cccx config. The provider boundary is always active and cannot be disabled.",
                     provider_info.name,
                 )));
             }
@@ -1015,16 +1015,17 @@ impl ModelClient {
             return Ok(Vec::new());
         }
 
-        // Phase 11: fail-closed — verify the resolved provider is 9router
-        // before making the memory summarization API call.
+        // Phase 1: fail-closed — provider boundary cannot be disabled.
+        // Mirrors the check embedded in stream_responses_api /
+        // stream_chat_completions_api.
         {
-            let enabled = codex_features::cccx_mvp::surface_gate_enabled();
+            let enabled = codex_features::cccx_mvp::provider_boundary_active();
             let gateway_bridge = ProviderGatewayBridge::new(enabled);
             let provider_info = self.state.provider.info();
             if !gateway_bridge.check_fail_closed(provider_info) {
                 return Err(CodexErr::InvalidRequest(format!(
                     "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
-                     Configure a 9router route in your cccx config or set CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1 for debug use only.",
+                     Configure a 9router route in your cccx config. The provider boundary is always active and cannot be disabled.",
                     provider_info.name,
                 )));
             }
@@ -1794,7 +1795,10 @@ impl ModelClientSession {
         ProviderGatewayBridge,
         Option<cccx_provider_gateway::provenance::GatewayProvenance>,
     ) {
-        let enabled = codex_features::cccx_mvp::surface_gate_enabled();
+        // Phase 1: provider boundary is ALWAYS active (cannot be disabled
+        // by CCCX_MVP_ALLOW_UPSTREAM_SURFACES). The surface_gate_enabled()
+        // flag controls UI surfaces only.
+        let enabled = codex_features::cccx_mvp::provider_boundary_active();
         let bridge = ProviderGatewayBridge::new(enabled);
         let wire_api_label = match self.client.state.provider.info().wire_api {
             codex_model_provider_info::WireApi::Responses => "responses",
