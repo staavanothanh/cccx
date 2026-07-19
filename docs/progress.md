@@ -407,5 +407,25 @@ Commit: `7b5fb32`.
 | Config lacks cccx projection fields | Structural — deferred to Phase 3 future work |
 | Tool catalog filter by WorkSpec | Requires spawn-time tool registry access |
 | canonical/symlink resolve for scope | OS-level requirement, not available in unit tests |
+| `Default::default()` for parent tools | Caller passes empty — real parent tools from Config catalog needed |
+
+### Phase 3 Self-Audit (agent-architecture-audit)
+
+**Kiểm tra tất cả call-site sau fix:**
+
+1. `project_child_config()` — `parent.tools` giờ là param từ caller, không còn clone từ WorkSpec. ✓
+2. Test P3-T2 chứng minh: parent tools rỗng → projection rỗng. ✓
+3. Scope check `all()` thay vì `any()`: nếu 2 path, 1 trong scope 1 ngoài → deny. ✓
+
+**Gap còn tồn tại (known):** `multi_agents_common.rs:296` pass `Default::default()` làm parent tools.
+Lý do: Config struct không có field `allowed_tools` — tool catalog được build từ
+`tool_config.rs` / `tools/spec_plan.rs` ở runtime và không phải field.
+Để wire đúng parent tools, cần access vào `McpManager`/`AgentControlService`
+tại spawn call-site — việc này cần thay đổi lớn hơn ở runtime.
+
+**Diagnostic question 6 (gateguard):** "Are must-use-tool rules only in prompt text?"
+→ Dòng 509-533 cccx-policy/lib.rs: edit scope là CODE GATE, không phải prompt.
+Tuy nhiên tool allowlist cho model sent-to-LLM vẫn chưa filter — đây là gap
+ở tool catalog builder, không phải permission gate.
 
 Commit: next.
