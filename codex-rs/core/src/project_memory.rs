@@ -125,7 +125,10 @@ mod tests {
         // Session 1: remember two facts
         let memory1 = ProjectMemory::new(dir.path());
         memory1.remember("Use 9router-only routing.").await.unwrap();
-        memory1.remember("Do not use direct provider keys.").await.unwrap();
+        memory1
+            .remember("Do not use direct provider keys.")
+            .await
+            .unwrap();
         drop(memory1);
 
         // Session 2 (fresh ProjectMemory for same project): load context
@@ -150,10 +153,7 @@ mod tests {
         let memory = ProjectMemory::new(dir.path());
         memory.remember("phase-9-test").await.unwrap();
 
-        let expected_file = dir.path()
-            .join(".cccx")
-            .join("memory")
-            .join(MEMORY_FILE);
+        let expected_file = dir.path().join(".cccx").join("memory").join(MEMORY_FILE);
         assert!(
             expected_file.exists(),
             "Phase 9: memory file must exist under .cccx/memory/ after remember"

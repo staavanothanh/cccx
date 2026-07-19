@@ -1637,7 +1637,8 @@ impl App {
                         // already shows mode + model, which is the canonical display.
                         if !codex_features::cccx_mvp::surface_gate_enabled() {
                             let mut message = format!("Model changed to {model}");
-                            if let Some(label) = Self::reasoning_label_for(&model, effort.as_ref()) {
+                            if let Some(label) = Self::reasoning_label_for(&model, effort.as_ref())
+                            {
                                 message.push(' ');
                                 message.push_str(&label);
                             }

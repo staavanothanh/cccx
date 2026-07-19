@@ -993,7 +993,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
                 let mut approval_denied = false;
-                handle_server_request(&client, request, &mut error_seen, &mut approval_denied).await;
+                handle_server_request(&client, request, &mut error_seen, &mut approval_denied)
+                    .await;
                 if approval_denied {
                     event_processor.on_approval_denied();
                 }

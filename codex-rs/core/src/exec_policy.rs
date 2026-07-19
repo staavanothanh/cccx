@@ -359,7 +359,10 @@ pub(crate) fn cccx_mcp_requirement(
 /// - `Some(NeedsApproval)` when user approval is required (escalate match
 ///   in Default/AcceptEdits/Auto mode)
 /// - `None` when no cccx policy applies (allowlist match, or no rule matched)
-fn cccx_full_shell_requirement(command: &[String], mode: CccxMainMode) -> Option<ExecApprovalRequirement> {
+fn cccx_full_shell_requirement(
+    command: &[String],
+    mode: CccxMainMode,
+) -> Option<ExecApprovalRequirement> {
     let command_summary = command.join(" ");
     let action = CccxNormalizedAction {
         action_type: CccxActionType::Shell,
@@ -416,7 +419,10 @@ fn cccx_full_shell_requirement(command: &[String], mode: CccxMainMode) -> Option
 ///   Plan-mode edit, DontAsk with escalate match)
 /// - `Some(NeedsApproval)` when user approval is required
 /// - `None` when no cccx policy applies (allowlist match, or no rule matched)
-pub(crate) fn cccx_edit_requirement(file_paths: &[String], mode: CccxMainMode) -> Option<ExecApprovalRequirement> {
+pub(crate) fn cccx_edit_requirement(
+    file_paths: &[String],
+    mode: CccxMainMode,
+) -> Option<ExecApprovalRequirement> {
     let paths_summary = file_paths.join(", ");
     let action = CccxNormalizedAction {
         action_type: CccxActionType::Edit,
@@ -1487,10 +1493,8 @@ mod cccx_policy_wiring_tests {
     /// Shell mutation is hard-denied.
     #[test]
     fn p2_plan_mode_denies_shell_mutation() {
-        let result = cccx_full_shell_requirement(
-            &["npm".into(), "test".into()],
-            CccxMainMode::Plan,
-        );
+        let result =
+            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::Plan);
         assert!(
             matches!(result, Some(ExecApprovalRequirement::Forbidden { .. })),
             "Phase 2: Plan mode must deny shell commands. Architecture.md §4: \
@@ -1505,13 +1509,23 @@ mod cccx_policy_wiring_tests {
     #[test]
     fn p2_default_mode_requires_approval_for_shell() {
         let result = cccx_full_shell_requirement(
-            &["git".into(), "push".into(), "--force".into(), "origin".into(), "main".into()],
+            &[
+                "git".into(),
+                "push".into(),
+                "--force".into(),
+                "origin".into(),
+                "main".into(),
+            ],
             CccxMainMode::Default,
         );
         assert!(
-            matches!(result, Some(
-                ExecApprovalRequirement::Forbidden { .. } | ExecApprovalRequirement::NeedsApproval { .. }
-            )),
+            matches!(
+                result,
+                Some(
+                    ExecApprovalRequirement::Forbidden { .. }
+                        | ExecApprovalRequirement::NeedsApproval { .. }
+                )
+            ),
             "Phase 2: Default mode must require approval or deny for git push --force. \
              Got: {result:?}"
         );
@@ -1523,9 +1537,8 @@ mod cccx_policy_wiring_tests {
     fn p2_bypass_blocks_circuit_breaker() {
         // Circuit breaker test mode: this explicitly uses Bypass
         // and still blocks rm -rf /. This already worked.
-        let result = cccx_circuit_breaker_requirement(&[
-            "bash".into(), "-lc".into(), "rm -rf /".into()
-        ]);
+        let result =
+            cccx_circuit_breaker_requirement(&["bash".into(), "-lc".into(), "rm -rf /".into()]);
         assert!(
             matches!(result, Some(ExecApprovalRequirement::Forbidden { .. })),
             "Phase 2: Circuit breaker must survive even in Bypass mode"
@@ -1536,14 +1549,10 @@ mod cccx_policy_wiring_tests {
     /// produce different decisions for the same shell command.
     #[test]
     fn p2_plan_and_default_produce_different_decisions() {
-        let plan_result = cccx_full_shell_requirement(
-            &["npm".into(), "test".into()],
-            CccxMainMode::Plan,
-        );
-        let default_result = cccx_full_shell_requirement(
-            &["npm".into(), "test".into()],
-            CccxMainMode::Default,
-        );
+        let plan_result =
+            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::Plan);
+        let default_result =
+            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::Default);
 
         // Plan must hard-deny; Default must either deny or ask
         match (&plan_result, &default_result) {
@@ -1572,16 +1581,16 @@ mod cccx_policy_wiring_tests {
             CccxMainMode::AcceptEdits,
         );
         assert!(
-            matches!(shell_result, Some(ExecApprovalRequirement::NeedsApproval { .. })),
+            matches!(
+                shell_result,
+                Some(ExecApprovalRequirement::NeedsApproval { .. })
+            ),
             "AcceptEdits must ask for shell. Architecture §4: \
              'shell command vẫn hỏi'. Got: {shell_result:?}"
         );
 
         // Edit in AcceptEdits: should be allowed
-        let edit_result = cccx_edit_requirement(
-            &["src/main.rs".into()],
-            CccxMainMode::AcceptEdits,
-        );
+        let edit_result = cccx_edit_requirement(&["src/main.rs".into()], CccxMainMode::AcceptEdits);
         assert!(
             edit_result.is_none(),
             "AcceptEdits must allow edits. Architecture §4: \
@@ -1594,10 +1603,8 @@ mod cccx_policy_wiring_tests {
     /// còn lại từ chối im lặng"
     #[test]
     fn p2_dont_ask_denies_shell_without_explicit_allow() {
-        let result = cccx_full_shell_requirement(
-            &["npm".into(), "test".into()],
-            CccxMainMode::DontAsk,
-        );
+        let result =
+            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::DontAsk);
         assert!(
             matches!(result, Some(ExecApprovalRequirement::Forbidden { .. })),
             "DontAsk with empty explicit_allow_rules must deny shell. \

@@ -167,8 +167,7 @@ mod tests {
                     cwd: None,
                 },
                 auth: Default::default(),
-                environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID
-                    .to_string(),
+                environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,

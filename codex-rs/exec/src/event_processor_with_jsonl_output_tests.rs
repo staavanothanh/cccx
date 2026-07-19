@@ -351,7 +351,10 @@ fn p11_audit_approval_denied_sets_exit_code_2() {
     processor.cccx_session_id = Some("s".into());
     processor.cccx_turn_id = Some("t".into());
     EventProcessor::print_final_output(&mut processor);
-    assert_eq!(processor.cccx_exit_code, 2, "exit_code=2 persists through shutdown");
+    assert_eq!(
+        processor.cccx_exit_code, 2,
+        "exit_code=2 persists through shutdown"
+    );
 }
 
 /// Phase 11 audit: AgentUpdate with model route is deferred.
@@ -365,8 +368,8 @@ fn p11_audit_agent_update_model_route_is_deferred() {
     // Document the structural limitation: AgentUpdate headless event exists
     // in cccx-headless schema but is not yet wired because
     // CollabToolCall/ThreadEvent lacks model_route from WorkSpec.
-    let _agent_update = cccx_headless::HeadlessEvent::AgentUpdate(
-        cccx_headless::AgentUpdatePayload {
+    let _agent_update =
+        cccx_headless::HeadlessEvent::AgentUpdate(cccx_headless::AgentUpdatePayload {
             logical_session_id: "ls-1".into(),
             display_name: "cx-sub".into(),
             role: "cx:implementer".into(),
@@ -376,7 +379,6 @@ fn p11_audit_agent_update_model_route_is_deferred() {
                 requested_route_id: "9router/main".into(),
                 effective_route_id: "9router/main".into(),
             },
-        },
-    );
+        });
     // Schema is complete. Wiring deferred to post-Phase 11.
 }

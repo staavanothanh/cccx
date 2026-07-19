@@ -65,11 +65,8 @@ fn headless_full_stream_renders_and_validates() {
     assert!(!jsonl.is_empty());
 
     // Split into stdout + stderr
-    let streams = split_headless_streams(
-        &envelopes,
-        &["diagnostic: reconnecting".to_string()],
-    )
-    .expect("split streams");
+    let streams = split_headless_streams(&envelopes, &["diagnostic: reconnecting".to_string()])
+        .expect("split streams");
     assert!(!streams.stdout_jsonl.is_empty());
     assert!(streams.stderr_diagnostics.contains("diagnostic"));
 
@@ -189,8 +186,7 @@ fn headless_sequence_is_monotonic() {
         if line.is_empty() {
             continue;
         }
-        let envelope: HeadlessEventEnvelope =
-            serde_json::from_str(line).expect("valid envelope");
+        let envelope: HeadlessEventEnvelope = serde_json::from_str(line).expect("valid envelope");
         assert!(
             envelope.seq > prev_seq,
             "seq {} must be > prev {}",
@@ -241,8 +237,7 @@ fn headless_error_envelope_renders_correctly() {
     );
 
     let jsonl = render_jsonl(&[envelope]).expect("render error envelope");
-    let parsed: HeadlessEventEnvelope =
-        serde_json::from_str(jsonl.trim()).expect("parse back");
+    let parsed: HeadlessEventEnvelope = serde_json::from_str(jsonl.trim()).expect("parse back");
 
     match parsed.event {
         HeadlessEvent::Error(err) => {

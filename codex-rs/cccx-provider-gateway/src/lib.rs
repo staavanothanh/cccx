@@ -394,9 +394,9 @@ pub mod provenance;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::collections::BTreeSet;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -600,12 +600,16 @@ mod local_catalog_tests {
     #[test]
     fn default_catalog_contains_at_least_flash_and_pro() {
         let catalog = LocalConfigCatalog::default();
-        assert!(catalog
-            .available_models
-            .contains(&"oc/deepseek-v4-flash-free".to_string()));
-        assert!(catalog
-            .available_models
-            .contains(&"oc/deepseek-v4-pro".to_string()));
+        assert!(
+            catalog
+                .available_models
+                .contains(&"oc/deepseek-v4-flash-free".to_string())
+        );
+        assert!(
+            catalog
+                .available_models
+                .contains(&"oc/deepseek-v4-pro".to_string())
+        );
     }
 
     #[test]
@@ -620,10 +624,7 @@ mod local_catalog_tests {
         let entries = catalog.display_entries();
         assert_eq!(entries.len(), 2);
         // Flash (free) model
-        assert_eq!(
-            entries[0],
-            ("oc/deepseek-v4-flash-free", "Flash (free)")
-        );
+        assert_eq!(entries[0], ("oc/deepseek-v4-flash-free", "Flash (free)"));
         // Pro model
         assert_eq!(entries[1], ("oc/deepseek-v4-pro", "Pro"));
     }

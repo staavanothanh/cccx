@@ -58,8 +58,10 @@ impl ChatWidget {
             .available_models
             .iter()
             .map(|model_id| {
-                let display_name =
-                    display_map.get(model_id.as_str()).copied().unwrap_or(model_id.as_str());
+                let display_name = display_map
+                    .get(model_id.as_str())
+                    .copied()
+                    .unwrap_or(model_id.as_str());
                 ModelPreset {
                     id: model_id.clone(),
                     model: model_id.clone(),
@@ -88,14 +90,8 @@ impl ChatWidget {
         // Also include the current model if it's not in the local catalog yet
         // (user may have an active remote model from before local catalog existed).
         let current_model = self.current_model().to_string();
-        if !local_presets
-            .iter()
-            .any(|p| p.model == current_model)
-        {
-            if let Some(upstream_preset) = presets
-                .iter()
-                .find(|p| p.model == current_model)
-            {
+        if !local_presets.iter().any(|p| p.model == current_model) {
+            if let Some(upstream_preset) = presets.iter().find(|p| p.model == current_model) {
                 local_presets.push(upstream_preset.clone());
             } else {
                 local_presets.push(ModelPreset {

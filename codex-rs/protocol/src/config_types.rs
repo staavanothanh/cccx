@@ -659,10 +659,7 @@ impl ModeKind {
     pub const fn is_cycle_visible(self) -> bool {
         matches!(
             self,
-            Self::Plan
-                | Self::Default
-                | Self::AcceptEdits
-                | Self::Auto
+            Self::Plan | Self::Default | Self::AcceptEdits | Self::Auto
         )
     }
 

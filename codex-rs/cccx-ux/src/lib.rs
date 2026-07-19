@@ -625,11 +625,20 @@ Actions: /permissions approve <id> · /permissions deny <id> · /permissions ins
         assert!(rendered.contains("[cccx]"), "missing brand prefix");
         assert!(rendered.contains("mode:Plan"), "missing mode");
         assert!(rendered.contains("harness:CC"), "missing harness");
-        assert!(rendered.contains("model:9router/deepseek-v4"), "missing model route");
+        assert!(
+            rendered.contains("model:9router/deepseek-v4"),
+            "missing model route"
+        );
         assert!(rendered.contains("tasks:2/5"), "missing task progress");
         assert!(rendered.contains("ctx:72%"), "missing context percentage");
-        assert!(rendered.contains("perm:pr-42"), "missing permission request id");
-        assert!(rendered.contains("1 queued"), "missing queued permission count");
+        assert!(
+            rendered.contains("perm:pr-42"),
+            "missing permission request id"
+        );
+        assert!(
+            rendered.contains("1 queued"),
+            "missing queued permission count"
+        );
 
         // Accessibility: no ANSI color escape codes
         assert!(
@@ -654,7 +663,10 @@ Actions: /permissions approve <id> · /permissions deny <id> · /permissions ins
             active_permission_request_id: None,
             queued_permission_count: 0,
         });
-        assert!(!sl.contains("\x1b["), "status line must have no ANSI escapes");
+        assert!(
+            !sl.contains("\x1b["),
+            "status line must have no ANSI escapes"
+        );
 
         // Agent list
         let al = render_agent_list(&AgentListView {
@@ -670,14 +682,20 @@ Actions: /permissions approve <id> · /permissions deny <id> · /permissions ins
                 model_route: "inherit-main".to_string(),
             }],
         });
-        assert!(!al.contains("\x1b["), "agent list must have no ANSI escapes");
+        assert!(
+            !al.contains("\x1b["),
+            "agent list must have no ANSI escapes"
+        );
 
         // Permission queue
         let pq = render_permission_queue(&PermissionQueueView {
             active: None,
             queued: vec![],
         });
-        assert!(!pq.contains("\x1b["), "permission queue must have no ANSI escapes");
+        assert!(
+            !pq.contains("\x1b["),
+            "permission queue must have no ANSI escapes"
+        );
     }
 
     /// Phase 12: Agent list rows carry stable identifiers (displayName, role,
@@ -712,8 +730,14 @@ Actions: /permissions approve <id> · /permissions deny <id> · /permissions ins
         let rendered = render_agent_list(&view);
 
         // Each agent must have its stable identifier (displayName) present
-        assert!(rendered.contains("a1-auth-fix"), "missing agent 1 display name");
-        assert!(rendered.contains("a2-auth-audit"), "missing agent 2 display name");
+        assert!(
+            rendered.contains("a1-auth-fix"),
+            "missing agent 1 display name"
+        );
+        assert!(
+            rendered.contains("a2-auth-audit"),
+            "missing agent 2 display name"
+        );
 
         // Roles must be present (not color-coded instead)
         assert!(rendered.contains("CX:implementer"), "missing agent 1 role");
@@ -721,7 +745,10 @@ Actions: /permissions approve <id> · /permissions deny <id> · /permissions ins
 
         // Summary line must show count
         assert!(rendered.contains("2 active"), "missing active agent count");
-        assert!(rendered.contains("1 resumable"), "missing resumable agent count");
+        assert!(
+            rendered.contains("1 resumable"),
+            "missing resumable agent count"
+        );
     }
 
     /// Phase 12: Deferred and removed commands are documented.
@@ -759,7 +786,10 @@ Actions: /permissions approve <id> · /permissions deny <id> · /permissions ins
             "/reroute",
         ] {
             assert!(
-                matches!(parse_cccx_command(cmd), Err(CommandParseError::UnknownCommand(_))),
+                matches!(
+                    parse_cccx_command(cmd),
+                    Err(CommandParseError::UnknownCommand(_))
+                ),
                 "Phase 12: hidden/deferred command `{cmd}` must not be falsely registered as cccx command"
             );
         }
@@ -767,7 +797,10 @@ Actions: /permissions approve <id> · /permissions deny <id> · /permissions ins
         // Future commands (design.md:786-787)
         for cmd in ["/import", "/ide"] {
             assert!(
-                matches!(parse_cccx_command(cmd), Err(CommandParseError::UnknownCommand(_))),
+                matches!(
+                    parse_cccx_command(cmd),
+                    Err(CommandParseError::UnknownCommand(_))
+                ),
                 "Phase 12: future command `{cmd}` must not be falsely registered as implemented"
             );
         }

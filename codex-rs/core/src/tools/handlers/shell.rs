@@ -168,18 +168,21 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
     let exec_approval_requirement = session
         .services
         .exec_policy
-        .create_exec_approval_requirement_for_command_in_mode(ExecApprovalRequest {
-            command: &exec_params.command,
-            approval_policy: turn.approval_policy.value(),
-            permission_profile: turn.permission_profile(),
-            windows_sandbox_level: turn.windows_sandbox_level,
-            sandbox_permissions: if effective_additional_permissions.permissions_preapproved {
-                codex_protocol::models::SandboxPermissions::UseDefault
-            } else {
-                effective_additional_permissions.sandbox_permissions
+        .create_exec_approval_requirement_for_command_in_mode(
+            ExecApprovalRequest {
+                command: &exec_params.command,
+                approval_policy: turn.approval_policy.value(),
+                permission_profile: turn.permission_profile(),
+                windows_sandbox_level: turn.windows_sandbox_level,
+                sandbox_permissions: if effective_additional_permissions.permissions_preapproved {
+                    codex_protocol::models::SandboxPermissions::UseDefault
+                } else {
+                    effective_additional_permissions.sandbox_permissions
+                },
+                prefix_rule,
             },
-            prefix_rule,
-        }, turn.cccx_main_mode())
+            turn.cccx_main_mode(),
+        )
         .await;
 
     let req = ShellRequest {

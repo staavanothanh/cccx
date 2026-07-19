@@ -6,11 +6,11 @@
 //!
 //! Architecture.md §6: "WorkSpec-to-ChildConfig Adapter — deny-by-default".
 
-use cccx_protocol::{ActorIdentity, HarnessKind};
 use cccx_protocol::ParentCapabilitySet;
 use cccx_protocol::ProtocolError;
 use cccx_protocol::WorkRole;
 use cccx_protocol::WorkSpec;
+use cccx_protocol::{ActorIdentity, HarnessKind};
 
 use crate::config::Config;
 

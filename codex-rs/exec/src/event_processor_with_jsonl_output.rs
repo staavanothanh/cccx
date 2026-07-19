@@ -136,22 +136,18 @@ impl EventProcessorWithJsonOutput {
 
     fn map_thread_event_to_envelope(&self, event: ThreadEvent) -> Option<HeadlessEventEnvelope> {
         let headless_event = match event {
-            ThreadEvent::ItemCompleted(ref item) => {
-                match &item.item.details {
-                    ThreadItemDetails::AgentMessage(msg) => {
-                        Some(HeadlessEvent::Answer(AnswerPayload {
-                            text: msg.text.clone(),
-                        }))
-                    }
-                    ThreadItemDetails::Error(err) => {
-                        Some(HeadlessEvent::Error(ErrorPayload {
-                            message: err.message.clone(),
-                            recoverable: true,
-                        }))
-                    }
-                    _ => None,
+            ThreadEvent::ItemCompleted(ref item) => match &item.item.details {
+                ThreadItemDetails::AgentMessage(msg) => {
+                    Some(HeadlessEvent::Answer(AnswerPayload {
+                        text: msg.text.clone(),
+                    }))
                 }
-            }
+                ThreadItemDetails::Error(err) => Some(HeadlessEvent::Error(ErrorPayload {
+                    message: err.message.clone(),
+                    recoverable: true,
+                })),
+                _ => None,
+            },
             ThreadEvent::Error(ref err) => Some(HeadlessEvent::Error(ErrorPayload {
                 message: err.message.clone(),
                 recoverable: false,
