@@ -118,6 +118,22 @@ where
     Ok(result)
 }
 
+/// Persist a user-declared completion condition for one concrete cccx task.
+/// This does not verify the task; only `record_verification` can do that.
+pub async fn set_task_goal_condition(
+    project_root: &Path,
+    task_id: &str,
+    condition: String,
+) -> Result<(), TaskGraphStateError> {
+    let initial = TaskGraph::new("cccx-runtime", "cccx runtime graph");
+    update_task_graph(project_root, initial, |graph| {
+        graph
+            .set_goal_condition(task_id, condition)
+            .map_err(|error| TaskGraphStateError::Mutation(error.to_string()))
+    })
+    .await
+}
+
 fn project_writer(project_root: &Path) -> Arc<tokio::sync::Mutex<()>> {
     let key = project_root.to_path_buf();
     let writers = PROJECT_WRITERS.get_or_init(|| Mutex::new(BTreeMap::new()));
@@ -325,5 +341,27 @@ mod tests {
         let graph = load_task_graph(temp_dir.path()).await.unwrap().unwrap();
         assert!(graph.tasks.contains_key("T1"));
         assert!(graph.tasks.contains_key("T2"));
+    }
+
+    #[tokio::test]
+    async fn task_goal_condition_is_persisted_without_verifying_the_task() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut graph = TaskGraph::new("graph-1", "goal");
+        graph
+            .add_task(TaskNode::new("T1", "first", verification_spec()))
+            .expect("add task");
+        save_task_graph(temp_dir.path(), &graph).await.expect("save graph");
+        set_task_goal_condition(
+            temp_dir.path(),
+            "T1",
+            "focused tests must pass".to_string(),
+        )
+        .await
+        .expect("set goal");
+        let restored = load_task_graph(temp_dir.path()).await.unwrap().unwrap();
+        let task = &restored.tasks["T1"];
+        assert_eq!(task.goal_condition.as_deref(), Some("focused tests must pass"));
+        assert_eq!(task.goal_condition_met, None);
+        assert!(!task.is_verified());
     }
 }

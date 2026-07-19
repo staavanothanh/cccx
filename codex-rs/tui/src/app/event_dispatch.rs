@@ -846,6 +846,23 @@ impl App {
             AppEvent::ClearThreadGoal { thread_id } => {
                 self.clear_thread_goal(app_server, thread_id).await;
             }
+            AppEvent::SetCccxTaskGoal { task_id, condition } => {
+                match codex_core::cccx_task_graph_state::set_task_goal_condition(
+                    self.config.cwd.as_path(),
+                    &task_id,
+                    condition,
+                )
+                .await
+                {
+                    Ok(()) => self.chat_widget.add_info_message(
+                        format!("/goal — completion condition saved for task `{task_id}`."),
+                        Some("The task remains unverified until its pinned verification evidence passes.".to_string()),
+                    ),
+                    Err(error) => self.chat_widget.add_error_message(format!(
+                        "/goal — could not save condition for task `{task_id}`: {error}"
+                    )),
+                }
+            }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if self
                     .chat_widget

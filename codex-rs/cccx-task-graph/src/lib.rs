@@ -82,6 +82,14 @@ pub struct AttemptRecord {
 pub struct TaskNode {
     pub task_id: String,
     pub objective: String,
+    /// Optional user-declared completion condition for this task only. This is
+    /// deliberately independent from the upstream, session-scoped ThreadGoal.
+    #[serde(default)]
+    pub goal_condition: Option<String>,
+    /// Projection of the latest harness-owned verification record for the
+    /// optional goal condition. It must never be written by model prose.
+    #[serde(default)]
+    pub goal_condition_met: Option<bool>,
     #[serde(default)]
     pub blocked_by: BTreeSet<String>,
     pub status: TaskStatus,
@@ -126,6 +134,38 @@ impl TaskGraph {
             }
         }
         self.tasks.insert(task.task_id.clone(), task);
+        Ok(())
+    }
+
+    pub fn set_goal_condition(
+        &mut self,
+        task_id: &str,
+        condition: String,
+    ) -> Result<(), TaskGraphError> {
+        if condition.trim().is_empty() {
+            return Err(TaskGraphError::EmptyGoalCondition(task_id.to_string()));
+        }
+        let task = self
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| TaskGraphError::UnknownTask(task_id.to_string()))?;
+        task.goal_condition = Some(condition);
+        task.goal_condition_met = None;
+        // A changed acceptance condition invalidates a prior completion proof.
+        if task.status == TaskStatus::Verified {
+            task.status = TaskStatus::Blocked;
+            task.verified_at = None;
+        }
+        Ok(())
+    }
+
+    pub fn clear_goal_condition(&mut self, task_id: &str) -> Result<(), TaskGraphError> {
+        let task = self
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| TaskGraphError::UnknownTask(task_id.to_string()))?;
+        task.goal_condition = None;
+        task.goal_condition_met = None;
         Ok(())
     }
 
@@ -239,6 +279,9 @@ impl TaskGraph {
         } else {
             task.status = TaskStatus::Blocked;
         }
+        if task.goal_condition.is_some() {
+            task.goal_condition_met = Some(record.passed);
+        }
 
         task.attempts[attempt_index]
             .verification_records
@@ -286,6 +329,8 @@ impl TaskNode {
         Self {
             task_id: task_id.into(),
             objective: objective.into(),
+            goal_condition: None,
+            goal_condition_met: None,
             blocked_by: BTreeSet::new(),
             status: TaskStatus::Pending,
             verification_spec,
@@ -323,6 +368,8 @@ pub enum TaskGraphError {
     VerificationTaskMismatch { expected: String, actual: String },
     #[error("verification record attempt mismatch: expected `{expected}`, got `{actual}`")]
     VerificationAttemptMismatch { expected: String, actual: String },
+    #[error("goal condition is empty for task `{0}`")]
+    EmptyGoalCondition(String),
 }
 
 #[cfg(test)]
@@ -530,6 +577,37 @@ mod tests {
             graph.record_verification("T1", "attempt-1", record, "sha256:verification-spec"),
             Err(TaskGraphError::VerificationAttemptMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn task_scoped_goal_is_met_only_by_a_passed_verification_record() {
+        let mut graph = graph_with_one_started_task();
+        graph
+            .add_task(TaskNode::new("T2", "sibling", verification_spec()))
+            .expect("add sibling task");
+        graph
+            .set_goal_condition("T1", "focused tests must pass".to_string())
+            .expect("set task goal");
+        assert_eq!(
+            graph.tasks["T1"].goal_condition.as_deref(),
+            Some("focused tests must pass")
+        );
+        assert_eq!(graph.tasks["T1"].goal_condition_met, None);
+        assert_eq!(graph.tasks["T2"].goal_condition, None);
+
+        graph
+            .apply_artifact("T1", success_artifact())
+            .expect("apply artifact");
+        assert_eq!(graph.tasks["T1"].goal_condition_met, None);
+        graph
+            .record_verification(
+                "T1",
+                "attempt-1",
+                passed_verification(),
+                "sha256:verification-spec",
+            )
+            .expect("record independent verification");
+        assert_eq!(graph.tasks["T1"].goal_condition_met, Some(true));
     }
 
     #[test]

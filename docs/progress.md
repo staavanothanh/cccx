@@ -2477,3 +2477,27 @@ cargo +1.95.0 test -p codex-core cccx_runtime --lib
 The only warnings are the pre-existing unused permission-queue methods.
 Remaining Phase 5 work: shared active-attempt/mode metadata, task-scoped
 `/goal`, and bounded audit correction.
+
+## 2026-07-20 — Phase 5E: task-scoped `/goal`
+
+- Added `TaskNode.goal_condition` and `goal_condition_met`. They are persisted
+  per task, never inferred from Artifact prose, and only become true when a
+  harness-owned `VerificationRecord` passes.
+- `/goal` is now routed through cccx rather than the upstream session-scoped
+  ThreadGoal path. Syntax is explicit: `/goal <task-id> <condition>`.
+  The TUI emits `SetCccxTaskGoal`; App dispatch invokes core's
+  `set_task_goal_condition()`, which uses the TaskGraph writer transaction.
+- Updating a verified task's condition invalidates its previous proof and
+  returns it to blocked/unverified. Sibling tasks remain untouched.
+
+Validation (all green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p cccx-task-graph
+cargo +1.95.0 test -p codex-core cccx_task_graph_state --lib
+cargo +1.95.0 check -p codex-tui
+cargo +1.95.0 test -p codex-tui goal_slash_command_with_extra_os --lib
+```
+
+Remaining Phase 5 work: persist active-attempt metadata beside mode/graph and
+add bounded audit-correction behavior for failed evaluation.

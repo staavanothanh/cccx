@@ -37,7 +37,7 @@ pub mod artifact_collector;
 mod attestation;
 mod cccx_runtime;
 pub mod cccx_spawn;
-mod cccx_task_graph_state;
+pub mod cccx_task_graph_state;
 pub mod checkpoint;
 mod codex_delegate;
 mod command_canonicalization;

@@ -698,7 +698,11 @@ impl ChatWidget {
 
         let trimmed = args.trim();
         if trimmed.is_empty() {
-            self.dispatch_command(cmd);
+            if cmd == SlashCommand::Goal {
+                self.dispatch_cccx_command_with_args(cmd, "");
+            } else {
+                self.dispatch_command(cmd);
+            }
             return;
         }
 
@@ -709,24 +713,9 @@ impl ChatWidget {
                 | SlashCommand::Remember
                 | SlashCommand::Cancel
                 | SlashCommand::Tasks
+                | SlashCommand::Goal
         ) {
             self.dispatch_cccx_command_with_args(cmd, trimmed);
-            return;
-        }
-
-        if cmd == SlashCommand::Goal {
-            self.dispatch_prepared_command_with_args(
-                cmd,
-                PreparedSlashCommandArgs {
-                    args,
-                    text_elements,
-                    pending_pastes: self.bottom_pane.composer_pending_pastes(),
-                    local_images: self.bottom_pane.composer_local_images(),
-                    remote_image_urls: self.bottom_pane.remote_image_urls(),
-                    mention_bindings: Vec::new(),
-                    source: SlashCommandDispatchSource::Live,
-                },
-            );
             return;
         }
 
@@ -981,16 +970,19 @@ impl ChatWidget {
                 );
             }
             Ok(Some(CccxCommand::Goal { expression })) => {
-                if expression.is_empty() {
+                let mut parts = expression.splitn(2, char::is_whitespace);
+                let task_id = parts.next().unwrap_or_default().trim();
+                let condition = parts.next().unwrap_or_default().trim();
+                if task_id.is_empty() || condition.is_empty() {
                     self.add_info_message(
-                        "Usage: /goal <verification condition>".to_string(),
-                        Some("Example: /goal tests pass".to_string()),
+                        "Usage: /goal <task-id> <verification condition>".to_string(),
+                        Some("Example: /goal T1 focused tests must pass".to_string()),
                     );
                 } else {
-                    self.add_info_message(
-                        format!("/goal {expression} — goal set; verification wired through cccx::goal_evaluator."),
-                        /*hint*/ None,
-                    );
+                    self.app_event_tx.send(AppEvent::SetCccxTaskGoal {
+                        task_id: task_id.to_string(),
+                        condition: condition.to_string(),
+                    });
                 }
             }
             Ok(Some(CccxCommand::Review)) => {

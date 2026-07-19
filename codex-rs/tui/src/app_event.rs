@@ -319,6 +319,13 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
     },
 
+    /// Persist a cccx task-scoped completion condition. Unlike ThreadGoal,
+    /// this is authoritative TaskGraph state and never sets verification.
+    SetCccxTaskGoal {
+        task_id: String,
+        condition: String,
+    },
+
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,

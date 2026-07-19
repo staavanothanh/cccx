@@ -670,27 +670,26 @@ async fn inline_slash_command_is_available_from_local_recall_after_dispatch() {
 }
 
 #[tokio::test]
-async fn goal_slash_command_with_extra_os_emits_set_goal_event() {
+async fn goal_slash_command_with_extra_os_emits_cccx_task_goal_event() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
-    let command = "/goooooooooooal --tokens 98.5K improve benchmark coverage";
+    let command = "/goooooooooooal T1 improve benchmark coverage";
 
     submit_composer_text(&mut chat, command);
 
-    let event = rx.try_recv().expect("expected goal draft event");
-    let AppEvent::SetThreadGoalDraft {
-        thread_id: actual_thread_id,
-        draft,
-        mode,
+    let event = rx.try_recv().expect("expected cccx task goal event");
+    let AppEvent::SetCccxTaskGoal {
+        task_id,
+        condition,
     } = event
     else {
-        panic!("expected SetThreadGoalDraft, got {event:?}");
+        panic!("expected SetCccxTaskGoal, got {event:?}");
     };
-    assert_eq!(actual_thread_id, thread_id);
-    assert_eq!(draft.objective, "--tokens 98.5K improve benchmark coverage");
-    assert_eq!(mode, crate::app_event::ThreadGoalSetMode::ConfirmIfExists);
+    assert_eq!(thread_id, chat.thread_id.expect("thread remains attached"));
+    assert_eq!(task_id, "T1");
+    assert_eq!(condition, "improve benchmark coverage");
     assert_no_submit_op(&mut op_rx);
     assert_eq!(recall_latest_after_clearing(&mut chat), command);
 }
