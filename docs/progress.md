@@ -530,4 +530,26 @@ Commit: `b47aaf4`.
 | Mọi verified task có VerificationRecord + evidence digest thật | ✓ |
 | effective_route_id không giả mạo khi không có gateway evidence | ✓ "unknown" |
 
+### Phase 5 Self-Audit (agent-architecture-audit + ai-regression-testing)
+
+**Phát hiện 3 gap:**
+
+| # | Severity | Finding | Fix |
+|---|----------|---------|-----|
+| 1 | HIGH | `evidence_digest` trong VerificationRecord là raw text copy của status_summary, không phải SHA256 | SHA256(status_summary) tại complete_spawn:236 |
+| 2 | MEDIUM | `output_digest` luôn giống nhau cho mọi completion (SHA256 của hằng string) | Nhận status_summary làm param, output_digest khác nhau mỗi lần |
+| 3 | LOW | `verify_placeholders()` chỉ bắt `cccx-runtime`, không kiểm tra format sha256: | Thêm `verify_digest_format()` riêng + test audit |
+
+**Diagnostic #6 (gateguard):** `verify_placeholders()` giờ là code gate trong `Artifact::validate()` — không chỉ prompt. ✓
+Digest format được chứng minh qua `p5_audit_provenance_passes_digest_format_validation`.
+
+### Test results (sau audit)
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| cccx-protocol | 24 | ✓ |
+| codex-core cccx_runtime | 8 (3 prior + 3 P5 + 2 audit) | ✓ |
+| cccx-task-graph | 6 | ✓ |
+| goal_evaluator | 3 | ✓ |
+
 Commit: next.

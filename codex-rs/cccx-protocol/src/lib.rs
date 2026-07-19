@@ -297,6 +297,10 @@ impl ArtifactProvenance {
 
     /// Phase 5: reject provenance entries that carry placeholder-style digests.
     /// architecture.md §12: "Provenance không còn placeholder `sha256:cccx-runtime-*`."
+    ///
+    /// This is the protocol-layer gate. Runtime code (cccx_runtime::provenance_for_runtime)
+    /// already produces real SHA256 digests; this method catches any regression that
+    /// re-introduces placeholder patterns.
     pub fn verify_placeholders(&self) -> Result<(), ProtocolError> {
         let fields: [(&str, &str); 4] = [
             ("input_digest", &self.input_digest),
@@ -309,6 +313,24 @@ impl ArtifactProvenance {
                 return Err(ProtocolError::PlaceholderProvenance(
                     name,
                     value.to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Phase 5: verify digest fields use sha256: format with 64 hex chars.
+    /// Separate from verify_placeholders() — this is a stricter cryptographic
+    /// audit that runtime code can call explicitly.
+    pub fn verify_digest_format(&self) -> Result<(), ProtocolError> {
+        for (name, value) in [("input_digest", &self.input_digest), ("output_digest", &self.output_digest)] {
+            let hex = value.strip_prefix("sha256:").ok_or_else(|| {
+                ProtocolError::PlaceholderProvenance(name, format!("missing sha256: prefix in '{value}'"))
+            })?;
+            if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(ProtocolError::PlaceholderProvenance(
+                    name,
+                    format!("not a valid sha256 digest: {value}"),
                 ));
             }
         }
