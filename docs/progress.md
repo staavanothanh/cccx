@@ -442,4 +442,39 @@ tại spawn call-site — việc này cần thay đổi lớn hơn ở runtime.
 Tuy nhiên tool allowlist cho model sent-to-LLM vẫn chưa filter — đây là gap
 ở tool catalog builder, không phải permission gate.
 
+Commit: `6e6463ac`.
+
+---
+
+## Phase 4 — Harness identity, scheduler boundary, và subagent lifecycle (2026-07-19)
+
+### Analysis
+
+**Gap 1 (Critical): CC subagent prompt claims full authority**
+- `cccx-harness-cc/src/lib.rs:28`: "You are the control plane with final decision authority"
+- Architecture.md §3.2: CC subagent "KHÔNG có quyền của Main CC: không commit ADR, không làm scheduler"
+
+**Gap 2: `ActorIdentity::can_spawn()` existed but never called from runtime**
+- Contract correct: `MainCc=true`, `CcSubagent=false`, `CxSubagent=false`
+
+**Gap 3: Spawn guard uses prompt substring** — still correct (harness prompts are deterministic)
+
+### Fix
+
+| File | Change |
+|------|--------|
+| `cccx-harness-cc/src/lib.rs` | Rewrote CC prompt: bounded worker referencing Main CC |
+| `cccx-harness-cc/src/lib.rs` | Phase 4 prompt audit test (no scheduler/ADR self-claim) |
+| `cccx-protocol/src/lib.rs` | Phase 4 tests (4): can_spawn() contract |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| cccx-protocol | 22 | ✓ |
+| cccx-harness-cc | 3 | ✓ |
+| cccx-harness-cx | 2 | ✓ |
+| cccx-mode, cccx-policy | 17 | ✓ |
+
+Commit: next.
 Commit: next.

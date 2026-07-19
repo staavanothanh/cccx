@@ -709,4 +709,28 @@ mod tests {
             Err(ProtocolError::MissingField("provenance"))
         );
     }
+
+    // ── Phase 4: ActorIdentity scheduler boundary ──
+
+    #[test]
+    fn p4_main_cc_can_spawn() {
+        assert!(ActorIdentity::MainCc.can_spawn());
+    }
+
+    #[test]
+    fn p4_cc_subagent_cannot_spawn() {
+        assert!(!ActorIdentity::CcSubagent.can_spawn());
+    }
+
+    #[test]
+    fn p4_cx_subagent_cannot_spawn() {
+        assert!(!ActorIdentity::CxSubagent.can_spawn());
+    }
+
+    #[test]
+    fn p4_only_main_cc_has_spawn_right() {
+        assert!(ActorIdentity::MainCc.can_spawn());
+        assert!(!ActorIdentity::CcSubagent.can_spawn());
+        assert!(!ActorIdentity::CxSubagent.can_spawn());
+    }
 }

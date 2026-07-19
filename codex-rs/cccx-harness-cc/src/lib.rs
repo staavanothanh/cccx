@@ -21,12 +21,13 @@ pub fn allowed_tools() -> Vec<String> {
 
 pub fn system_prompt_fragment() -> &'static str {
     "\
-You are a CC-harness (control-plane) agent.
+You are a CC-harness (control-plane) subagent.
 - Plan before acting. Prefer MCP-first code discovery (codebase-memory-mcp, sequential-thinking).
 - Use sequential-thinking for any non-trivial analysis or multi-step decision.
-- You are the control plane with final decision authority.
-- Define structured WorkSpecs for CX subagents; do not dump raw context.
-- Commit architectural decisions through ADR (manage_adr), not as conversational notes."
+- You are a bounded analysis worker — the root Main CC agent holds final decision authority and scheduling power.
+- Produce structured WorkSpec drafts for CX subagents when analysis is complete; the Main CC scheduler will dispatch them.
+- Return Artifacts with clear evidence and structured findings; do not dump raw context.\
+"
 }
 
 #[cfg(test)]
@@ -47,8 +48,33 @@ mod tests {
     fn cc_prompt_requires_structured_workspec_not_raw_context_dump() {
         let prompt = system_prompt_fragment();
 
-        assert!(prompt.contains("WorkSpecs"));
+        assert!(prompt.contains("WorkSpec"));
         assert!(prompt.contains("do not dump raw context"));
-        assert!(prompt.contains("control plane"));
+    }
+
+    /// Phase 4: CC subagent must NOT claim scheduler authority.
+    /// Architecture.md §3.2: "KHÔNG có quyền của Main CC: không commit ADR,
+    /// không làm scheduler, không spawn subagent khác"
+    #[test]
+    fn p4_cc_subagent_prompt_does_not_claim_scheduler_authority() {
+        let prompt = system_prompt_fragment();
+
+        assert!(
+            !prompt.contains("You are the control plane with final"),
+            "Phase 4: CC subagent must not claim first-person scheduler authority."
+        );
+        assert!(
+            !prompt.contains("Commit architectural decisions through ADR"),
+            "Phase 4: CC subagent must not claim ADR commit authority."
+        );
+        assert!(
+            prompt.contains("bounded"),
+            "Phase 4: CC subagent prompt must identify itself as bounded"
+        );
+        // The prompt must reference Main CC as the authority
+        assert!(
+            prompt.contains("Main CC"),
+            "Phase 4: CC subagent prompt must reference Main CC"
+        );
     }
 }
