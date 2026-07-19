@@ -3771,3 +3771,13 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
 }
+#[test]
+fn cloned_agent_controls_share_one_cccx_permission_queue() {
+    let control = AgentControl::default();
+    let descendant = control.clone();
+
+    assert!(std::sync::Arc::ptr_eq(
+        &control.cccx_permission_queue(),
+        &descendant.cccx_permission_queue(),
+    ));
+}

@@ -1094,7 +1094,7 @@ impl Session {
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
                 tool_approvals: Mutex::new(ApprovalStore::default()),
-                cccx_permission_queue: crate::permission_queue_bridge::CccxPermissionQueue::new(),
+                cccx_permission_queue: agent_control.cccx_permission_queue(),
                 guardian_rejections: Mutex::new(HashMap::new()),
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
                 runtime_handle: tokio::runtime::Handle::current(),

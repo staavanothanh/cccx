@@ -7,6 +7,7 @@ use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::cccx_runtime::CccxRuntimeRegistry;
+use crate::permission_queue_bridge::CccxPermissionQueue;
 use crate::cccx_runtime::CccxSpawnRuntime;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
@@ -113,6 +114,8 @@ pub(crate) struct AgentControl {
     rollout_budget: Arc<RolloutBudget>,
     cccx_runtime: Arc<Mutex<CccxRuntimeRegistry>>,
     cccx_runtime_active: Arc<AtomicUsize>,
+    /// One root-owned queue shared by Main CC and every descendant session.
+    cccx_permission_queue: Arc<CccxPermissionQueue>,
 }
 
 impl AgentControl {
@@ -160,6 +163,10 @@ impl AgentControl {
 
     pub(crate) fn has_active_cccx_runtime(&self) -> bool {
         self.cccx_runtime_active.load(Ordering::Relaxed) > 0
+    }
+
+    pub(crate) fn cccx_permission_queue(&self) -> Arc<CccxPermissionQueue> {
+        Arc::clone(&self.cccx_permission_queue)
     }
 
     pub(crate) async fn cccx_work_spec_for_thread(

@@ -12,6 +12,12 @@ pub struct CccxPermissionQueue {
     counter: AtomicU64,
 }
 
+impl Default for CccxPermissionQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CccxPermissionQueue {
     pub fn new() -> Self {
         Self {

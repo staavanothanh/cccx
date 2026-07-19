@@ -2526,6 +2526,26 @@ cargo +1.95.0 test -p codex-core interrupted_spawn_persists_a_resumable_checkpoi
 This does not yet implement resume or targeted cancellation; it establishes
 the persisted failure boundary those operations must consume.
 
+## 2026-07-20 — Phase 6C: root-owned permission queue (partial)
+
+- `CccxPermissionQueue` now belongs to `AgentControl`, the control-plane
+  object shared by the root and descendant sessions. `SessionServices` receives
+  that same `Arc`, eliminating the prior per-session queues that could render
+  multiple independent permission prompts.
+- A focused control-plane test proves cloned control handles point to exactly
+  the same queue instance.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 check -p codex-core
+cargo +1.95.0 test -p codex-core cloned_agent_controls_share_one_cccx_permission_queue --lib
+```
+
+Remaining Phase 6 work: enrich permission identity with worker/task/attempt,
+wire targeted cancellation to revoke that worker's queue entries and lease,
+then implement resume/checkpoint and TUI controls.
+
 ## 2026-07-20 — Phase 5D: Task Graph writer lease
 
 - Added `update_task_graph()`, a project-local writer-lease transaction for
