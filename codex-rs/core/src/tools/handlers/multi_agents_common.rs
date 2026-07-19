@@ -257,27 +257,14 @@ pub(crate) fn apply_cccx_work_spec_to_spawn_config(
     }
 
     // Task 2: guard — reject spawn if caller is not Main CC.
-    // Subagents (CC-harness or CX-harness) are forbidden from spawning more workers.
-    // This is defense-in-depth: CX already has orchestrator_mcp_enabled=false (Phase 3),
-    // but this gate ensures the scheduler boundary is enforced at the runtime level.
-    //
-    // Phase 4 fix: previous version checked for "cccx_harness_cx"/"cccx_harness_cc"
-    // substrings that do NOT appear in the actual harness prompts. The prompts say
-    // "CC-harness (control-plane) subagent" and "CX-harness (execution-plane) agent".
-    // Now checks for the actual prompt content.
-    if let Some(harness) = config.developer_instructions.as_ref()
-        .and_then(|s| if s.contains("CX-harness (execution-plane)") {
-            Some("CX")
-        } else if s.contains("CC-harness (control-plane)") {
-            Some("CC-subagent")
-        } else {
-            None
-        })
-    {
+    // Subagents are forbidden from spawning more workers. This uses the typed
+    // runtime identity instead of prompt substring heuristics, so future prompt
+    // edits cannot accidentally grant scheduler authority.
+    if !turn.cccx_actor_identity().can_spawn() {
         return Err(FunctionCallError::RespondToModel(format!(
-            "cccx: {} workers cannot spawn additional agents. Only Main CC has scheduler authority. \
+            "cccx: {:?} workers cannot spawn additional agents. Only Main CC has scheduler authority. \
              Return a SchedulingRequest Artifact describing what additional worker/scope you need; the scheduler will dispatch it.",
-            harness
+            turn.cccx_actor_identity()
         )));
     }
 

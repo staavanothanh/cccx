@@ -6,7 +6,7 @@
 //!
 //! Architecture.md §6: "WorkSpec-to-ChildConfig Adapter — deny-by-default".
 
-use cccx_protocol::HarnessKind;
+use cccx_protocol::{ActorIdentity, HarnessKind};
 use cccx_protocol::ParentCapabilitySet;
 use cccx_protocol::ProtocolError;
 use cccx_protocol::WorkRole;
@@ -25,6 +25,12 @@ pub fn apply_cccx_harness_to_config(
     work_spec: &WorkSpec,
 ) -> Result<(), ProtocolError> {
     let projection = cccx_protocol::project_child_config(work_spec, parent)?;
+
+    config.cccx_harness = work_spec.harness;
+    config.cccx_actor_identity = match work_spec.harness {
+        HarnessKind::Cc => ActorIdentity::CcSubagent,
+        HarnessKind::Cx => ActorIdentity::CxSubagent,
+    };
 
     // --- harness prompt fragment ---
     let harness_prompt = match work_spec.harness {
@@ -325,6 +331,8 @@ mod phase0_tests {
         let parent = test_parent();
 
         // ── Before apply ──
+        assert_eq!(config.cccx_actor_identity, ActorIdentity::MainCc);
+        assert_eq!(config.cccx_harness, HarnessKind::Cc);
         assert!(
             config.developer_instructions.is_none(),
             "before apply, no developer instructions"
@@ -353,6 +361,16 @@ mod phase0_tests {
         assert!(
             !config.orchestrator_skills_enabled,
             "GREEN: CX subagent must have orchestrator_skills_enabled=false"
+        );
+        assert_eq!(
+            config.cccx_actor_identity,
+            ActorIdentity::CxSubagent,
+            "GREEN: WorkSpec projection must mark a CX child as a CX subagent"
+        );
+        assert_eq!(
+            config.cccx_harness,
+            HarnessKind::Cx,
+            "GREEN: WorkSpec projection must set the child harness lifecycle"
         );
 
         // ── After apply: fields that are NOT written (arch. gap) ──

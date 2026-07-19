@@ -18,7 +18,7 @@ pub const CCCX_WORK_SPEC_SCHEMA_VERSION: &str = "cccx.work_spec.v1";
 pub const CCCX_ARTIFACT_SCHEMA_VERSION: &str = "cccx.artifact.v1";
 pub const CCCX_VERIFICATION_RECORD_SCHEMA_VERSION: &str = "cccx.verification_record.v1";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HarnessKind {
     Cc,
@@ -28,7 +28,7 @@ pub enum HarnessKind {
 /// Who is making the current LLM/spawn call.
 ///
 /// architecture.md: "Main CC là scheduler duy nhất. CX/CC subagent không tự spawn."
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ActorIdentity {
     /// The root Main CC agent — has full scheduling authority.

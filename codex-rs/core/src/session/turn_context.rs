@@ -1,6 +1,7 @@
 use super::*;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
+use cccx_protocol::{ActorIdentity, HarnessKind};
 use codex_core_skills::HostSkillsSnapshot;
 use codex_file_system::FileSystemSandboxContext;
 use codex_model_provider::SharedModelProvider;
@@ -135,6 +136,8 @@ pub struct TurnContext {
     pub(crate) timezone: Option<String>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) developer_instructions: Option<String>,
+    pub(crate) cccx_actor_identity: ActorIdentity,
+    pub(crate) cccx_harness: HarnessKind,
     pub(crate) mode: ModeKind,
     pub(crate) collaboration_mode_developer_instructions: Option<String>,
     pub(crate) multi_agent_version: MultiAgentVersion,
@@ -180,6 +183,14 @@ impl TurnContext {
 
     pub(crate) fn permission_profile(&self) -> PermissionProfile {
         self.permission_profile.clone()
+    }
+
+    pub(crate) fn cccx_actor_identity(&self) -> ActorIdentity {
+        self.cccx_actor_identity
+    }
+
+    pub(crate) fn cccx_harness(&self) -> HarnessKind {
+        self.cccx_harness
     }
 
     pub(crate) fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
@@ -295,6 +306,8 @@ impl TurnContext {
             timezone: self.timezone.clone(),
             app_server_client_name: self.app_server_client_name.clone(),
             developer_instructions: self.developer_instructions.clone(),
+            cccx_actor_identity: self.cccx_actor_identity,
+            cccx_harness: self.cccx_harness,
             mode: self.mode,
             collaboration_mode_developer_instructions: self
                 .collaboration_mode_developer_instructions
@@ -573,6 +586,8 @@ impl Session {
             timezone: Some(timezone),
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
+            cccx_actor_identity: session_configuration.cccx_actor_identity,
+            cccx_harness: session_configuration.cccx_harness,
             mode: collaboration_mode.mode,
             collaboration_mode_developer_instructions: collaboration_mode
                 .settings

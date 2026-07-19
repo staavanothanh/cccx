@@ -685,6 +685,15 @@ pub struct Config {
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
+    /// cccx runtime actor identity for this agent instance.
+    ///
+    /// Main sessions default to `MainCc`; WorkSpec-projected child sessions
+    /// must override this to `CcSubagent` or `CxSubagent`.
+    pub cccx_actor_identity: cccx_protocol::ActorIdentity,
+
+    /// The single cccx harness governing this agent instance for its lifecycle.
+    pub cccx_harness: cccx_protocol::HarnessKind,
+
     /// Guardian-specific policy config override from requirements.toml or config.toml.
     /// This is inserted into the fixed guardian prompt template under the
     /// `# Policy Configuration` section rather than replacing the whole
@@ -3919,6 +3928,8 @@ impl Config {
             base_instructions,
             personality,
             developer_instructions,
+            cccx_actor_identity: cccx_protocol::ActorIdentity::MainCc,
+            cccx_harness: cccx_protocol::HarnessKind::Cc,
             compact_prompt,
             include_permissions_instructions,
             include_apps_instructions,

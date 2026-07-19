@@ -1220,3 +1220,84 @@ Known warnings kept intentionally as runtime-gap signals:
 - `GoalEvaluator` fills some newly required fields as `unknown` because it still
   receives only `TaskNode + exit code + log digest`; Phase 5 must pass real
   attempt/artifact evidence.
+
+---
+
+## Phase 1B/2 — Typed runtime identity carrier and scheduler guard (2026-07-19)
+
+Scope:
+
+- `cccx-protocol/src/lib.rs`
+- `core/src/config/mod.rs`
+- `core/src/session/{mod.rs,session.rs,turn_context.rs,review.rs,tests.rs}`
+- `core/src/cccx_spawn.rs`
+- `core/src/tools/handlers/multi_agents_common.rs`
+
+### Implemented
+
+1. `ActorIdentity` and `HarnessKind` are now `Copy`, so they can be carried
+   through runtime structs without clone-heavy plumbing.
+2. `Config` now carries cccx runtime identity:
+   - `cccx_actor_identity`
+   - `cccx_harness`
+3. Main/root config defaults to:
+   - `ActorIdentity::MainCc`
+   - `HarnessKind::Cc`
+4. `SessionConfiguration` and `TurnContext` now carry the same typed identity.
+5. `TurnContext` exposes:
+   - `cccx_actor_identity()`
+   - `cccx_harness()`
+6. `apply_cccx_harness_to_config()` now writes child lifecycle identity from
+   WorkSpec:
+   - `HarnessKind::Cc` -> `ActorIdentity::CcSubagent`
+   - `HarnessKind::Cx` -> `ActorIdentity::CxSubagent`
+7. The cccx spawn guard in `multi_agents_common.rs` now uses
+   `turn.cccx_actor_identity().can_spawn()` instead of prompt-substring
+   detection. This removes the previous split-brain risk where prompt text
+   changes could accidentally alter scheduler authority.
+
+### Tests
+
+```powershell
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo test -p cccx-protocol
+cargo test -p codex-core cccx_root_turn_context_carries_main_cc_identity --lib
+cargo test -p codex-core runtime_harness_prompt_reaches_config --lib
+```
+
+Results:
+
+- `cccx-protocol`: 29 passed.
+- `cccx_root_turn_context_carries_main_cc_identity`: 1 passed.
+- `runtime_harness_prompt_reaches_config`: 1 passed.
+
+Intentional red baseline still present:
+
+```powershell
+cargo test -p codex-core cccx_spawn --lib
+```
+
+Result:
+
+- 6 passed.
+- 2 failed intentionally:
+  - `runtime_projection_permission_policy_must_reach_config`
+  - `runtime_projection_tool_allowlist_must_reach_config`
+
+These two failures are the existing Phase 4 gaps: WorkSpec permission policy and
+tool allowlist projection are still computed but not fully enforced in runtime
+Config/tool catalog. They were not fixed in Phase 1B/2.
+
+### Remaining gaps
+
+- Main CC has typed runtime identity now, but the dedicated Main CC harness
+  prompt/bootstrap is still not implemented.
+- Child identity is written into `Config`, but full WorkSpec projection remains
+  incomplete:
+  - permission policy;
+  - tool allowlist;
+  - MCP allowlist;
+  - executor/sandbox/path stale-read gates.
+- `Config`, `SessionConfiguration`, and `TurnContext` now agree on identity, but
+  persisted config lock / thread snapshot do not yet expose these fields as a
+  user-visible runtime contract.

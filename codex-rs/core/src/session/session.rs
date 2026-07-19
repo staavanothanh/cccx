@@ -9,6 +9,7 @@ use crate::shell_snapshot::ShellSnapshot;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
 use cccx_mode::CccxModeState;
+use cccx_protocol::{ActorIdentity, HarnessKind};
 use codex_extension_api::ExtensionDataInit;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_protocol::SessionId;
@@ -63,6 +64,8 @@ pub(crate) struct SessionConfiguration {
 
     /// Developer instructions that supplement the base instructions.
     pub(super) developer_instructions: Option<String>,
+    pub(super) cccx_actor_identity: ActorIdentity,
+    pub(super) cccx_harness: HarnessKind,
 
     /// Personality preference for the model.
     pub(super) personality: Option<Personality>,

@@ -643,6 +643,8 @@ impl Session {
             model_reasoning_summary: config.model_reasoning_summary,
             service_tier,
             developer_instructions: config.developer_instructions.clone(),
+            cccx_actor_identity: config.cccx_actor_identity,
+            cccx_harness: config.cccx_harness,
             personality: config.personality,
             base_instructions,
             compact_prompt: config.compact_prompt.clone(),
