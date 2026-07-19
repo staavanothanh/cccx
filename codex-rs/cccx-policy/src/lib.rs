@@ -507,7 +507,10 @@ pub fn evaluate_subagent(
     }
 
     if matches!(action.action_type, ActionType::Edit) && !action.target_paths.is_empty() {
-        let in_scope = action.target_paths.iter().any(|target| {
+        // Phase 3: all() instead of any() — every path must be in scope.
+        // If a multi-file edit includes even one out-of-scope path, the
+        // entire edit is denied (implementer-issues §2).
+        let in_scope = action.target_paths.iter().all(|target| {
             let normalized = target.replace('\\', "/");
             work_spec.scope.canonical_paths.iter().any(|scope_path| {
                 let scope_normalized = scope_path.replace('\\', "/");

@@ -250,18 +250,27 @@ pub(crate) fn model_route_summary(work_spec: &WorkSpec, main_model_slug: &str) -
     }
 }
 
+/// Build a ParentCapabilitySet for WorkSpec projection.
+///
+/// Phase 3 fix: `parent_allowed_tools` and `parent_allowed_mcp_tools` are
+/// the actual Main CC's available tools/MCP from its runtime Config, NOT
+/// the WorkSpec's own allowed_tools. Previously, the function cloned
+/// `work_spec.allowed_tools` into the parent capability, making the
+/// intersection with itself a no-op (implementer-issues §2).
 pub(crate) fn parent_capability_set_for_work_spec(
     project_root: &Path,
     main_model_slug: &str,
     work_spec: &WorkSpec,
+    parent_allowed_tools: BTreeSet<String>,
+    parent_allowed_mcp_tools: BTreeSet<String>,
 ) -> cccx_protocol::ParentCapabilitySet {
     let mut model_routes = BTreeSet::from([main_model_slug.to_string()]);
     if let ModelRouteSelection::Explicit { route_id } = &work_spec.model_route {
         model_routes.insert(route_id.clone());
     }
     cccx_protocol::ParentCapabilitySet {
-        tools: work_spec.allowed_tools.clone(),
-        mcp_tools: work_spec.allowed_mcp_tools.clone(),
+        tools: parent_allowed_tools,
+        mcp_tools: parent_allowed_mcp_tools,
         writable_roots: BTreeSet::from([project_root.display().to_string()]),
         protected_paths: work_spec.scope.protected_paths.clone(),
         model_routes,
@@ -362,5 +371,76 @@ mod tests {
             )
             .unwrap();
         assert!(runtime.task_graph().can_stop());
+    }
+
+    // ── Phase 3 tests ──
+
+    /// Phase 3: parent_capability_set_for_work_spec MUST use parent's actual
+    /// tools from Main CC config, NOT clone from the WorkSpec itself.
+    /// (implementer-issues §2: "parent_capability_set_for_work_spec()
+    /// lấy capability của parent trực tiếp từ chính WorkSpec")
+    #[test]
+    fn p3_parent_capability_uses_actual_parent_tools_not_work_spec() {
+        let ws = work_spec();
+        let project_root = std::path::Path::new("D:/repo");
+        let main_model = "9router/main";
+
+        // The parent (Main CC) has MORE tools than the WorkSpec
+        let parent_tools = BTreeSet::from([
+            "shell_command".to_string(),
+            "edit".to_string(),
+            "read".to_string(),
+            "spawn".to_string(),
+            "apply_patch".to_string(),
+        ]);
+        let parent_mcp = BTreeSet::from([
+            "codebase-memory-mcp".to_string(),
+            "sequential-thinking".to_string(),
+        ]);
+
+        let parent = parent_capability_set_for_work_spec(
+            project_root,
+            main_model,
+            &ws,
+            parent_tools.clone(),
+            parent_mcp.clone(),
+        );
+
+        // Phase 3: parent.tools must be the ACTUAL parent tools, not the
+        // WorkSpec's allowed_tools. Before the fix, this was:
+        //   tools: work_spec.allowed_tools.clone()  ← circular!
+        assert_eq!(parent.tools, parent_tools);
+        assert_eq!(parent.mcp_tools, parent_mcp);
+        assert_eq!(parent.permission_ceiling, PermissionPolicy::Allow);
+        assert!(parent.model_routes.contains("9router/main"));
+    }
+
+    /// Phase 3: intersection of WorkSpec tools with narrow parent capability
+    /// must correctly reduce the projection.
+    #[test]
+    fn p3_parent_capability_intersection_reduces_projection() {
+        let ws = work_spec(); // allowed_tools = {"shell_command"}
+        let project_root = std::path::Path::new("D:/repo");
+
+        // Parent has NO tools — empty set
+        let parent_tools = BTreeSet::new();
+        let parent_mcp = BTreeSet::new();
+
+        let parent = parent_capability_set_for_work_spec(
+            project_root,
+            "9router/main",
+            &ws,
+            parent_tools,
+            parent_mcp,
+        );
+
+        // The projection should be empty because WorkSpec ∩ parent = ∅
+        let projection =
+            cccx_protocol::project_child_config(&ws, &parent).unwrap();
+        assert!(
+            projection.allowed_tools.is_empty(),
+            "WorkSpec tools ∩ empty parent = empty. Got: {:?}",
+            projection.allowed_tools
+        );
     }
 }

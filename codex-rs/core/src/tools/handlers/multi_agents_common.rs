@@ -285,8 +285,17 @@ pub(crate) fn apply_cccx_work_spec_to_spawn_config(
 
     #[allow(deprecated)]
     let project_root = turn.cwd.clone().to_path_buf();
-    let parent =
-        parent_capability_set_for_work_spec(&project_root, &turn.model_info.slug, &work_spec);
+    // Phase 3: parent_allowed_tools/parent_allowed_mcp_tools should come from
+    // Main CC's actual tool/MCP catalog at spawn time. Currently pass empty
+    // defaults — the real tool registry integration is deferred (requires
+    // access to AgentControlService/McpManager at the spawn call-site).
+    let parent = parent_capability_set_for_work_spec(
+        &project_root,
+        &turn.model_info.slug,
+        &work_spec,
+        Default::default(),
+        Default::default(),
+    );
     crate::cccx_spawn::apply_cccx_harness_to_config(config, &parent, &work_spec)
         .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
     let route_summary = model_route_summary(&work_spec, &turn.model_info.slug);

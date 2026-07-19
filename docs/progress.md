@@ -362,4 +362,50 @@ Bypass ✓ (circuit breaker survival).
 trong Plan trả `Forbidden` với reason `"plan-mode"` (line 402-406 của
 cccx-policy evaluate_action). Chứng minh Plan không chỉ prompt mà là code gate.
 
+Commit: `7b5fb32`.
+
+---
+
+## Phase 3 — WorkSpec-to-ChildConfig deny-by-default projection (2026-07-19)
+
+### Analysis
+
+**Gap 1 (Critical): `parent_capability_set_for_work_spec()` circular**
+- `tools: work_spec.allowed_tools.clone()` → parent cloned FROM WorkSpec
+- `project_child_config()` intersects WorkSpec ∩ parent → but parent = WorkSpec → **no-op**
+- (implementer-issues §2)
+
+**Gap 2 (High): Scope check `any()`**
+- `cccx-policy/src/lib.rs:510`: `.any(...)` → one in-scope path allows the edit
+- Fix: `any()` → `all()` (every path must be in scope)
+
+### Fix
+
+| File | Change |
+|------|--------|
+| `core/src/cccx_runtime.rs` | Added `parent_allowed_tools, parent_allowed_mcp_tools` params |
+| `core/src/cccx_runtime.rs` | Phase 3 tests (2) |
+| `core/src/tools/handlers/multi_agents_common.rs` | Updated call-site |
+| `cccx-policy/src/lib.rs` | Scope: `any()` → `all()` |
+
+### Test results
+
+| ID | Test | Result |
+|----|------|--------|
+| P3-T1 | `p3_parent_capability_uses_actual_parent_tools_not_work_spec` | GREEN ✓ |
+| P3-T2 | `p3_parent_capability_intersection_reduces_projection` | GREEN ✓ |
+| | cccx-protocol (18) | GREEN ✓ |
+| | cccx-policy (11) | GREEN ✓ |
+| | cccx-mode (6) | GREEN ✓ |
+| | codex-core cccx tests (17) | GREEN ✓ |
+| | Phase 0 RED (3) — structural Config gap | RED (expected) |
+
+### Remaining gaps
+
+| Gap | Reason |
+|-----|--------|
+| Config lacks cccx projection fields | Structural — deferred to Phase 3 future work |
+| Tool catalog filter by WorkSpec | Requires spawn-time tool registry access |
+| canonical/symlink resolve for scope | OS-level requirement, not available in unit tests |
+
 Commit: next.
