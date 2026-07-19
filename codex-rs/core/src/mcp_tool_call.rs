@@ -6,7 +6,6 @@ use crate::config::Config;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::connectors;
-use crate::exec_policy::cccx_mcp_requirement;
 use crate::exec_policy::cccx_subagent_mcp_requirement;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::GuardianMcpAnnotations;
@@ -252,7 +251,14 @@ pub(crate) async fn handle_mcp_tool_call(
     {
         cccx_subagent_mcp_requirement(&work_spec, &server, &tool_name)
     } else {
-        cccx_mcp_requirement(&server, &tool_name, turn_context.cccx_main_mode())
+        sess.services
+            .exec_policy
+            .create_mcp_approval_requirement_in_mode(
+                &server,
+                &tool_name,
+                turn_context.cccx_main_mode(),
+            )
+            .await
     };
     if let Some(requirement) = cccx_requirement {
         match requirement {

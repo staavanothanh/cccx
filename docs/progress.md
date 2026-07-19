@@ -2045,3 +2045,87 @@ Remaining note:
 - This closes the previously listed Phase 3 PostToolUse-blocked hook regression
   gap. The broader Phase 3 parity questions for edit/MCP/network Auto
   classifier call-sites remain separate.
+
+## Phase 3J — Auto classifier parity for edit and MCP permission paths
+
+Date: 2026-07-20
+
+Scope:
+
+- `codex-rs/core/src/exec_policy.rs`
+- `codex-rs/core/src/apply_patch.rs`
+- `codex-rs/core/src/mcp_tool_call.rs`
+- `codex-rs/core/src/apply_patch_tests.rs`
+
+Skills / workflow used:
+
+- `gateguard`
+- `agent-harness-construction`
+- `error-handling`
+- `ai-regression-testing`
+- MCP-first discovery through `codebase-memory-mcp`; `rg` fallback was used
+  only for exact literal/symbol lookup inside already-identified files.
+
+Implemented:
+
+1. Added manager-owned Auto classifier evaluation for non-shell actions.
+2. Added `ExecPolicyManager` methods for:
+   - edit approval requirements with changed-line accounting;
+   - MCP approval requirements.
+3. Refactored edit/MCP normalized-action construction so shell, edit and MCP
+   all evaluate through the same deterministic `cccx_policy::evaluate_action`
+   path with optional classifier output.
+4. Wired production apply-patch policy path through
+   `session.services.exec_policy`, so Auto mode can see the configured 9router
+   classifier provider.
+5. Wired production MCP tool-call policy path through
+   `session.services.exec_policy` for the same classifier visibility.
+6. Kept existing free functions as test-only compatibility wrappers for legacy
+   policy wiring tests.
+
+RED/GREEN evidence:
+
+Initial RED:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 test -p codex-core p3_auto_edit_uses_classifier_allow_outcome --lib
+```
+
+Result:
+
+- Failed to compile because
+  `create_edit_approval_requirement_for_changed_lines_in_mode(...)` and
+  `create_mcp_approval_requirement_in_mode(...)` did not exist on
+  `ExecPolicyManager`.
+
+Final GREEN:
+
+```powershell
+cargo +1.95.0 test -p codex-core p3_auto_ --lib
+cargo +1.95.0 test -p codex-core apply_patch_auto_mode_ --lib
+cargo +1.95.0 test -p codex-core p3_mcp_requirement_uses_live_mode_parameter --lib
+cargo +1.95.0 fmt --all
+```
+
+Results:
+
+- `p3_auto_*`: 6 passed, covering shell, edit and MCP manager-level Auto
+  classifier behavior plus parser/circuit-breaker negative paths.
+- `apply_patch_auto_mode_*`: 2 passed, covering production apply-patch call-site
+  behavior:
+  - classifier allow passes the cccx Auto gate and falls through to legacy patch
+    safety;
+  - classifier unavailable fails closed with `classifier_unavailable`.
+- `p3_mcp_requirement_uses_live_mode_parameter`: passed.
+- Formatting completed. Rustfmt emitted the existing stable-toolchain warning
+  for `imports_granularity = Item`.
+
+Remaining note:
+
+- MCP classifier parity has manager-level proof and production call-site wiring.
+  A full MCP runtime fixture that executes `handle_mcp_tool_call(...)` with a
+  configured test classifier remains useful for stronger end-to-end coverage,
+  but the previous shell-only classifier gap is no longer true for the core
+  permission evaluator.

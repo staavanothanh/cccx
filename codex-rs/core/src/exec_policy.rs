@@ -448,21 +448,8 @@ fn cccx_shell_action(command: &[String]) -> CccxNormalizedAction {
     }
 }
 
-/// Runs cccx policy evaluation for MCP tool calls.
-///
-/// Uses `Default` mode so circuit-breaker rules hard-deny, escalate rules
-/// require approval, and allowlist rules fast-path.
-///
-/// Returns:
-/// - `Some(Forbidden)` when cccx policy hard-denies (circuit breaker match)
-/// - `Some(NeedsApproval)` when user approval is required (escalate match)
-/// - `None` when no cccx policy applies (allowlist match or no rule matched)
-pub(crate) fn cccx_mcp_requirement(
-    server_id: &str,
-    tool_name: &str,
-    mode: CccxMainMode,
-) -> Option<ExecApprovalRequirement> {
-    let action = CccxNormalizedAction {
+fn cccx_mcp_action(server_id: &str, tool_name: &str) -> CccxNormalizedAction {
+    CccxNormalizedAction {
         action_type: CccxActionType::McpCall,
         summary: format!("mcp:{server_id}.{tool_name}"),
         command: None,
@@ -471,17 +458,25 @@ pub(crate) fn cccx_mcp_requirement(
         task_id: "codex-core-mcp".to_string(),
         changed_files: 0,
         changed_lines: 0,
-    };
-    let session = CccxPolicySession {
-        mode,
-        thresholds: CccxModeThresholds {
-            max_changed_files: usize::MAX,
-            max_changed_lines: usize::MAX,
-        },
-        explicit_allow_rules: Vec::new(),
-    };
+    }
+}
 
-    match cccx_evaluate_action(&action, &session, &CccxPolicySet::default_m4(), None) {
+fn cccx_edit_action(file_paths: &[String], changed_lines: usize) -> CccxNormalizedAction {
+    let paths_summary = file_paths.join(", ");
+    CccxNormalizedAction {
+        action_type: CccxActionType::Edit,
+        summary: format!("edit files: {paths_summary}"),
+        command: None,
+        target_paths: file_paths.to_vec(),
+        tool_name: Some("apply_patch".to_string()),
+        task_id: "codex-core-edit".to_string(),
+        changed_files: file_paths.len(),
+        changed_lines,
+    }
+}
+
+fn cccx_requirement_from_decision(decision: CccxPolicyDecision) -> Option<ExecApprovalRequirement> {
+    match decision {
         CccxPolicyDecision::Deny { reason, .. } => {
             Some(ExecApprovalRequirement::Forbidden { reason })
         }
@@ -499,6 +494,48 @@ pub(crate) fn cccx_mcp_requirement(
         }
         CccxPolicyDecision::Allow { .. } => None,
     }
+}
+
+/// Runs cccx policy evaluation for MCP tool calls.
+///
+/// Uses `Default` mode so circuit-breaker rules hard-deny, escalate rules
+/// require approval, and allowlist rules fast-path.
+///
+/// Returns:
+/// - `Some(Forbidden)` when cccx policy hard-denies (circuit breaker match)
+/// - `Some(NeedsApproval)` when user approval is required (escalate match)
+/// - `None` when no cccx policy applies (allowlist match or no rule matched)
+#[cfg(test)]
+pub(crate) fn cccx_mcp_requirement(
+    server_id: &str,
+    tool_name: &str,
+    mode: CccxMainMode,
+) -> Option<ExecApprovalRequirement> {
+    cccx_mcp_requirement_with_classifier(server_id, tool_name, mode, None)
+}
+
+fn cccx_mcp_requirement_with_classifier(
+    server_id: &str,
+    tool_name: &str,
+    mode: CccxMainMode,
+    classifier: Option<CccxPolicyClassifierOutcome>,
+) -> Option<ExecApprovalRequirement> {
+    let action = cccx_mcp_action(server_id, tool_name);
+    let session = CccxPolicySession {
+        mode,
+        thresholds: CccxModeThresholds {
+            max_changed_files: usize::MAX,
+            max_changed_lines: usize::MAX,
+        },
+        explicit_allow_rules: Vec::new(),
+    };
+
+    cccx_requirement_from_decision(cccx_evaluate_action(
+        &action,
+        &session,
+        &CccxPolicySet::default_m4(),
+        classifier,
+    ))
 }
 
 /// Runs the full cccx policy pipeline (circuit breaker + escalate + allowlist)
@@ -568,22 +605,22 @@ fn cccx_full_shell_requirement(
 ///   Plan-mode edit, DontAsk with escalate match)
 /// - `Some(NeedsApproval)` when user approval is required
 /// - `None` when no cccx policy applies (allowlist match, or no rule matched)
+#[cfg(test)]
 pub(crate) fn cccx_edit_requirement_with_changed_lines(
     file_paths: &[String],
     mode: CccxMainMode,
     changed_lines: usize,
 ) -> Option<ExecApprovalRequirement> {
-    let paths_summary = file_paths.join(", ");
-    let action = CccxNormalizedAction {
-        action_type: CccxActionType::Edit,
-        summary: format!("edit files: {paths_summary}"),
-        command: None,
-        target_paths: file_paths.to_vec(),
-        tool_name: Some("apply_patch".to_string()),
-        task_id: "codex-core-edit".to_string(),
-        changed_files: file_paths.len(),
-        changed_lines,
-    };
+    cccx_edit_requirement_with_classifier(file_paths, mode, changed_lines, None)
+}
+
+fn cccx_edit_requirement_with_classifier(
+    file_paths: &[String],
+    mode: CccxMainMode,
+    changed_lines: usize,
+    classifier: Option<CccxPolicyClassifierOutcome>,
+) -> Option<ExecApprovalRequirement> {
+    let action = cccx_edit_action(file_paths, changed_lines);
     let session = CccxPolicySession {
         mode,
         thresholds: CccxModeThresholds {
@@ -593,31 +630,12 @@ pub(crate) fn cccx_edit_requirement_with_changed_lines(
         explicit_allow_rules: Vec::new(),
     };
 
-    match cccx_evaluate_action(&action, &session, &CccxPolicySet::default_m4(), None) {
-        CccxPolicyDecision::Deny {
-            reason,
-            bypassable: false,
-            ..
-        } => Some(ExecApprovalRequirement::Forbidden { reason }),
-        CccxPolicyDecision::Deny {
-            reason,
-            bypassable: true,
-            ..
-        } => Some(ExecApprovalRequirement::Forbidden { reason }),
-        CccxPolicyDecision::RequireApproval { reason, .. } => {
-            Some(ExecApprovalRequirement::NeedsApproval {
-                reason: Some(reason),
-                proposed_execpolicy_amendment: None,
-            })
-        }
-        CccxPolicyDecision::RerouteToCx { reason } => {
-            Some(ExecApprovalRequirement::NeedsApproval {
-                reason: Some(format!("{reason} — reroute to CX recommended")),
-                proposed_execpolicy_amendment: None,
-            })
-        }
-        CccxPolicyDecision::Allow { .. } => None,
-    }
+    cccx_requirement_from_decision(cccx_evaluate_action(
+        &action,
+        &session,
+        &CccxPolicySet::default_m4(),
+        classifier,
+    ))
 }
 
 impl ExecPolicyManager {
@@ -631,7 +649,7 @@ impl ExecPolicyManager {
     }
 
     #[cfg(test)]
-    fn with_cccx_auto_classifier_for_test(
+    pub(crate) fn with_cccx_auto_classifier_for_test(
         mut self,
         classifier: Arc<dyn CccxAutoClassifier>,
     ) -> Self {
@@ -650,6 +668,51 @@ impl ExecPolicyManager {
 
     pub(crate) fn current(&self) -> Arc<Policy> {
         self.policy.load_full()
+    }
+
+    async fn cccx_classifier_outcome_for_mode(
+        &self,
+        cccx_mode: &CccxMainMode,
+        action: CccxNormalizedAction,
+    ) -> Option<CccxPolicyClassifierOutcome> {
+        if *cccx_mode != CccxMainMode::Auto {
+            return None;
+        }
+        match self.cccx_auto_classifier.as_ref() {
+            Some(classifier) => match classifier.classify(action).await {
+                CccxClassifierOutcome::Available(outcome) => Some(outcome),
+                CccxClassifierOutcome::Unavailable => {
+                    Some(CccxPolicyClassifierOutcome::Unavailable)
+                }
+            },
+            None => Some(CccxPolicyClassifierOutcome::Unavailable),
+        }
+    }
+
+    pub(crate) async fn create_edit_approval_requirement_for_changed_lines_in_mode(
+        &self,
+        file_paths: &[String],
+        cccx_mode: CccxMainMode,
+        changed_lines: usize,
+    ) -> Option<ExecApprovalRequirement> {
+        let action = cccx_edit_action(file_paths, changed_lines);
+        let classifier = self
+            .cccx_classifier_outcome_for_mode(&cccx_mode, action)
+            .await;
+        cccx_edit_requirement_with_classifier(file_paths, cccx_mode, changed_lines, classifier)
+    }
+
+    pub(crate) async fn create_mcp_approval_requirement_in_mode(
+        &self,
+        server_id: &str,
+        tool_name: &str,
+        cccx_mode: CccxMainMode,
+    ) -> Option<ExecApprovalRequirement> {
+        let action = cccx_mcp_action(server_id, tool_name);
+        let classifier = self
+            .cccx_classifier_outcome_for_mode(&cccx_mode, action)
+            .await;
+        cccx_mcp_requirement_with_classifier(server_id, tool_name, cccx_mode, classifier)
     }
 
     #[cfg(test)]
@@ -680,19 +743,9 @@ impl ExecPolicyManager {
         // Run full cccx policy (escalate + allowlist).
         // The mode is threaded from the session's active cccx mode state.
         // When no session is available, fall back to Default.
-        let classifier = if cccx_mode == CccxMainMode::Auto {
-            match self.cccx_auto_classifier.as_ref() {
-                Some(classifier) => match classifier.classify(cccx_shell_action(command)).await {
-                    CccxClassifierOutcome::Available(outcome) => Some(outcome),
-                    CccxClassifierOutcome::Unavailable => {
-                        Some(CccxPolicyClassifierOutcome::Unavailable)
-                    }
-                },
-                None => Some(CccxPolicyClassifierOutcome::Unavailable),
-            }
-        } else {
-            None
-        };
+        let classifier = self
+            .cccx_classifier_outcome_for_mode(&cccx_mode, cccx_shell_action(command))
+            .await;
         if let Some(requirement) = cccx_full_shell_requirement(command, cccx_mode, classifier) {
             // Forbidden (Plan-mode, DontAsk+escalate): hard-deny immediately.
             // NeedsApproval (escalate in Default/AcceptEdits): bubble
@@ -1920,6 +1973,50 @@ mod cccx_policy_wiring_tests {
         assert!(
             matches!(result, ExecApprovalRequirement::Forbidden { .. }),
             "Circuit breaker must run before classifier and remain non-bypassable. Got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn p3_auto_edit_uses_classifier_allow_outcome() {
+        let manager = ExecPolicyManager::default().with_cccx_auto_classifier_for_test(Arc::new(
+            TestAutoClassifier {
+                outcome: CccxClassifierOutcome::Available(cccx_policy::ClassifierOutcome::Allow),
+            },
+        ));
+
+        let result = manager
+            .create_edit_approval_requirement_for_changed_lines_in_mode(
+                &["src/main.rs".into()],
+                CccxMainMode::Auto,
+                1,
+            )
+            .await;
+
+        assert!(
+            result.is_none(),
+            "Auto edit must honor classifier allow after deterministic gates. Got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn p3_auto_mcp_uses_classifier_allow_outcome() {
+        let manager = ExecPolicyManager::default().with_cccx_auto_classifier_for_test(Arc::new(
+            TestAutoClassifier {
+                outcome: CccxClassifierOutcome::Available(cccx_policy::ClassifierOutcome::Allow),
+            },
+        ));
+
+        let result = manager
+            .create_mcp_approval_requirement_in_mode(
+                "codebase-memory-mcp",
+                "search_graph",
+                CccxMainMode::Auto,
+            )
+            .await;
+
+        assert!(
+            result.is_none(),
+            "Auto MCP must honor classifier allow after deterministic gates. Got: {result:?}"
         );
     }
 

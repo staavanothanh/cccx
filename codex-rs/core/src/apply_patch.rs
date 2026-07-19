@@ -1,4 +1,3 @@
-use crate::exec_policy::cccx_edit_requirement_with_changed_lines;
 use crate::exec_policy::cccx_subagent_edit_requirement;
 use crate::function_tool::FunctionCallError;
 use crate::safety::SafetyCheck;
@@ -56,11 +55,15 @@ pub(crate) async fn apply_patch(
     {
         cccx_subagent_edit_requirement(&work_spec, "apply_patch", cccx_target_paths)
     } else {
-        cccx_edit_requirement_with_changed_lines(
-            &file_paths,
-            turn_context.cccx_main_mode(),
-            cumulative_changed_lines,
-        )
+        session
+            .services
+            .exec_policy
+            .create_edit_approval_requirement_for_changed_lines_in_mode(
+                &file_paths,
+                turn_context.cccx_main_mode(),
+                cumulative_changed_lines,
+            )
+            .await
     };
 
     if let Some(requirement) = requirement {
