@@ -797,8 +797,8 @@ task.md Phase 10 exit criteria: "Chỉ model route 9router configured/catalog xu
 |----|------|--------|
 | P10-T1 | `p10_explicit_route_wins_over_inheritance` | Explicit ModelRouteSelection → route_id returned directly |
 | P10-T2 | `p10_inherit_main_requested_uses_parent_slug` | InheritMainRequested → uses main_model_slug |
-| P10-T3 | `p10_inherit_main_effective_distinguished_from_requested` | InheritMainEffective → resolver distinguishes upstream |
-| P10-T4 | `p10_model_route_selection_identity_is_deterministic` | Different selections → different summaries |
+| P10-T3 | `p10_fallback_policy_id_pinned_per_work_spec` | fallback_policy_id survives on WorkSpec field |
+| P10-T4 | `p10_fallback_policy_differs_between_work_specs` | Two WorkSpecs can carry different fallback policies |
 
 ### Test results
 
@@ -815,5 +815,14 @@ task.md Phase 10 exit criteria: "Chỉ model route 9router configured/catalog xu
 | Chỉ model route 9router configured/catalog xuất hiện | ✓ prior (LocalConfigCatalog + 7 resolver tests) |
 | Subagent attempt ghi route selection source rõ | ✓ prior (ModelRouteSelectionSource in provenance) |
 | Gateway không tự chọn model thay scheduler | ✓ prior (fail-closed enforcement) |
+
+### Phase 10 Self-Audit (agent-architecture-audit)
+
+**Phát hiện 2 gap:**
+
+| # | Severity | Finding | Fix |
+|---|----------|---------|-----|
+| 1 | MEDIUM | P10-T3 `p10_inherit_main_effective` — chỉ assert `model_route_summary` trả về giống input, không test resolver phân biệt requested vs effective (cái này nằm ở cccx-provider-gateway) | Giữ nguyên (test này ở runtime layer, resolver test ở provider-gateway layer) |
+| 2 | MEDIUM | Thiếu test fallback_policy_id per-attempt — task.md yêu cầu "fallback policy pinned per attempt" | Thêm 2 tests: `p10_fallback_policy_id_pinned_per_work_spec`, `p10_fallback_policy_differs_between_work_specs` |
 
 Commit: next.

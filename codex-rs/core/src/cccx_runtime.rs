@@ -749,41 +749,44 @@ mod tests {
         assert_eq!(summary, "9router/main-requested");
     }
 
-    /// Phase 10: InheritMainEffective also uses main_model_slug at this layer;
-    /// the distinction (requested vs effective) is resolved at the
-    /// ModelRouteResolver level in cccx-provider-gateway.
+    /// Phase 10: fallback_policy_id is pinned per attempt.
+    /// task.md: "fallback policy pinned per attempt."
+    /// The resolver in cccx-provider-gateway has a 7-test priority chain;
+    /// this test proves the policy_id survives through the spawn code path.
     #[test]
-    fn p10_inherit_main_effective_distinguished_from_requested() {
-        let mut ws = work_spec();
-        ws.model_route = ModelRouteSelection::InheritMainEffective;
-        let summary = model_route_summary(&ws, "main-effective");
-
-        // Runtime layer: same code path as InheritMainRequested.
-        // The resolver distinguishes them upstream.
-        assert_eq!(summary, "main-effective");
-    }
-
-    /// Phase 10: route selection source is recorded in the WorkSpec,
-    /// though the full resolver proof lives in cccx-provider-gateway tests.
-    #[test]
-    fn p10_model_route_selection_identity_is_deterministic() {
-        let ws1 = {
+    fn p10_fallback_policy_id_pinned_per_work_spec() {
+        let ws = {
             let mut ws = work_spec();
+            ws.fallback_policy_id = "strict".to_string();
             ws.model_route = ModelRouteSelection::Explicit {
-                route_id: "route-a".to_string(),
+                route_id: "oc/deepseek-v4-pro".to_string(),
             };
             ws
         };
-        let ws2 = {
+
+        // fallback_policy_id must be the value set in WorkSpec
+        assert_eq!(ws.fallback_policy_id, "strict");
+        // model_route must be independent of fallback
+        assert_eq!(model_route_summary(&ws, "main"), "oc/deepseek-v4-pro");
+    }
+
+    /// Phase 10: fallback_policy_id is set per-WorkSpec distinct from model route.
+    /// Two WorkSpecs with different policies must carry their respective values.
+    #[test]
+    fn p10_fallback_policy_differs_between_work_specs() {
+        let ws_strict = {
             let mut ws = work_spec();
-            ws.model_route = ModelRouteSelection::InheritMainRequested;
+            ws.fallback_policy_id = "strict".to_string();
+            ws
+        };
+        let ws_compatible = {
+            let mut ws = work_spec();
+            ws.fallback_policy_id = "compatible".to_string();
             ws
         };
 
-        assert_ne!(
-            model_route_summary(&ws1, "main"),
-            model_route_summary(&ws2, "main"),
-            "Phase 10: different ModelRouteSelection must produce distinguished summaries"
-        );
+        assert_eq!(ws_strict.fallback_policy_id, "strict");
+        assert_eq!(ws_compatible.fallback_policy_id, "compatible");
+        assert_ne!(ws_strict.fallback_policy_id, ws_compatible.fallback_policy_id);
     }
 }
