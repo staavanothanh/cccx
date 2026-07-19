@@ -9,10 +9,14 @@ pub mod plugin;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use thiserror::Error;
 
 pub const CCCX_PROTOCOL_SCHEMA_VERSION: &str = "cccx.protocol.v1";
+pub const CCCX_WORK_SPEC_SCHEMA_VERSION: &str = "cccx.work_spec.v1";
+pub const CCCX_ARTIFACT_SCHEMA_VERSION: &str = "cccx.artifact.v1";
+pub const CCCX_VERIFICATION_RECORD_SCHEMA_VERSION: &str = "cccx.verification_record.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -24,7 +28,8 @@ pub enum HarnessKind {
 /// Who is making the current LLM/spawn call.
 ///
 /// architecture.md: "Main CC là scheduler duy nhất. CX/CC subagent không tự spawn."
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ActorIdentity {
     /// The root Main CC agent — has full scheduling authority.
     MainCc,
@@ -146,12 +151,93 @@ pub struct ActionClass {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RevisionRef {
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_head: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_tree_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RuntimeIdentity {
+    pub logical_session_id: String,
+    pub worker_incarnation_id: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolGrant {
+    pub stable_id: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstraintKind {
+    NoEdit,
+    PathAllow,
+    PathDeny,
+    ActionClass,
+    RiskThreshold,
+    VerificationBoundary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkConstraint {
+    pub id: String,
+    pub kind: ConstraintKind,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CommandSpec {
+    pub argv: Vec<String>,
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VerificationSpec {
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<CommandSpec>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub protected_digests: BTreeMap<String, String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_policy_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ExpectedArtifact {
+    pub required_status: ArtifactStatus,
+    #[serde(default)]
+    pub required_evidence_kinds: Vec<EvidenceKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkSpec {
     pub schema_version: String,
     pub work_spec_id: String,
     pub task_id: String,
+    pub attempt_id: String,
+    pub created_at: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    pub base_revision: RevisionRef,
     pub harness: HarnessKind,
     pub role: WorkRole,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_identity: Option<RuntimeIdentity>,
     pub objective: String,
     pub scope: WorkScope,
     #[serde(default)]
@@ -160,12 +246,16 @@ pub struct WorkSpec {
     pub forbidden_tools: BTreeSet<String>,
     #[serde(default)]
     pub allowed_mcp_tools: BTreeSet<String>,
+    #[serde(default)]
+    pub tool_grants: Vec<ToolGrant>,
     pub permission_policy: PermissionPolicy,
     pub model_route: ModelRouteSelection,
     pub fallback_policy_id: String,
     pub fork_policy: ForkPolicy,
     #[serde(default)]
     pub enforced_constraints: Vec<String>,
+    #[serde(default)]
+    pub typed_constraints: Vec<WorkConstraint>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub risk_threshold: Option<RiskThreshold>,
@@ -175,23 +265,43 @@ pub struct WorkSpec {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<ApprovalPolicyKind>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_spec: Option<VerificationSpec>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_artifact: Option<ExpectedArtifact>,
 }
 
 impl WorkSpec {
     pub fn validate(&self) -> Result<(), ProtocolError> {
-        require_version(&self.schema_version)?;
+        require_exact_version(
+            "work_spec",
+            &self.schema_version,
+            CCCX_WORK_SPEC_SCHEMA_VERSION,
+        )?;
         require_non_empty("work_spec_id", &self.work_spec_id)?;
         require_non_empty("task_id", &self.task_id)?;
+        require_non_empty("attempt_id", &self.attempt_id)?;
+        require_non_empty("created_at", &self.created_at)?;
         require_non_empty("objective", &self.objective)?;
         require_non_empty("fallback_policy_id", &self.fallback_policy_id)?;
+        validate_role_for_harness(&self.harness, &self.role)?;
+        if let Some(identity) = &self.runtime_identity {
+            identity.validate()?;
+        }
         if self.scope.canonical_paths.is_empty() {
             return Err(ProtocolError::MissingField("scope.canonical_paths"));
         }
-        if self.allowed_tools.is_empty() && self.allowed_mcp_tools.is_empty() {
+        if self.allowed_tools.is_empty()
+            && self.allowed_mcp_tools.is_empty()
+            && self.tool_grants.is_empty()
+        {
             return Err(ProtocolError::MissingField(
-                "allowed_tools or allowed_mcp_tools",
+                "allowed_tools, allowed_mcp_tools, or tool_grants",
             ));
         }
+        validate_tool_grants(&self.tool_grants)?;
         if let Some(tool) = self
             .allowed_tools
             .intersection(&self.forbidden_tools)
@@ -208,6 +318,12 @@ impl WorkSpec {
         if let Some(route_id) = self.model_route.explicit_route() {
             require_non_empty("model_route.route_id", route_id)?;
         }
+        for constraint in &self.typed_constraints {
+            constraint.validate()?;
+        }
+        if let Some(spec) = &self.verification_spec {
+            spec.validate()?;
+        }
         Ok(())
     }
 }
@@ -223,23 +339,49 @@ pub struct Evidence {
 pub struct ArtifactProvenance {
     pub producer_harness: HarnessKind,
     pub producer_role: WorkRole,
+    pub provider_gateway_request_id: String,
+    pub model_profile_id: String,
+    pub capability_profile_id: String,
+    pub fallback_policy_id: String,
     pub requested_route_id: String,
     pub effective_route_id: String,
     pub gateway_request_id: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_model: Option<String>,
+    #[serde(default)]
+    pub retry_count: usize,
+    #[serde(default)]
+    pub fallback_chain: Vec<String>,
     pub input_digest: String,
     pub output_digest: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_sequence_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Artifact {
     pub schema_version: String,
     pub artifact_id: String,
+    pub task_id: String,
     pub work_spec_id: String,
     pub attempt_id: String,
     pub status: ArtifactStatus,
     pub summary: String,
     #[serde(default)]
     pub changed_paths: BTreeSet<String>,
+    #[serde(default)]
+    pub changed_files: BTreeSet<String>,
+    #[serde(default)]
+    pub tests_run: Vec<TestRunRecord>,
+    #[serde(default)]
+    pub residual_risks: Vec<String>,
+    #[serde(default)]
+    pub follow_up: Vec<String>,
     #[serde(default)]
     pub evidence: Vec<Evidence>,
     pub provenance: Option<ArtifactProvenance>,
@@ -248,8 +390,13 @@ pub struct Artifact {
 
 impl Artifact {
     pub fn validate(&self) -> Result<(), ProtocolError> {
-        require_version(&self.schema_version)?;
+        require_exact_version(
+            "artifact",
+            &self.schema_version,
+            CCCX_ARTIFACT_SCHEMA_VERSION,
+        )?;
         require_non_empty("artifact_id", &self.artifact_id)?;
+        require_non_empty("task_id", &self.task_id)?;
         require_non_empty("work_spec_id", &self.work_spec_id)?;
         require_non_empty("attempt_id", &self.attempt_id)?;
         require_non_empty("summary", &self.summary)?;
@@ -272,6 +419,10 @@ impl Artifact {
             evidence.validate()?;
         }
 
+        for test_run in &self.tests_run {
+            test_run.validate()?;
+        }
+
         if let Some(verification) = &self.verification {
             verification.validate()?;
         }
@@ -289,6 +440,17 @@ impl Evidence {
 
 impl ArtifactProvenance {
     pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_role_for_harness(&self.producer_harness, &self.producer_role)?;
+        require_non_empty(
+            "provenance.provider_gateway_request_id",
+            &self.provider_gateway_request_id,
+        )?;
+        require_non_empty("provenance.model_profile_id", &self.model_profile_id)?;
+        require_non_empty(
+            "provenance.capability_profile_id",
+            &self.capability_profile_id,
+        )?;
+        require_non_empty("provenance.fallback_policy_id", &self.fallback_policy_id)?;
         require_non_empty("provenance.requested_route_id", &self.requested_route_id)?;
         require_non_empty("provenance.effective_route_id", &self.effective_route_id)?;
         require_non_empty("provenance.input_digest", &self.input_digest)?;
@@ -323,9 +485,15 @@ impl ArtifactProvenance {
     /// Separate from verify_placeholders() — this is a stricter cryptographic
     /// audit that runtime code can call explicitly.
     pub fn verify_digest_format(&self) -> Result<(), ProtocolError> {
-        for (name, value) in [("input_digest", &self.input_digest), ("output_digest", &self.output_digest)] {
+        for (name, value) in [
+            ("input_digest", &self.input_digest),
+            ("output_digest", &self.output_digest),
+        ] {
             let hex = value.strip_prefix("sha256:").ok_or_else(|| {
-                ProtocolError::PlaceholderProvenance(name, format!("missing sha256: prefix in '{value}'"))
+                ProtocolError::PlaceholderProvenance(
+                    name,
+                    format!("missing sha256: prefix in '{value}'"),
+                )
             })?;
             if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
                 return Err(ProtocolError::PlaceholderProvenance(
@@ -340,19 +508,79 @@ impl ArtifactProvenance {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VerificationRecord {
+    pub schema_version: String,
+    pub task_id: String,
+    pub attempt_id: String,
     pub verifier: String,
+    pub policy_id: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<CommandExecution>,
+    pub artifact_digest: String,
+    pub result_revision: RevisionRef,
     pub passed: bool,
     pub checked_at: String,
     pub evidence_digest: String,
     #[serde(default)]
     pub findings: Vec<String>,
+    pub reason: String,
 }
 
 impl VerificationRecord {
     pub fn validate(&self) -> Result<(), ProtocolError> {
+        require_exact_version(
+            "verification_record",
+            &self.schema_version,
+            CCCX_VERIFICATION_RECORD_SCHEMA_VERSION,
+        )?;
+        require_non_empty("verification.task_id", &self.task_id)?;
+        require_non_empty("verification.attempt_id", &self.attempt_id)?;
         require_non_empty("verification.verifier", &self.verifier)?;
+        require_non_empty("verification.policy_id", &self.policy_id)?;
         require_non_empty("verification.checked_at", &self.checked_at)?;
-        require_non_empty("verification.evidence_digest", &self.evidence_digest)
+        require_non_empty("verification.evidence_digest", &self.evidence_digest)?;
+        require_non_empty("verification.artifact_digest", &self.artifact_digest)?;
+        require_non_empty("verification.reason", &self.reason)?;
+        if let Some(command) = &self.command {
+            command.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TestRunRecord {
+    pub command: String,
+    pub exit_code: i32,
+    pub log_digest: String,
+}
+
+impl TestRunRecord {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        require_non_empty("test_run.command", &self.command)?;
+        require_non_empty("test_run.log_digest", &self.log_digest)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CommandExecution {
+    pub argv: Vec<String>,
+    pub cwd: String,
+    pub exit_code: i32,
+    pub started_at: String,
+    pub finished_at: String,
+    pub log_digest: String,
+}
+
+impl CommandExecution {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if self.argv.is_empty() {
+            return Err(ProtocolError::MissingField("verification.command.argv"));
+        }
+        require_non_empty("verification.command.cwd", &self.cwd)?;
+        require_non_empty("verification.command.started_at", &self.started_at)?;
+        require_non_empty("verification.command.finished_at", &self.finished_at)?;
+        require_non_empty("verification.command.log_digest", &self.log_digest)
     }
 }
 
@@ -485,13 +713,24 @@ pub enum ProtocolError {
     FullHistoryCxWorker,
     #[error("model route `{0}` is not allowed by the parent capability set")]
     ModelRouteNotAllowed(String),
+    #[error("role `{role:?}` is not valid for harness `{harness:?}`")]
+    RoleHarnessMismatch {
+        harness: HarnessKind,
+        role: WorkRole,
+    },
+    #[error("duplicate tool grant stable id `{0}`")]
+    DuplicateToolGrant(String),
     /// Phase 5: provenance cannot contain placeholder digests.
     #[error("provenance field `{0}` contains placeholder value `{1}`")]
     PlaceholderProvenance(&'static str, String),
 }
 
-fn require_version(version: &str) -> Result<(), ProtocolError> {
-    if version == CCCX_PROTOCOL_SCHEMA_VERSION {
+fn require_exact_version(
+    _schema_name: &'static str,
+    version: &str,
+    expected: &'static str,
+) -> Result<(), ProtocolError> {
+    if version == expected {
         Ok(())
     } else {
         Err(ProtocolError::UnsupportedSchemaVersion(version.to_string()))
@@ -517,6 +756,86 @@ fn path_within(path: &str, root: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+fn validate_role_for_harness(harness: &HarnessKind, role: &WorkRole) -> Result<(), ProtocolError> {
+    let valid = match harness {
+        HarnessKind::Cc => matches!(
+            role,
+            WorkRole::Researcher | WorkRole::Architect | WorkRole::Planner | WorkRole::Auditor
+        ),
+        HarnessKind::Cx => matches!(
+            role,
+            WorkRole::Implementer | WorkRole::Tester | WorkRole::Auditor | WorkRole::Resolver
+        ),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(ProtocolError::RoleHarnessMismatch {
+            harness: harness.clone(),
+            role: role.clone(),
+        })
+    }
+}
+
+fn validate_tool_grants(grants: &[ToolGrant]) -> Result<(), ProtocolError> {
+    let mut seen = BTreeSet::new();
+    for grant in grants {
+        require_non_empty("tool_grants.stable_id", &grant.stable_id)?;
+        if !seen.insert(grant.stable_id.clone()) {
+            return Err(ProtocolError::DuplicateToolGrant(grant.stable_id.clone()));
+        }
+        if let Some(server_id) = &grant.server_id {
+            require_non_empty("tool_grants.server_id", server_id)?;
+        }
+        if let Some(schema_digest) = &grant.schema_digest {
+            require_non_empty("tool_grants.schema_digest", schema_digest)?;
+        }
+    }
+    Ok(())
+}
+
+impl RuntimeIdentity {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        require_non_empty(
+            "runtime_identity.logical_session_id",
+            &self.logical_session_id,
+        )?;
+        require_non_empty(
+            "runtime_identity.worker_incarnation_id",
+            &self.worker_incarnation_id,
+        )?;
+        require_non_empty("runtime_identity.display_name", &self.display_name)
+    }
+}
+
+impl WorkConstraint {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        require_non_empty("typed_constraints.id", &self.id)?;
+        require_non_empty("typed_constraints.description", &self.description)
+    }
+}
+
+impl VerificationSpec {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if let Some(command) = &self.command {
+            if command.argv.is_empty() {
+                return Err(ProtocolError::MissingField(
+                    "verification_spec.command.argv",
+                ));
+            }
+            require_non_empty("verification_spec.command.cwd", &command.cwd)?;
+        }
+        for (path, digest) in &self.protected_digests {
+            require_non_empty("verification_spec.protected_digests.path", path)?;
+            require_non_empty("verification_spec.protected_digests.digest", digest)?;
+        }
+        if let Some(policy_id) = &self.verification_policy_id {
+            require_non_empty("verification_spec.verification_policy_id", policy_id)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,11 +848,23 @@ mod tests {
 
     fn sample_work_spec() -> WorkSpec {
         WorkSpec {
-            schema_version: CCCX_PROTOCOL_SCHEMA_VERSION.to_string(),
+            schema_version: CCCX_WORK_SPEC_SCHEMA_VERSION.to_string(),
             work_spec_id: "ws-auth-1".to_string(),
             task_id: "T1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            created_at: "2026-07-16T00:00:00Z".to_string(),
+            expires_at: Some("2026-07-16T01:00:00Z".to_string()),
+            base_revision: RevisionRef {
+                git_head: Some("abc123".to_string()),
+                working_tree_digest: Some("sha256:base".to_string()),
+            },
             harness: HarnessKind::Cx,
             role: WorkRole::Implementer,
+            runtime_identity: Some(RuntimeIdentity {
+                logical_session_id: "worker-auth".to_string(),
+                worker_incarnation_id: "worker-auth-1".to_string(),
+                display_name: "a1-auth-fix".to_string(),
+            }),
             objective: "Implement bounded auth fix".to_string(),
             scope: WorkScope {
                 canonical_paths: set(&["D:/repo/src/auth"]),
@@ -542,6 +873,11 @@ mod tests {
             allowed_tools: set(&["apply_patch"]),
             forbidden_tools: set(&["shell"]),
             allowed_mcp_tools: set(&["codebase.search_graph"]),
+            tool_grants: vec![ToolGrant {
+                stable_id: "apply_patch".to_string(),
+                server_id: None,
+                schema_digest: Some("sha256:tool".to_string()),
+            }],
             permission_policy: PermissionPolicy::Ask,
             model_route: ModelRouteSelection::Explicit {
                 route_id: "9router/anthropic/claude-sonnet-4.5".to_string(),
@@ -549,21 +885,50 @@ mod tests {
             fallback_policy_id: "compatible".to_string(),
             fork_policy: ForkPolicy::WorkSpecOnly,
             enforced_constraints: vec!["no-out-of-scope-edits".to_string()],
+            typed_constraints: vec![WorkConstraint {
+                id: "no-out-of-scope-edits".to_string(),
+                kind: ConstraintKind::PathAllow,
+                description: "Only edit paths in scope".to_string(),
+            }],
             risk_threshold: None,
             action_classes: None,
             approval_policy: None,
+            verification_spec: Some(VerificationSpec {
+                command: Some(CommandSpec {
+                    argv: vec!["cargo".to_string(), "test".to_string()],
+                    cwd: "D:/repo".to_string(),
+                }),
+                protected_digests: BTreeMap::from([(
+                    "D:/repo/src/auth/generated".to_string(),
+                    "sha256:protected".to_string(),
+                )]),
+                verification_policy_id: Some("focused-tests".to_string()),
+            }),
+            expected_artifact: Some(ExpectedArtifact {
+                required_status: ArtifactStatus::Success,
+                required_evidence_kinds: vec![EvidenceKind::TestLog],
+            }),
         }
     }
 
     fn sample_artifact() -> Artifact {
         Artifact {
-            schema_version: CCCX_PROTOCOL_SCHEMA_VERSION.to_string(),
+            schema_version: CCCX_ARTIFACT_SCHEMA_VERSION.to_string(),
             artifact_id: "art-auth-1".to_string(),
+            task_id: "T1".to_string(),
             work_spec_id: "ws-auth-1".to_string(),
             attempt_id: "attempt-1".to_string(),
             status: ArtifactStatus::Success,
             summary: "Applied auth fix and ran focused test.".to_string(),
             changed_paths: set(&["D:/repo/src/auth/session.rs"]),
+            changed_files: set(&["D:/repo/src/auth/session.rs"]),
+            tests_run: vec![TestRunRecord {
+                command: "cargo test auth_session_tests".to_string(),
+                exit_code: 0,
+                log_digest: "sha256:test-log".to_string(),
+            }],
+            residual_risks: Vec::new(),
+            follow_up: Vec::new(),
             evidence: vec![Evidence {
                 kind: EvidenceKind::TestLog,
                 summary: "auth_session_tests passed".to_string(),
@@ -572,18 +937,45 @@ mod tests {
             provenance: Some(ArtifactProvenance {
                 producer_harness: HarnessKind::Cx,
                 producer_role: WorkRole::Implementer,
+                provider_gateway_request_id: "gw-1".to_string(),
+                model_profile_id: "profile-claude-sonnet".to_string(),
+                capability_profile_id: "coding-tools-v1".to_string(),
+                fallback_policy_id: "compatible".to_string(),
                 requested_route_id: "9router/anthropic/claude-sonnet-4.5".to_string(),
                 effective_route_id: "9router/anthropic/claude-sonnet-4.5".to_string(),
                 gateway_request_id: Some("gw-1".to_string()),
+                requested_model: Some("claude-sonnet-4.5".to_string()),
+                effective_model: Some("claude-sonnet-4.5".to_string()),
+                retry_count: 0,
+                fallback_chain: Vec::new(),
                 input_digest: "sha256:input".to_string(),
                 output_digest: "sha256:output".to_string(),
+                tool_call_sequence_digest: Some("sha256:tool-seq".to_string()),
             }),
             verification: Some(VerificationRecord {
+                schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
+                task_id: "T1".to_string(),
+                attempt_id: "attempt-1".to_string(),
                 verifier: "cccx:self".to_string(),
+                policy_id: "focused-tests".to_string(),
+                command: Some(CommandExecution {
+                    argv: vec!["cargo".to_string(), "test".to_string()],
+                    cwd: "D:/repo".to_string(),
+                    exit_code: 0,
+                    started_at: "2026-07-16T00:00:00Z".to_string(),
+                    finished_at: "2026-07-16T00:01:00Z".to_string(),
+                    log_digest: "sha256:test-log".to_string(),
+                }),
+                artifact_digest: "sha256:artifact".to_string(),
+                result_revision: RevisionRef {
+                    git_head: Some("abc124".to_string()),
+                    working_tree_digest: Some("sha256:result".to_string()),
+                },
                 passed: true,
                 checked_at: "2026-07-16T00:00:00Z".to_string(),
                 evidence_digest: "sha256:test-log".to_string(),
                 findings: Vec::new(),
+                reason: "focused tests passed".to_string(),
             }),
         }
     }
@@ -608,11 +1000,23 @@ mod tests {
         assert_eq!(
             value,
             json!({
-                "schema_version": "cccx.protocol.v1",
+                "schema_version": "cccx.work_spec.v1",
                 "work_spec_id": "ws-auth-1",
                 "task_id": "T1",
+                "attempt_id": "attempt-1",
+                "created_at": "2026-07-16T00:00:00Z",
+                "expires_at": "2026-07-16T01:00:00Z",
+                "base_revision": {
+                    "git_head": "abc123",
+                    "working_tree_digest": "sha256:base"
+                },
                 "harness": "cx",
                 "role": "implementer",
+                "runtime_identity": {
+                    "logical_session_id": "worker-auth",
+                    "worker_incarnation_id": "worker-auth-1",
+                    "display_name": "a1-auth-fix"
+                },
                 "objective": "Implement bounded auth fix",
                 "scope": {
                     "canonical_paths": ["D:/repo/src/auth"],
@@ -621,6 +1025,10 @@ mod tests {
                 "allowed_tools": ["apply_patch"],
                 "forbidden_tools": ["shell"],
                 "allowed_mcp_tools": ["codebase.search_graph"],
+                "tool_grants": [{
+                    "stable_id": "apply_patch",
+                    "schema_digest": "sha256:tool"
+                }],
                 "permission_policy": "ask",
                 "model_route": {
                     "type": "explicit",
@@ -628,13 +1036,92 @@ mod tests {
                 },
                 "fallback_policy_id": "compatible",
                 "fork_policy": "work_spec_only",
-                "enforced_constraints": ["no-out-of-scope-edits"]
+                "enforced_constraints": ["no-out-of-scope-edits"],
+                "typed_constraints": [{
+                    "id": "no-out-of-scope-edits",
+                    "kind": "path_allow",
+                    "description": "Only edit paths in scope"
+                }],
+                "verification_spec": {
+                    "command": {
+                        "argv": ["cargo", "test"],
+                        "cwd": "D:/repo"
+                    },
+                    "protected_digests": {
+                        "D:/repo/src/auth/generated": "sha256:protected"
+                    },
+                    "verification_policy_id": "focused-tests"
+                },
+                "expected_artifact": {
+                    "required_status": "success",
+                    "required_evidence_kinds": ["test_log"]
+                }
             })
         );
 
         let decoded: WorkSpec = serde_json::from_value(value).expect("deserialize workspec");
         assert_eq!(decoded, work_spec);
         decoded.validate().expect("valid workspec");
+    }
+
+    #[test]
+    fn phase1_workspec_uses_dedicated_schema_version() {
+        let mut work_spec = sample_work_spec();
+        work_spec.schema_version = CCCX_PROTOCOL_SCHEMA_VERSION.to_string();
+
+        assert_eq!(
+            work_spec.validate(),
+            Err(ProtocolError::UnsupportedSchemaVersion(
+                CCCX_PROTOCOL_SCHEMA_VERSION.to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn phase1_rejects_role_harness_mismatch() {
+        let mut work_spec = sample_work_spec();
+        work_spec.harness = HarnessKind::Cc;
+        work_spec.role = WorkRole::Implementer;
+
+        assert_eq!(
+            work_spec.validate(),
+            Err(ProtocolError::RoleHarnessMismatch {
+                harness: HarnessKind::Cc,
+                role: WorkRole::Implementer,
+            })
+        );
+    }
+
+    #[test]
+    fn phase1_rejects_duplicate_tool_grant_stable_id() {
+        let mut work_spec = sample_work_spec();
+        work_spec.tool_grants.push(ToolGrant {
+            stable_id: "apply_patch".to_string(),
+            server_id: Some("duplicate".to_string()),
+            schema_digest: Some("sha256:other".to_string()),
+        });
+
+        assert_eq!(
+            work_spec.validate(),
+            Err(ProtocolError::DuplicateToolGrant("apply_patch".to_string()))
+        );
+    }
+
+    #[test]
+    fn phase1_runtime_identity_requires_stable_names() {
+        let mut work_spec = sample_work_spec();
+        work_spec.runtime_identity = Some(RuntimeIdentity {
+            logical_session_id: "worker-auth".to_string(),
+            worker_incarnation_id: "".to_string(),
+            display_name: "a1-auth-fix".to_string(),
+        });
+
+        assert_eq!(
+            work_spec.validate(),
+            Err(ProtocolError::MissingField(
+                "runtime_identity.worker_incarnation_id"
+            ))
+        );
     }
 
     #[test]
@@ -666,6 +1153,29 @@ mod tests {
         assert_eq!(
             decoded.verification.as_ref().map(|record| record.passed),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn phase1_artifact_uses_dedicated_schema_version_and_validates_producer_role() {
+        let mut artifact = sample_artifact();
+        artifact.schema_version = CCCX_PROTOCOL_SCHEMA_VERSION.to_string();
+        assert_eq!(
+            artifact.validate(),
+            Err(ProtocolError::UnsupportedSchemaVersion(
+                CCCX_PROTOCOL_SCHEMA_VERSION.to_string()
+            ))
+        );
+
+        let mut artifact = sample_artifact();
+        artifact.provenance.as_mut().unwrap().producer_harness = HarnessKind::Cc;
+        artifact.provenance.as_mut().unwrap().producer_role = WorkRole::Implementer;
+        assert_eq!(
+            artifact.validate(),
+            Err(ProtocolError::RoleHarnessMismatch {
+                harness: HarnessKind::Cc,
+                role: WorkRole::Implementer,
+            })
         );
     }
 

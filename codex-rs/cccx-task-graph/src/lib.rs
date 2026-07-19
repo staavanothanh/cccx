@@ -306,10 +306,12 @@ pub enum TaskGraphError {
 mod tests {
     use super::*;
     use cccx_protocol::ArtifactProvenance;
-    use cccx_protocol::CCCX_PROTOCOL_SCHEMA_VERSION;
+    use cccx_protocol::CCCX_ARTIFACT_SCHEMA_VERSION;
+    use cccx_protocol::CCCX_VERIFICATION_RECORD_SCHEMA_VERSION;
     use cccx_protocol::Evidence;
     use cccx_protocol::EvidenceKind;
     use cccx_protocol::HarnessKind;
+    use cccx_protocol::RevisionRef;
     use cccx_protocol::WorkRole;
     use pretty_assertions::assert_eq;
 
@@ -347,13 +349,18 @@ mod tests {
 
     fn success_artifact() -> Artifact {
         Artifact {
-            schema_version: CCCX_PROTOCOL_SCHEMA_VERSION.to_string(),
+            schema_version: CCCX_ARTIFACT_SCHEMA_VERSION.to_string(),
             artifact_id: "artifact-1".to_string(),
+            task_id: "T1".to_string(),
             work_spec_id: "ws-1".to_string(),
             attempt_id: "attempt-1".to_string(),
             status: ArtifactStatus::Success,
             summary: "claimed done".to_string(),
             changed_paths: set(&["codex-rs/cccx-task-graph/src/lib.rs"]),
+            changed_files: set(&["codex-rs/cccx-task-graph/src/lib.rs"]),
+            tests_run: Vec::new(),
+            residual_risks: Vec::new(),
+            follow_up: Vec::new(),
             evidence: vec![Evidence {
                 kind: EvidenceKind::TestLog,
                 summary: "test log".to_string(),
@@ -362,11 +369,20 @@ mod tests {
             provenance: Some(ArtifactProvenance {
                 producer_harness: HarnessKind::Cx,
                 producer_role: WorkRole::Implementer,
+                provider_gateway_request_id: "gw-1".to_string(),
+                model_profile_id: "9router/main".to_string(),
+                capability_profile_id: "coding-tools-v1".to_string(),
+                fallback_policy_id: "strict".to_string(),
                 requested_route_id: "9router/main".to_string(),
                 effective_route_id: "9router/main".to_string(),
                 gateway_request_id: Some("gw-1".to_string()),
+                requested_model: Some("9router/main".to_string()),
+                effective_model: Some("9router/main".to_string()),
+                retry_count: 0,
+                fallback_chain: Vec::new(),
                 input_digest: "sha256:input".to_string(),
                 output_digest: "sha256:output".to_string(),
+                tool_call_sequence_digest: None,
             }),
             verification: None,
         }
@@ -374,11 +390,22 @@ mod tests {
 
     fn passed_verification() -> VerificationRecord {
         VerificationRecord {
+            schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
+            task_id: "T1".to_string(),
+            attempt_id: "attempt-1".to_string(),
             verifier: "cccx:self".to_string(),
+            policy_id: "task-graph-lifecycle".to_string(),
+            command: None,
+            artifact_digest: "sha256:artifact".to_string(),
+            result_revision: RevisionRef {
+                git_head: None,
+                working_tree_digest: Some("sha256:result".to_string()),
+            },
             passed: true,
             checked_at: "2026-07-16T00:00:00Z".to_string(),
             evidence_digest: "sha256:test-log".to_string(),
             findings: Vec::new(),
+            reason: "verification passed".to_string(),
         }
     }
 

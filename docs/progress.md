@@ -998,6 +998,56 @@ Commits: next.
 
 ---
 
+
+## Phase 13 — Cross-crate E2E proving suite (2026-07-19)
+
+### Context
+
+task.md Phase 13 requires proving "các feature chính chạy cùng nhau trong
+runtime, không chỉ unit test từng crate." Phase 10 covered task-graph lifecycle
+(5 tests) and headless stream (6 tests). Gap: no single test proving the
+full WorkSpec→CX→Artifact→VerificationRecord→StopGuard cross-crate chain.
+
+### E2E Scenario → Test mapping
+
+| # | Scenario | Proof | Crate |
+|---|----------|-------|-------|
+| 1 | Startup: CCCX_HOME, 9router, MCP defaults | MCP auto-merge (5), provider gateway (21) | Phase 1,7 |
+| 2 | Mode gate: Plan deny, AcceptEdits allow+ask, Bypass+sandbox | cccx-policy (11), exec_policy (6) | Phase 2 |
+| 3 | Spawn CX: WorkSpec → projection → Artifact → verified → stop | **P13-T1 (new)** | Phase 13 |
+| 4 | Permission queue: 2 requests, active+queued, digest match | queue bridge (4) | Phase 7 |
+| 5 | 9router stream: mock endpoint, DONE, tool mapping | provider-gateway (15+), chat-completions | Phase 1,10 |
+| 6 | Headless: JSONL, terminal last, permission denied | headless e2e (6), exec wiring (7) | Phase 10,11 |
+
+### RED tests added (codex-core cccx_runtime)
+
+| ID | Test | Proves |
+|----|------|--------|
+| P13-T1 | `p13_cross_crate_spawn_cx_full_chain` | WorkSpec→projection→register→complete(exit_code+digest)→verified_at+can_stop (6-step chain, crosses protocol+task-graph+runtime) |
+| P13-T2 | `p13_cross_crate_regression_chain_breaks_without_verification` | Artifact without VerificationRecord → StopGuard blocks |
+| P13-T3 | `p13_cross_crate_provenance_chain_no_placeholder` | SHA256 digests + verify_placeholders pass cross-crate |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| codex-core cccx_runtime | 18 (15 prior + 3 P13) | ✓ |
+| cccx-task-graph lifecycle | 5 (Phase 10) | ✓ |
+| cccx-headless e2e | 6 (Phase 10) | ✓ |
+| codex-core + codex-tui compile | unchanged | ✓ |
+
+### Exit criteria check
+
+| Criteria | Status |
+|----------|--------|
+| E2E fail nếu bỏ bất kỳ runtime wire quan trọng nào | ✓ P13-T2: chain breaks without VerificationRecord |
+| 9router mock/stub local (no real network) | ✓ All tests use stub/mock provenance |
+| Cross-crate: WorkSpec → projection → task graph → stop guard | ✓ P13-T1: 6-step chain through 3 crates |
+
+Commits: next.
+
+---
+
 ## Phase 0R — Re-baseline sau audit plan mới (2026-07-19)
 
 Context:
@@ -1068,49 +1118,105 @@ The baseline confirms the audit direction in `docs/task.md`:
 
 ---
 
-## Phase 13 — Cross-crate E2E proving suite (2026-07-19)
+## Phase 1A — Canonical protocol schema contract slice (2026-07-19)
 
-### Context
+Scope:
 
-task.md Phase 13 requires proving "các feature chính chạy cùng nhau trong
-runtime, không chỉ unit test từng crate." Phase 10 covered task-graph lifecycle
-(5 tests) and headless stream (6 tests). Gap: no single test proving the
-full WorkSpec→CX→Artifact→VerificationRecord→StopGuard cross-crate chain.
+- `cccx-protocol/src/lib.rs`
+- Dependent fixtures/call-sites in:
+  - `cccx-policy/src/lib.rs`
+  - `cccx-task-graph/src/lib.rs`
+  - `cccx-task-graph/tests/lifecycle_test.rs`
+  - `core/src/artifact_collector.rs`
+  - `core/src/cccx_runtime.rs`
+  - `core/src/cccx_spawn.rs`
+  - `core/src/goal_evaluator.rs`
 
-### E2E Scenario → Test mapping
+### Implemented
 
-| # | Scenario | Proof | Crate |
-|---|----------|-------|-------|
-| 1 | Startup: CCCX_HOME, 9router, MCP defaults | MCP auto-merge (5), provider gateway (21) | Phase 1,7 |
-| 2 | Mode gate: Plan deny, AcceptEdits allow+ask, Bypass+sandbox | cccx-policy (11), exec_policy (6) | Phase 2 |
-| 3 | Spawn CX: WorkSpec → projection → Artifact → verified → stop | **P13-T1 (new)** | Phase 13 |
-| 4 | Permission queue: 2 requests, active+queued, digest match | queue bridge (4) | Phase 7 |
-| 5 | 9router stream: mock endpoint, DONE, tool mapping | provider-gateway (15+), chat-completions | Phase 1,10 |
-| 6 | Headless: JSONL, terminal last, permission denied | headless e2e (6), exec wiring (7) | Phase 10,11 |
+1. Split schema constants:
+   - `cccx.work_spec.v1`
+   - `cccx.artifact.v1`
+   - `cccx.verification_record.v1`
+   - legacy `cccx.protocol.v1` remains only for backward reference/plugin code.
+2. Extended `WorkSpec` with:
+   - `attempt_id`, `created_at`, optional `expires_at`;
+   - `base_revision`;
+   - optional `runtime_identity` with `logical_session_id`,
+     `worker_incarnation_id`, `display_name`;
+   - typed `tool_grants`;
+   - typed `typed_constraints`;
+   - `verification_spec`;
+   - `expected_artifact`.
+3. Extended `Artifact` with:
+   - `task_id`;
+   - canonical `changed_files`;
+   - `tests_run`;
+   - `residual_risks`;
+   - `follow_up`.
+4. Extended `ArtifactProvenance` with:
+   - `provider_gateway_request_id`;
+   - `model_profile_id`;
+   - `capability_profile_id`;
+   - `fallback_policy_id`;
+   - requested/effective model fields;
+   - retry/fallback chain;
+   - optional `tool_call_sequence_digest`.
+5. Extended `VerificationRecord` with:
+   - dedicated schema version;
+   - `task_id`, `attempt_id`, `policy_id`;
+   - optional command execution evidence;
+   - `artifact_digest`;
+   - `result_revision`;
+   - `reason`.
+6. Added protocol validators for:
+   - dedicated schema versions;
+   - role↔harness mismatch;
+   - runtime identity required fields;
+   - duplicate tool grant stable IDs;
+   - typed constraints;
+   - verification spec command/protected digest fields;
+   - artifact producer role↔harness mismatch.
 
-### RED tests added (codex-core cccx_runtime)
+### Tests
 
-| ID | Test | Proves |
-|----|------|--------|
-| P13-T1 | `p13_cross_crate_spawn_cx_full_chain` | WorkSpec→projection→register→complete(exit_code+digest)→verified_at+can_stop (6-step chain, crosses protocol+task-graph+runtime) |
-| P13-T2 | `p13_cross_crate_regression_chain_breaks_without_verification` | Artifact without VerificationRecord → StopGuard blocks |
-| P13-T3 | `p13_cross_crate_provenance_chain_no_placeholder` | SHA256 digests + verify_placeholders pass cross-crate |
+```powershell
+cargo test -p cccx-protocol
+cargo test -p cccx-task-graph
+cargo test -p cccx-policy
+cargo test -p codex-core cccx_runtime --lib
+cargo test -p codex-core goal_evaluator --lib
+cargo test -p codex-core artifact_collector --lib
+cargo test -p codex-core runtime_harness_prompt_reaches_config --lib
+cargo test -p codex-core runtime_projection_model_route_now_reaches_config_non_async --lib
+```
 
-### Test results
+Results:
 
-| Suite | Tests | Result |
-|-------|-------|--------|
-| codex-core cccx_runtime | 18 (15 prior + 3 P13) | ✓ |
-| cccx-task-graph lifecycle | 5 (Phase 10) | ✓ |
-| cccx-headless e2e | 6 (Phase 10) | ✓ |
-| codex-core + codex-tui compile | unchanged | ✓ |
+- `cccx-protocol`: 29 passed.
+- `cccx-task-graph`: 6 unit + 5 integration passed.
+- `cccx-policy`: 11 passed.
+- `codex-core cccx_runtime`: 18 passed.
+- `codex-core goal_evaluator`: 3 passed.
+- `codex-core artifact_collector`: 2 passed.
+- `cccx_spawn` proof tests above: 2 passed.
 
-### Exit criteria check
+Known warnings kept intentionally as runtime-gap signals:
 
-| Criteria | Status |
-|----------|--------|
-| E2E fail nếu bỏ bất kỳ runtime wire quan trọng nào | ✓ P13-T2: chain breaks without VerificationRecord |
-| 9router mock/stub local (no real network) | ✓ All tests use stub/mock provenance |
-| Cross-crate: WorkSpec → projection → task graph → stop guard | ✓ P13-T1: 6-step chain through 3 crates |
+- `exec_policy.rs:305` unused `mode`: main permission mode is not fully wired.
+- `permission_queue_bridge` dead methods: queue programmatic actions remain
+  insufficiently wired into production lifecycle.
 
-Commits: next.
+### Remaining gaps for Phase 1B/Phase 2
+
+- `Config`, `Session` and `TurnContext` still do not carry typed
+  `ActorIdentity`/`HarnessKind` as the runtime source of truth.
+- Main CC bootstrap still does not install Main CC harness identity at startup.
+- WorkSpec fields now exist, but projection into child runtime Config/tool
+  catalog/sandbox is still Phase 4 work.
+- `ArtifactCollector` temporarily uses `work_spec_id` as `task_id` because the
+  collector constructor does not yet receive Task identity; Phase 5/6 should
+  pass real Task identity from runtime registry.
+- `GoalEvaluator` fills some newly required fields as `unknown` because it still
+  receives only `TaskNode + exit code + log digest`; Phase 5 must pass real
+  attempt/artifact evidence.

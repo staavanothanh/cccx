@@ -828,11 +828,11 @@ impl PermissionRequestQueue {
             .queue_order
             .iter()
             .filter(|id| {
-                self.requests
-                    .get(*id)
-                    .is_some_and(|req| req.risk != PermissionRisk::High
+                self.requests.get(*id).is_some_and(|req| {
+                    req.risk != PermissionRisk::High
                         && req.risk != PermissionRisk::CircuitBreaker
-                        && req.status == PermissionRequestStatus::Queued)
+                        && req.status == PermissionRequestStatus::Queued
+                })
             })
             .cloned()
             .collect();
@@ -955,11 +955,19 @@ mod tests {
 
     fn cx_work_spec() -> cccx_protocol::WorkSpec {
         cccx_protocol::WorkSpec {
-            schema_version: cccx_protocol::CCCX_PROTOCOL_SCHEMA_VERSION.to_string(),
+            schema_version: cccx_protocol::CCCX_WORK_SPEC_SCHEMA_VERSION.to_string(),
             work_spec_id: "ws-1".to_string(),
             task_id: "T1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            created_at: "2026-07-19T00:00:00Z".to_string(),
+            expires_at: None,
+            base_revision: cccx_protocol::RevisionRef {
+                git_head: None,
+                working_tree_digest: None,
+            },
             harness: cccx_protocol::HarnessKind::Cx,
             role: cccx_protocol::WorkRole::Implementer,
+            runtime_identity: None,
             objective: "bounded implementation".to_string(),
             scope: cccx_protocol::WorkScope {
                 canonical_paths: set(&["D:/repo/src/auth"]),
@@ -968,14 +976,18 @@ mod tests {
             allowed_tools: set(&["apply_patch"]),
             forbidden_tools: set(&["spawn_agent"]),
             allowed_mcp_tools: set(&["mcp:codebase-memory-mcp.search_graph"]),
+            tool_grants: Vec::new(),
             permission_policy: cccx_protocol::PermissionPolicy::Ask,
             model_route: cccx_protocol::ModelRouteSelection::InheritMainRequested,
             fallback_policy_id: "compatible".to_string(),
             fork_policy: cccx_protocol::ForkPolicy::WorkSpecOnly,
             enforced_constraints: vec!["no-out-of-scope-edits".to_string()],
+            typed_constraints: Vec::new(),
             risk_threshold: None,
             action_classes: None,
             approval_policy: Some(cccx_protocol::ApprovalPolicyKind::AskCc),
+            verification_spec: None,
+            expected_artifact: None,
         }
     }
 

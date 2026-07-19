@@ -136,18 +136,18 @@ impl CccxRuntimeState {
             return Ok(());
         }
         use sha2::{Digest, Sha256};
-        let mut sorted_paths: Vec<_> = work_spec.scope.canonical_paths.iter().map(|s| s.as_str()).collect();
+        let mut sorted_paths: Vec<_> = work_spec
+            .scope
+            .canonical_paths
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
         sorted_paths.sort();
         let paths_joined = sorted_paths.join(",");
         let mut sorted_tools: Vec<_> = work_spec.allowed_tools.iter().map(|s| s.as_str()).collect();
         sorted_tools.sort();
         let tools_joined = sorted_tools.join(",");
-        let spec_payload = format!(
-            "{}|{}|{}",
-            work_spec.objective,
-            paths_joined,
-            tools_joined
-        );
+        let spec_payload = format!("{}|{}|{}", work_spec.objective, paths_joined, tools_joined);
         let spec_digest = format!("sha256:{:x}", Sha256::digest(spec_payload.as_bytes()));
         self.task_graph
             .add_task(TaskNode::new(
@@ -239,7 +239,11 @@ impl CccxRuntimeRegistry {
         let artifact = collector.finalize(
             artifact_status,
             status_summary.clone(),
-            provenance_for_runtime(&runtime.work_spec, &runtime.model_route_summary, &status_summary),
+            provenance_for_runtime(
+                &runtime.work_spec,
+                &runtime.model_route_summary,
+                &status_summary,
+            ),
         );
 
         // Phase 5 fix: evidence_digest is SHA256 of status_summary, not raw text.
@@ -291,11 +295,19 @@ pub(crate) fn parent_capability_set_for_work_spec(
     }
 }
 
-fn provenance_for_runtime(work_spec: &WorkSpec, route_id: &str, status_summary: &str) -> ArtifactProvenance {
+fn provenance_for_runtime(
+    work_spec: &WorkSpec,
+    route_id: &str,
+    status_summary: &str,
+) -> ArtifactProvenance {
     use sha2::{Digest, Sha256};
     let mut sorted_tools: Vec<_> = work_spec.allowed_tools.iter().collect();
     sorted_tools.sort();
-    let tools_joined: String = sorted_tools.into_iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",");
+    let tools_joined: String = sorted_tools
+        .into_iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
     let input_payload = format!("{}|{}", work_spec.objective, tools_joined);
     let input_digest = format!("sha256:{:x}", Sha256::digest(input_payload.as_bytes()));
     // Phase 5: effective_route_id is "unknown" when gateway_request_id is None
@@ -307,11 +319,20 @@ fn provenance_for_runtime(work_spec: &WorkSpec, route_id: &str, status_summary: 
     ArtifactProvenance {
         producer_harness: work_spec.harness.clone(),
         producer_role: work_spec.role.clone(),
+        provider_gateway_request_id: "unknown".to_string(),
+        model_profile_id: "unknown".to_string(),
+        capability_profile_id: "unknown".to_string(),
+        fallback_policy_id: work_spec.fallback_policy_id.clone(),
         requested_route_id: route_id.to_string(),
         effective_route_id,
         gateway_request_id: None,
+        requested_model: None,
+        effective_model: None,
+        retry_count: 0,
+        fallback_chain: Vec::new(),
         input_digest,
         output_digest,
+        tool_call_sequence_digest: None,
     }
 }
 
@@ -321,18 +342,26 @@ mod tests {
     use crate::artifact_collector::ArtifactCollector;
     use cccx_protocol::{
         ArtifactProvenance, ForkPolicy, HarnessKind, ModelRouteSelection, PermissionPolicy,
-        WorkRole, WorkScope,
+        RevisionRef, WorkRole, WorkScope,
     };
     use cccx_task_graph::{TaskNode, VerificationSpec};
     use std::collections::BTreeSet;
 
     fn work_spec() -> WorkSpec {
         WorkSpec {
-            schema_version: cccx_protocol::CCCX_PROTOCOL_SCHEMA_VERSION.into(),
+            schema_version: cccx_protocol::CCCX_WORK_SPEC_SCHEMA_VERSION.into(),
             work_spec_id: "ws-1".into(),
             task_id: "T1".into(),
+            attempt_id: "attempt-1".into(),
+            created_at: "2026-07-19T00:00:00Z".into(),
+            expires_at: None,
+            base_revision: RevisionRef {
+                git_head: None,
+                working_tree_digest: None,
+            },
             harness: HarnessKind::Cx,
             role: WorkRole::Tester,
+            runtime_identity: None,
             objective: "run tests".into(),
             scope: WorkScope {
                 canonical_paths: ["D:/repo".into()].into_iter().collect(),
@@ -341,25 +370,38 @@ mod tests {
             allowed_tools: ["shell_command".into()].into_iter().collect(),
             forbidden_tools: BTreeSet::new(),
             allowed_mcp_tools: BTreeSet::new(),
+            tool_grants: Vec::new(),
             permission_policy: PermissionPolicy::Ask,
             model_route: ModelRouteSelection::InheritMainEffective,
             fallback_policy_id: "strict".into(),
             fork_policy: ForkPolicy::WorkSpecOnly,
             enforced_constraints: vec![],
+            typed_constraints: Vec::new(),
             risk_threshold: None,
             action_classes: None,
             approval_policy: None,
+            verification_spec: None,
+            expected_artifact: None,
         }
     }
     fn provenance() -> ArtifactProvenance {
         ArtifactProvenance {
             producer_harness: HarnessKind::Cx,
             producer_role: WorkRole::Tester,
+            provider_gateway_request_id: "gw-test".into(),
+            model_profile_id: "profile-test".into(),
+            capability_profile_id: "cap-test".into(),
+            fallback_policy_id: "strict".into(),
             requested_route_id: "route".into(),
             effective_route_id: "route".into(),
             gateway_request_id: None,
+            requested_model: None,
+            effective_model: None,
+            retry_count: 0,
+            fallback_chain: Vec::new(),
             input_digest: "sha256:i".into(),
             output_digest: "sha256:o".into(),
+            tool_call_sequence_digest: None,
         }
     }
     #[test]
@@ -460,8 +502,7 @@ mod tests {
         );
 
         // The projection should be empty because WorkSpec ∩ parent = ∅
-        let projection =
-            cccx_protocol::project_child_config(&ws, &parent).unwrap();
+        let projection = cccx_protocol::project_child_config(&ws, &parent).unwrap();
         assert!(
             projection.allowed_tools.is_empty(),
             "WorkSpec tools ∩ empty parent = empty. Got: {:?}",
@@ -548,10 +589,7 @@ mod tests {
             prov.requested_route_id, "9router/requested-route",
             "requested should be preserved"
         );
-        assert!(
-            prov.gateway_request_id.is_none(),
-            "no gateway evidence"
-        );
+        assert!(prov.gateway_request_id.is_none(), "no gateway evidence");
         assert_eq!(
             prov.effective_route_id, "unknown",
             "Phase 5: effective_route_id must be 'unknown' when no 9router evidence, not a copy of requested. Got: {}",
@@ -579,7 +617,8 @@ mod tests {
     /// placeholder check (no cccx-runtime in it). Test fixture integrity check.
     #[test]
     fn p5_audit_existing_test_provenance_passes_placeholder_check() {
-        provenance().verify_placeholders()
+        provenance()
+            .verify_placeholders()
             .expect("test fixture provenance must not contain cccx-runtime");
     }
 
@@ -624,9 +663,7 @@ mod tests {
             "all tests passed".into(),
             provenance(),
         );
-        runtime
-            .complete(artifact, None, None)
-            .unwrap();
+        runtime.complete(artifact, None, None).unwrap();
 
         // stop_guard must block because no VerificationRecord.passed=true
         assert!(
@@ -690,7 +727,7 @@ mod tests {
     /// not the placeholder `sha256:cccx-runtime-*` pattern.
     #[test]
     fn p6_audit_spec_digest_is_real_sha256_not_placeholder() {
-        let mut graph = TaskGraph::new("g", "test");
+        let graph = TaskGraph::new("g", "test");
         let mut runtime = CccxRuntimeState::new(graph);
 
         // register_work_spec triggers ensure_task_exists if task doesn't exist
@@ -787,7 +824,10 @@ mod tests {
 
         assert_eq!(ws_strict.fallback_policy_id, "strict");
         assert_eq!(ws_compatible.fallback_policy_id, "compatible");
-        assert_ne!(ws_strict.fallback_policy_id, ws_compatible.fallback_policy_id);
+        assert_ne!(
+            ws_strict.fallback_policy_id,
+            ws_compatible.fallback_policy_id
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -820,7 +860,8 @@ mod tests {
         ws.task_id = "T-p13".to_string();
         ws.allowed_tools.insert("edit".to_string());
         ws.allowed_tools.insert("shell".to_string());
-        ws.allowed_mcp_tools.insert("sequential-thinking".to_string());
+        ws.allowed_mcp_tools
+            .insert("sequential-thinking".to_string());
 
         // Step 2: Parent (Main CC) has full capability → intersection limits CX
         let mut parent_tools = BTreeSet::new();
@@ -844,10 +885,12 @@ mod tests {
 
         let projection = project_child_config(&ws, &parent).unwrap();
         assert!(!projection.allowed_tools.is_empty());
-        assert!(projection
-            .allowed_tools
-            .iter()
-            .all(|t| ["edit", "shell"].contains(&t.as_str())));
+        assert!(
+            projection
+                .allowed_tools
+                .iter()
+                .all(|t| ["edit", "shell"].contains(&t.as_str()))
+        );
 
         // Step 3: TaskGraph lifecycle — register → verify → stop guard
         let mut graph = TaskGraph::new("g-p13", "test");
@@ -933,11 +976,8 @@ mod tests {
         // Apply Artifact with NO verification (None, None)
         let mut collector = ArtifactCollector::new("ws-1", "attempt-p13r");
         collector.record_runtime_log("tests pass", "3/3 ok");
-        let artifact = collector.finalize(
-            ArtifactStatus::Success,
-            "tests passed".into(),
-            provenance(),
-        );
+        let artifact =
+            collector.finalize(ArtifactStatus::Success, "tests passed".into(), provenance());
         runtime.complete(artifact, None, None).unwrap();
 
         // Regression: StopGuard MUST block because no VerificationRecord
@@ -958,9 +998,18 @@ mod tests {
         use cccx_protocol::ArtifactProvenance;
 
         let prov = provenance();
-        assert!(!prov.input_digest.contains("cccx-runtime"), "input_digest must not be placeholder");
-        assert!(!prov.output_digest.contains("cccx-runtime"), "output_digest must not be placeholder");
-        assert!(!prov.effective_route_id.is_empty(), "effective_route_id must be populated");
+        assert!(
+            !prov.input_digest.contains("cccx-runtime"),
+            "input_digest must not be placeholder"
+        );
+        assert!(
+            !prov.output_digest.contains("cccx-runtime"),
+            "output_digest must not be placeholder"
+        );
+        assert!(
+            !prov.effective_route_id.is_empty(),
+            "effective_route_id must be populated"
+        );
 
         // verify_placeholders must pass with real provenance
         let result = ArtifactProvenance::verify_placeholders(&prov);

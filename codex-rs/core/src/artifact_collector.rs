@@ -76,13 +76,18 @@ impl ArtifactCollector {
     ) -> Artifact {
         let artifact_id = format!("art-{}-{}", self.work_spec_id, self.attempt_id);
         Artifact {
-            schema_version: cccx_protocol::CCCX_PROTOCOL_SCHEMA_VERSION.to_string(),
+            schema_version: cccx_protocol::CCCX_ARTIFACT_SCHEMA_VERSION.to_string(),
             artifact_id,
+            task_id: self.work_spec_id.clone(),
             work_spec_id: self.work_spec_id,
             attempt_id: self.attempt_id,
             status,
             summary,
+            changed_files: self.changed_paths.clone(),
             changed_paths: self.changed_paths,
+            tests_run: Vec::new(),
+            residual_risks: Vec::new(),
+            follow_up: Vec::new(),
             evidence: self.evidence_entries,
             provenance: Some(provenance),
             verification: None,
@@ -105,11 +110,20 @@ mod tests {
         ArtifactProvenance {
             producer_harness: HarnessKind::Cx,
             producer_role: WorkRole::Implementer,
+            provider_gateway_request_id: "gw-1".to_string(),
+            model_profile_id: "oc/deepseek-v4-flash-free".to_string(),
+            capability_profile_id: "coding-tools-v1".to_string(),
+            fallback_policy_id: "strict".to_string(),
             requested_route_id: "oc/deepseek-v4-flash-free".to_string(),
             effective_route_id: "opencode/deepseek-v4-flash-free".to_string(),
             gateway_request_id: Some("gw-1".to_string()),
+            requested_model: Some("oc/deepseek-v4-flash-free".to_string()),
+            effective_model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            retry_count: 0,
+            fallback_chain: Vec::new(),
             input_digest: "sha256:input".to_string(),
             output_digest: "sha256:output".to_string(),
+            tool_call_sequence_digest: None,
         }
     }
 

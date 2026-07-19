@@ -1,3 +1,5 @@
+use cccx_protocol::CCCX_VERIFICATION_RECORD_SCHEMA_VERSION;
+use cccx_protocol::RevisionRef;
 use cccx_protocol::VerificationRecord;
 use cccx_task_graph::TaskNode;
 
@@ -22,7 +24,17 @@ impl GoalEvaluator {
         let passed = exit_code == 0;
 
         Some(VerificationRecord {
+            schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
+            task_id: task.task_id.clone(),
+            attempt_id: "unknown".to_string(),
             verifier: "goal-evaluator".to_string(),
+            policy_id: task.verification_spec.spec_digest.clone(),
+            command: None,
+            artifact_digest: log_digest.to_string(),
+            result_revision: RevisionRef {
+                git_head: None,
+                working_tree_digest: None,
+            },
             passed,
             checked_at: chrono::Utc::now().to_rfc3339(),
             evidence_digest: log_digest.to_string(),
@@ -32,6 +44,11 @@ impl GoalEvaluator {
                 vec![format!(
                     "verification command failed with exit code {exit_code}"
                 )]
+            },
+            reason: if passed {
+                "verification command exited 0".to_string()
+            } else {
+                format!("verification command failed with exit code {exit_code}")
             },
         })
     }

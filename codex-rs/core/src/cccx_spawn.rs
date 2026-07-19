@@ -108,9 +108,7 @@ mod phase0_tests {
     //! never writes those values into Config.
 
     use super::*;
-    use cccx_protocol::{
-        ForkPolicy, ModelRouteSelection, PermissionPolicy, WorkRole, WorkScope,
-    };
+    use cccx_protocol::{ModelRouteSelection, PermissionPolicy, WorkRole};
     use std::collections::BTreeSet;
 
     fn test_parent() -> ParentCapabilitySet {
@@ -121,10 +119,7 @@ mod phase0_tests {
                 "read".into(),
                 "spawn".into(),
             ]),
-            mcp_tools: BTreeSet::from([
-                "codebase-memory-mcp".into(),
-                "sequential-thinking".into(),
-            ]),
+            mcp_tools: BTreeSet::from(["codebase-memory-mcp".into(), "sequential-thinking".into()]),
             writable_roots: BTreeSet::from(["parent-wide-root".into()]),
             protected_paths: BTreeSet::new(),
             model_routes: BTreeSet::from(["9router/main".into()]),
@@ -134,11 +129,19 @@ mod phase0_tests {
 
     fn test_work_spec() -> WorkSpec {
         WorkSpec {
-            schema_version: cccx_protocol::CCCX_PROTOCOL_SCHEMA_VERSION.into(),
+            schema_version: cccx_protocol::CCCX_WORK_SPEC_SCHEMA_VERSION.into(),
             work_spec_id: "ws-p0-1".into(),
             task_id: "T-p0".into(),
+            attempt_id: "attempt-p0-1".into(),
+            created_at: "2026-07-19T00:00:00Z".into(),
+            expires_at: None,
+            base_revision: cccx_protocol::RevisionRef {
+                git_head: None,
+                working_tree_digest: None,
+            },
             harness: HarnessKind::Cx,
             role: WorkRole::Implementer,
+            runtime_identity: None,
             objective: "run tests".into(),
             scope: cccx_protocol::WorkScope {
                 canonical_paths: BTreeSet::from(["reduced-scope-path".into()]),
@@ -147,14 +150,18 @@ mod phase0_tests {
             allowed_tools: BTreeSet::from(["shell_command".into()]),
             forbidden_tools: BTreeSet::new(),
             allowed_mcp_tools: BTreeSet::from(["codebase-memory-mcp".into()]),
+            tool_grants: Vec::new(),
             permission_policy: PermissionPolicy::Ask,
             model_route: ModelRouteSelection::InheritMainEffective,
             fallback_policy_id: "strict".into(),
             fork_policy: cccx_protocol::ForkPolicy::WorkSpecOnly,
             enforced_constraints: vec![],
+            typed_constraints: Vec::new(),
             risk_threshold: None,
             action_classes: None,
             approval_policy: None,
+            verification_spec: None,
+            expected_artifact: None,
         }
     }
 
@@ -199,8 +206,9 @@ mod phase0_tests {
     #[test]
     fn contract_explicit_model_route_outside_allowlist_rejected() {
         let mut ws = test_work_spec();
-        ws.model_route =
-            ModelRouteSelection::Explicit { route_id: "unknown-route".into() };
+        ws.model_route = ModelRouteSelection::Explicit {
+            route_id: "unknown-route".into(),
+        };
         let result = cccx_protocol::project_child_config(&ws, &test_parent());
         assert!(result.is_err());
     }
@@ -214,8 +222,9 @@ mod phase0_tests {
     #[test]
     fn runtime_projection_model_route_now_reaches_config_non_async() {
         let mut ws = test_work_spec();
-        ws.model_route =
-            ModelRouteSelection::Explicit { route_id: "9router/main".into() };
+        ws.model_route = ModelRouteSelection::Explicit {
+            route_id: "9router/main".into(),
+        };
         let parent = test_parent(); // model_routes = {"9router/main"} ✓
 
         // Phase 3: apply_cccx_harness_to_config writes model route for Explicit
@@ -251,8 +260,7 @@ mod phase0_tests {
         let mut parent = test_parent();
         parent.permission_ceiling = PermissionPolicy::Deny;
 
-        let projection =
-            cccx_protocol::project_child_config(&test_work_spec(), &parent).unwrap();
+        let projection = cccx_protocol::project_child_config(&test_work_spec(), &parent).unwrap();
         // Contract correctly downgraded
         assert_eq!(projection.permission_policy, PermissionPolicy::Deny);
 
@@ -317,8 +325,10 @@ mod phase0_tests {
         let parent = test_parent();
 
         // ── Before apply ──
-        assert!(config.developer_instructions.is_none(),
-            "before apply, no developer instructions");
+        assert!(
+            config.developer_instructions.is_none(),
+            "before apply, no developer instructions"
+        );
         let model_before = config.model.clone();
 
         // ── Call runtime function ──
@@ -326,23 +336,34 @@ mod phase0_tests {
         assert!(result.is_ok(), "apply_cccx_harness_to_config must succeed");
 
         // ── After apply: fields that ARE written (these pass) ──
-        assert!(config.developer_instructions.is_some(),
-            "GREEN: harness prompt written to developer_instructions");
+        assert!(
+            config.developer_instructions.is_some(),
+            "GREEN: harness prompt written to developer_instructions"
+        );
         let instructions = config.developer_instructions.as_ref().unwrap();
-        assert!(instructions.contains("CX") || instructions.contains("execution"),
+        assert!(
+            instructions.contains("CX") || instructions.contains("execution"),
             "GREEN: CX harness prompt injected. First 200 chars: {}",
-            &instructions[..std::cmp::min(200, instructions.len())]);
-        assert!(!config.orchestrator_mcp_enabled,
-            "GREEN: CX subagent must have orchestrator_mcp_enabled=false");
-        assert!(!config.orchestrator_skills_enabled,
-            "GREEN: CX subagent must have orchestrator_skills_enabled=false");
+            &instructions[..std::cmp::min(200, instructions.len())]
+        );
+        assert!(
+            !config.orchestrator_mcp_enabled,
+            "GREEN: CX subagent must have orchestrator_mcp_enabled=false"
+        );
+        assert!(
+            !config.orchestrator_skills_enabled,
+            "GREEN: CX subagent must have orchestrator_skills_enabled=false"
+        );
 
         // ── After apply: fields that are NOT written (arch. gap) ──
         // Contract level: projection is correctly computed
         let projection = cccx_protocol::project_child_config(&ws, &parent).unwrap();
         assert_eq!(projection.allowed_tools.len(), 1);
         assert!(projection.allowed_tools.contains("shell_command"));
-        assert_eq!(projection.model_route, ModelRouteSelection::InheritMainEffective);
+        assert_eq!(
+            projection.model_route,
+            ModelRouteSelection::InheritMainEffective
+        );
 
         // Phase 3: InheritMainEffective preserves parent model (no change)
         assert_eq!(
