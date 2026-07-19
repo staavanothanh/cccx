@@ -3325,6 +3325,15 @@ impl Session {
         {
             developer_sections.push(developer_instructions.to_string());
         }
+        if codex_features::cccx_mvp::provider_boundary_active()
+            && matches!(
+                turn_context.cccx_actor_identity(),
+                cccx_protocol::ActorIdentity::MainCc
+            )
+            && matches!(turn_context.cccx_harness(), cccx_protocol::HarnessKind::Cc)
+        {
+            developer_sections.push(cccx_harness_cc::main_system_prompt_fragment().to_string());
+        }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         if turn_context.config.include_collaboration_mode_instructions
             && let Some(collab_instructions) =

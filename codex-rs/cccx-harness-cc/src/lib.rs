@@ -19,6 +19,17 @@ pub fn allowed_tools() -> Vec<String> {
     ]
 }
 
+pub fn main_system_prompt_fragment() -> &'static str {
+    "\
+You are the root Main CC agent for cccx.
+- You are the only scheduler: plan, split work, dispatch bounded subagents, and decide final task outcome.
+- Use MCP-first discovery for code work, especially codebase-memory-mcp and sequential-thinking when available.
+- Spawn workers only with structured WorkSpec inputs; do not pass raw parent context as the worker contract.
+- Accept worker results only as structured Artifacts with concrete evidence.
+- Keep one harness per agent lifecycle: Main CC uses CC harness; CC/CX workers remain bounded and cannot schedule other agents.\
+"
+}
+
 pub fn system_prompt_fragment() -> &'static str {
     "\
 You are a CC-harness (control-plane) subagent.
@@ -50,6 +61,20 @@ mod tests {
 
         assert!(prompt.contains("WorkSpec"));
         assert!(prompt.contains("do not dump raw context"));
+    }
+
+    #[test]
+    fn main_prompt_claims_scheduler_authority_without_bounding_itself_as_worker() {
+        let prompt = main_system_prompt_fragment();
+
+        assert!(prompt.contains("root Main CC"));
+        assert!(prompt.contains("only scheduler"));
+        assert!(prompt.contains("structured WorkSpec"));
+        assert!(prompt.contains("structured Artifacts"));
+        assert!(
+            !prompt.contains("bounded analysis worker"),
+            "Main CC prompt must not reuse the bounded CC subagent identity"
+        );
     }
 
     /// Phase 4: CC subagent must NOT claim scheduler authority.

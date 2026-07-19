@@ -1301,3 +1301,52 @@ Config/tool catalog. They were not fixed in Phase 1B/2.
 - `Config`, `SessionConfiguration`, and `TurnContext` now agree on identity, but
   persisted config lock / thread snapshot do not yet expose these fields as a
   user-visible runtime contract.
+
+---
+
+## Phase 2 — Main CC bootstrap prompt (2026-07-19)
+
+Scope:
+
+- `cccx-harness-cc/src/lib.rs`
+- `core/src/session/mod.rs`
+- `core/src/session/tests.rs`
+
+### Implemented
+
+1. Added a dedicated Main CC prompt:
+   - `cccx_harness_cc::main_system_prompt_fragment()`.
+2. The Main CC prompt explicitly claims root scheduler authority:
+   - root Main CC agent;
+   - only scheduler;
+   - WorkSpec-only worker dispatch;
+   - Artifact-only worker result contract;
+   - one harness per agent lifecycle.
+3. The existing `cccx_harness_cc::system_prompt_fragment()` remains the bounded
+   CC subagent prompt and does not claim scheduler authority.
+4. Initial context assembly now injects the Main CC prompt only when:
+   - the cccx provider boundary is active;
+   - actor identity is `ActorIdentity::MainCc`;
+   - harness is `HarnessKind::Cc`.
+
+### Tests
+
+```powershell
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo test -p cccx-harness-cc
+cargo test -p codex-core cccx_initial_context_includes_main_cc_bootstrap_prompt --lib
+```
+
+Results:
+
+- `cccx-harness-cc`: 4 passed.
+- `cccx_initial_context_includes_main_cc_bootstrap_prompt`: 1 passed.
+
+### Remaining gaps
+
+- Main CC prompt is now injected into runtime developer context, but Main CC
+  orchestration is still only partially enforced until later phases wire:
+  - WorkSpec projection into tool/MCP catalog and sandbox;
+  - TaskGraph scheduler lifecycle;
+  - StopHook verification gates;
+  - permission queue controls.

@@ -5468,6 +5468,23 @@ async fn cccx_root_turn_context_carries_main_cc_identity() {
     assert_eq!(turn_context.cccx_harness(), cccx_protocol::HarnessKind::Cc);
 }
 
+#[tokio::test]
+async fn cccx_initial_context_includes_main_cc_bootstrap_prompt() {
+    let (session, turn_context) = make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+
+    let initial_context = build_initial_context(&session, &turn_context).await;
+    let developer_text = developer_input_texts(&initial_context).join("\n");
+
+    assert!(developer_text.contains("root Main CC agent for cccx"));
+    assert!(developer_text.contains("only scheduler"));
+    assert!(developer_text.contains("structured WorkSpec"));
+    assert!(
+        !developer_text.contains("You are a CC-harness (control-plane) subagent"),
+        "root Main CC bootstrap must not reuse the bounded CC subagent prompt"
+    );
+}
+
 async fn make_session_with_config(
     mutator: impl FnOnce(&mut Config),
 ) -> anyhow::Result<Arc<Session>> {
