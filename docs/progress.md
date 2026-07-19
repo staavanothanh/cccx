@@ -2546,6 +2546,22 @@ Remaining Phase 6 work: enrich permission identity with worker/task/attempt,
 wire targeted cancellation to revoke that worker's queue entries and lease,
 then implement resume/checkpoint and TUI controls.
 
+## 2026-07-20 — Phase 6D: permission request identity (partial)
+
+- Permission queue records now retain `agent_display_name`, `task_id`, and
+  `reason`, instead of discarding the context supplied by the runtime. This
+  gives the main-session queue enough stable identity to render and audit a
+  worker's request without relying on screen position.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p codex-core denying_one_prompt_must_not_cancel_other_prompts_from_same_agent --lib
+```
+
+Terminal worker cancellation remains a cross-crate contract slice because the
+current app-server only exposes resumable `turn/interrupt`.
+
 ## 2026-07-20 — Phase 5D: Task Graph writer lease
 
 - Added `update_task_graph()`, a project-local writer-lease transaction for

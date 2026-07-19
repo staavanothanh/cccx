@@ -29,10 +29,10 @@ impl CccxPermissionQueue {
     pub async fn enqueue(
         &self,
         agent_session_id: String,
-        _agent_display_name: String,
-        _task_id: String,
+        agent_display_name: String,
+        task_id: String,
         action: NormalizedAction,
-        _reason: String,
+        reason: String,
     ) -> String {
         let idx = self.counter.fetch_add(1, Ordering::Relaxed);
         let request_id = format!("pr-{idx}");
@@ -40,7 +40,8 @@ impl CccxPermissionQueue {
             cccx_policy::ActionType::Shell => PermissionRisk::High,
             _ => PermissionRisk::Medium,
         };
-        let request = PermissionRequest::new(&request_id, &agent_session_id, action, risk);
+        let request = PermissionRequest::new(&request_id, &agent_session_id, action, risk)
+            .with_context(agent_display_name, task_id, reason);
         self.inner.lock().await.enqueue(request);
         request_id
     }
@@ -148,9 +149,13 @@ mod tests {
 
         queue.deny(&first).await.expect("deny active prompt");
 
+        let first_request = queue.get(&first).await.expect("first request exists");
+        assert_eq!(first_request.agent_display_name, "worker");
+        assert_eq!(first_request.task_id, "T1");
+        assert_eq!(first_request.reason, "first edit");
         assert_eq!(
-            queue.get(&first).await.map(|request| request.status),
-            Some(PermissionRequestStatus::Denied),
+            first_request.status,
+            PermissionRequestStatus::Denied,
             "denied request should be marked denied, not bulk-cancelled"
         );
         assert_eq!(

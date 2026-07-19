@@ -675,6 +675,12 @@ pub enum PermissionRequestStatus {
 pub struct PermissionRequest {
     pub request_id: String,
     pub agent_id: String,
+    #[serde(default)]
+    pub agent_display_name: String,
+    #[serde(default)]
+    pub task_id: String,
+    #[serde(default)]
+    pub reason: String,
     pub action: NormalizedAction,
     pub digest: String,
     pub risk: PermissionRisk,
@@ -692,11 +698,26 @@ impl PermissionRequest {
         Self {
             request_id: request_id.into(),
             agent_id: agent_id.into(),
+            agent_display_name: String::new(),
+            task_id: String::new(),
+            reason: String::new(),
             action,
             digest,
             risk,
             status: PermissionRequestStatus::Queued,
         }
+    }
+
+    pub fn with_context(
+        mut self,
+        agent_display_name: impl Into<String>,
+        task_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        self.agent_display_name = agent_display_name.into();
+        self.task_id = task_id.into();
+        self.reason = reason.into();
+        self
     }
 }
 
