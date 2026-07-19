@@ -762,5 +762,19 @@ task.md Phase 9 exit criteria: "/remember survives restart and loads into Main C
 | /remember survives restart and loads into Main CC context | ✓ P9-T1 |
 | MCP defaults auto-merge at startup | ✓ prior (5 mcp_auto_init tests) |
 | Plugin install không tự mở tool/MCP cho CX | ✓ prior (8 plugin tests) |
+| cccx-plugin.json strict validates schema v1 | ✓ prior (protocol tests) |
+
+### Phase 9 Self-Audit (agent-architecture-audit + gateguard)
+
+**Kết luận:** Không phát hiện gap trong test. P9-T1 gọi `remember() → drop → new() → load_context()` đầy đủ (runtime call-site thật). P9-T2 kiểm tra filesystem thật sau `remember()`.
+
+**Check so với task.md Phase 9:**
+- MCP 1-3: ✓ prior (5 auto-init tests + Phase 3 projection)
+- Project Memory 4: ⚠️ storage path là project/.cccx/memory thay vì CCCX_HOME/projects/<hash>/memory — documented gap trong implementer-issues
+- Project Memory 5-6: ✓ (load_context + Phase 3 CX deny)
+- ADR 7-8: ✓ (CX orchestrator_mcp_enabled=false từ Phase 3)
+- Plugin 9-11: ✓ (8 protocol tests + Phase 3 deny-by-default)
+
+**Diagnostic Q6 (gateguard):** /remember là filesystem write gate. ADR deny qua MCP allowlist. Plugin isolation qua WorkSpec projection. Tất cả là code gate. ✓
 
 Commit: next.
