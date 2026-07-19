@@ -138,15 +138,6 @@
   - Scenarios 1-3,6,7 already proven by existing unit tests from Phases 1-8 (provider_gateway_bridge, mcp_tool_call, permission_queue_bridge, codex-api stream tests).
   - Tests: cccx-task-graph lifecycle_test (5) ✓, cccx-headless headless_e2e_test (6) ✓. Total Phase 10: 11 integration tests pass.
   - Phase 10 commit: `2128d19` (test: e2e regression suite — 11 integration tests).
-- 2026-07-19 Phase 11 complete — Headless exec contract và JSONL event stream:
-  - **Gap đã đóng:** `EventProcessorWithJsonOutput` giờ import và emit `cccx_headless::HeadlessEventEnvelope` (cccx.exec_event.v1) thay vì raw `ThreadEvent`. Mapping: `AgentMessage` → `Answer`, `Error` → `Error`, `Terminal` cuối stream. Session/turn ID được capture từ `SessionConfiguredEvent` tại startup.
-  - **Exit code mapping:** Completed → 0, Failed/Error → 1, Approval Denied → 2, Interrupted → 3.
-  - **Approval denied:** `EventProcessor::on_approval_denied()` trait method added. Called from `handle_server_request()` for all approval rejection paths (CommandExecution, FileChange, ApplyPatch, ExecCommand, Permissions). `EventProcessorWithJsonOutput` overrides to set `cccx_exit_code=2`.
-  - **Terminal event:** Luôn được emit trong `print_final_output()` — kể cả khi turn failed/interrupted (emit_final_message_on_shutdown=false).
-  - **P0 RED test closed:** `p0_exec_wiring` giờ là `p11_exec_wiring_is_now_complete` (GREEN).
-  - **Known limitation (deferred):** AgentUpdate model route — CollabToolCall from app-server lacks model_route. Documented in test `p11_audit_agent_update_model_route_is_deferred`.
-  - **Tests:** cccx-headless lib (10) ✓, cccx-headless e2e (6) ✓, codex-exec p11 (7) ✓, cccx-protocol (24) ✓, codex-core cccx_runtime (15) ✓, codex-core + codex-tui compile ✓, cccx-cli compile ✓.
-  - Phase 11 commits: `3d7d8f15` (wiring), next (audit fix).
 
 ---
 
@@ -827,3 +818,108 @@ task.md Phase 10 exit criteria: "Chỉ model route 9router configured/catalog xu
 | 2 | MEDIUM | Thiếu test fallback_policy_id per-attempt — task.md yêu cầu "fallback policy pinned per attempt" | Thêm 2 tests: `p10_fallback_policy_id_pinned_per_work_spec`, `p10_fallback_policy_differs_between_work_specs` |
 
 Commit: next.
+
+---
+
+## Phase 11 — Headless exec contract và JSONL event stream (2026-07-19)
+
+### Context
+
+`cccx-headless` schema (7 event types, envelope validation, rendering) existed
+but `EventProcessorWithJsonOutput` emitted raw upstream `ThreadEvent` on stdout.
+Gap documented in implementer-issues §High: "`cccx.exec_event.v1` chưa wire vào
+`cccx exec --json`."
+
+task.md Phase 11: "Wire cccx-headless event envelope into real exec JSON path.
+Map upstream ThreadEvent → CccxExecEvent. Add terminal event on all exits."
+
+### Fix
+
+| File | Change |
+|------|--------|
+| `exec/src/event_processor_with_jsonl_output.rs` | +119 lines — import `cccx_headless`, add `cccx_seq`/`cccx_session_id`/`cccx_turn_id`/`cccx_exit_code`, `map_thread_event_to_envelope()`, `emit_terminal_event()` |
+| `exec/src/event_processor.rs` | +5 lines — `EventProcessor::on_approval_denied()` trait method |
+| `exec/src/lib.rs` | +11 lines — call `event_processor.on_approval_denied()` from 5 approval rejection paths |
+| `cccx-headless/src/lib.rs` | P0 RED → p11 GREEN (`p11_exec_wiring_is_now_complete`) |
+
+### Mapping: ThreadEvent → HeadlessEvent
+
+| ThreadEvent | HeadlessEvent |
+|-------------|--------------|
+| `ItemCompleted(AgentMessage)` | `Answer` |
+| `ItemCompleted(Error)` / `Error` | `Error` (recoverable: true/false) |
+| Shutdown (`print_final_output`) | `Terminal` (always last) |
+| ThreadStarted/TurnStarted/TurnCompleted/other items | Not mapped (execution detail) |
+
+### Exit code mapping
+
+| Condition | Exit code |
+|-----------|-----------|
+| TurnCompleted | 0 |
+| TurnFailed / Error (fatal) | 1 |
+| Approval denied (headless) | 2 |
+| TurnInterrupted | 3 |
+
+### RED tests added
+
+| ID | Test | Proves |
+|----|------|--------|
+| P11-T1 | `p11_processor_wiring_includes_cccx_headless_import` | Compile-time: exec uses cccx_headless types |
+| P11-T2 | `p11_agent_message_maps_to_answer_event` | AgentMessage → Answer HeadlessEvent |
+| P11-T3 | `p11_error_event_maps_to_headless_error` | Error ThreadEvent → Error HeadlessEvent |
+| P11-T4 | `p11_exit_code_tracks_turn_status` | 4 exit paths: Completed→0, Failed→1, Interrupted→3, Error→1 |
+| P11-T5 | `p11_terminal_event_emitted_on_shutdown` | Terminal event always emitted, even when message suppressed |
+| P11-T6 | `p11_audit_approval_denied_sets_exit_code_2` | `on_approval_denied()` → exit_code=2 |
+| P11-T7 | `p11_audit_agent_update_model_route_is_deferred` | Documents structural limitation |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| codex-exec p11 | 7 (was 0) | ✓ |
+| cccx-headless lib | 10 (P0 RED → P11 GREEN) | ✓ |
+| cccx-headless e2e | 6 | ✓ |
+| cccx-protocol | 24 | ✓ |
+| codex-core cccx_runtime | 15 | ✓ |
+| codex-core + codex-tui compile | unchanged | ✓ |
+
+### Exit criteria check
+
+| Criteria | Status |
+|----------|--------|
+| `cccx exec --json` emits `cccx.exec_event.v1` envelope | ✓ (map_thread_event_to_envelope) |
+| Every event has schemaVersion/sessionId/turnId/seq/type/payload | ✓ (HeadlessEventEnvelope) |
+| Final event is `terminal` | ✓ (print_final_output) |
+| Approval denied → exit_code=2 | ✓ (on_approval_denied) |
+| Cancelled → exit_code=3 | ✓ (Interrupted) |
+| Machine parser can consume entire stdout as JSONL | ✓ (assert_stdout_lines_are_json) |
+
+### Phase 11 Self-Audit (agent-architecture-audit + ai-regression-testing)
+
+**Cross-reference với task.md lines 808-815:**
+
+| # | task.md requirement | Status | Evidence |
+|---|---------------------|--------|----------|
+| 1 | `cccx exec --json` emits only JSON objects on stdout | ✓ | HeadlessEventEnvelope emitted via `emit()`, debug_assert on JSON |
+| 2 | every event `schemaVersion=sessionId=turnId=seq=type=payload` | ✓ | `map_thread_event_to_envelope()` constructs all fields |
+| 3 | final event type `terminal` | ✓ | `emit_terminal_event()` in `print_final_output()` |
+| 4 | errors after writer ready are JSONL, không stderr | ✓ | All output goes through `emit()` → stdout |
+| 5 | approval denied maps exit code 2 | ✓ | `on_approval_denied()` → `cccx_exit_code=2` |
+| 6 | cancelled maps exit code 3 | ✓ | `TurnStatus::Interrupted` → 3 |
+| 7 | agent-update includes model route | ⚠️ DEFERRED | CollabToolCall lacks model_route (structural) |
+
+**Gap 7 analysis (AgentUpdate model route):**
+CollabToolCall from app-server has `agents_states` (status/message) but no
+`model_route`/`requested_route_id`/`effective_route_id`. Model route IS tracked
+in WorkSpec spawn provenance but the upstream ThreadEvent protocol doesn't carry
+it. Fix would require:
+- Store model route mapping at spawn time
+- Enrich CollabToolCallItem events in the event processor
+- Requires cross-cutting change to spawn tracking in cccx_runtime.rs
+Deferred as architectural limitation. Documented in test.
+
+**Diagnostic Q6 (gateguard):** Approval denial exit_code=2 is a CODE GATE in
+`handle_server_request()` + `on_approval_denied()`, not just headless schema.
+Terminal event is always-emitted via `print_final_output()` override. ✓
+
+Commits: `3d7d8f15` (wiring), `f911cb87` (audit fix: exit_code=2).
