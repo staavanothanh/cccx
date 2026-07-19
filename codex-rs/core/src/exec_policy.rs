@@ -1,11 +1,15 @@
+use std::future::Future;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 
 use cccx_policy::ActionType as CccxActionType;
+use cccx_policy::ClassifierOutcome as CccxPolicyClassifierOutcome;
 use cccx_policy::MainMode as CccxMainMode;
 use cccx_policy::ModeThresholds as CccxModeThresholds;
 use cccx_policy::NormalizedAction as CccxNormalizedAction;
@@ -29,6 +33,7 @@ use codex_execpolicy::PolicyParser;
 use codex_execpolicy::RuleMatch;
 use codex_execpolicy::blocking_append_allow_prefix_rule;
 use codex_execpolicy::blocking_append_network_rule;
+use codex_model_provider_info::NINE_ROUTER_API_KEY_ENV;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
@@ -41,6 +46,7 @@ use thiserror::Error;
 use tokio::fs;
 use tokio::sync::Semaphore;
 use tokio::task::spawn_blocking;
+use tokio::time::timeout;
 use tracing::instrument;
 
 use crate::config::Config;
@@ -60,6 +66,9 @@ const REJECT_RULES_APPROVAL_REASON: &str =
 const RULES_DIR_NAME: &str = "rules";
 const RULE_EXTENSION: &str = "rules";
 const DEFAULT_POLICY_FILE: &str = "default.rules";
+const CCCX_AUTO_CLASSIFIER_MODEL_ENV: &str = "CCCX_AUTO_CLASSIFIER_MODEL";
+const CCCX_AUTO_CLASSIFIER_BASE_URL: &str = "https://9router.ai/api/v1";
+const CCCX_AUTO_CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(8);
 static BANNED_PREFIX_SUGGESTIONS: &[&[&str]] = &[
     &["python3"],
     &["python3", "-"],
@@ -245,6 +254,7 @@ pub enum ExecPolicyUpdateError {
 pub(crate) struct ExecPolicyManager {
     policy: ArcSwap<Policy>,
     update_lock: Semaphore,
+    cccx_auto_classifier: Option<Arc<dyn CccxAutoClassifier>>,
 }
 
 pub(crate) struct ExecApprovalRequest<'a> {
@@ -256,18 +266,152 @@ pub(crate) struct ExecApprovalRequest<'a> {
     pub(crate) prefix_rule: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CccxClassifierOutcome {
+    Available(CccxPolicyClassifierOutcome),
+    Unavailable,
+}
+
+pub(crate) type CccxAutoClassifierFuture<'a> =
+    Pin<Box<dyn Future<Output = CccxClassifierOutcome> + Send + 'a>>;
+
+pub(crate) trait CccxAutoClassifier: std::fmt::Debug + Send + Sync {
+    fn classify(&self, action: CccxNormalizedAction) -> CccxAutoClassifierFuture<'_>;
+}
+
+#[derive(Debug, Clone)]
+struct CccxNineRouterAutoClassifier {
+    client: reqwest::Client,
+    api_key: String,
+    base_url: String,
+    model: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CccxClassifierRequestMessage {
+    role: &'static str,
+    content: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CccxClassifierRequest {
+    model: String,
+    messages: Vec<CccxClassifierRequestMessage>,
+    stream: bool,
+    temperature: f32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CccxClassifierResponse {
+    choices: Vec<CccxClassifierChoice>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CccxClassifierChoice {
+    message: CccxClassifierMessage,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CccxClassifierMessage {
+    content: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct CccxClassifierDecision {
+    decision: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+impl CccxNineRouterAutoClassifier {
+    fn from_env() -> Option<Self> {
+        let api_key = std::env::var(NINE_ROUTER_API_KEY_ENV).ok()?;
+        let model = std::env::var(CCCX_AUTO_CLASSIFIER_MODEL_ENV).ok()?;
+        Some(Self {
+            client: reqwest::Client::new(),
+            api_key,
+            base_url: CCCX_AUTO_CLASSIFIER_BASE_URL.to_string(),
+            model,
+        })
+    }
+
+    async fn classify_inner(&self, action: CccxNormalizedAction) -> CccxClassifierOutcome {
+        let Ok(action_json) = serde_json::to_string(&action) else {
+            return CccxClassifierOutcome::Unavailable;
+        };
+        let request = CccxClassifierRequest {
+            model: self.model.clone(),
+            stream: false,
+            temperature: 0.0,
+            messages: vec![
+                CccxClassifierRequestMessage {
+                    role: "system",
+                    content: "You are the cccx Auto-mode permission classifier. Return only compact JSON with decision=allow|deny|require_approval|reroute_to_cx and optional reason. Never exceed deterministic policy gates.".to_string(),
+                },
+                CccxClassifierRequestMessage {
+                    role: "user",
+                    content: action_json,
+                },
+            ],
+        };
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let response = match timeout(
+            CCCX_AUTO_CLASSIFIER_TIMEOUT,
+            self.client
+                .post(url)
+                .bearer_auth(&self.api_key)
+                .json(&request)
+                .send(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            _ => return CccxClassifierOutcome::Unavailable,
+        };
+        if !response.status().is_success() {
+            return CccxClassifierOutcome::Unavailable;
+        }
+        let Ok(response) = response.json::<CccxClassifierResponse>().await else {
+            return CccxClassifierOutcome::Unavailable;
+        };
+        let Some(content) = response
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.as_deref())
+        else {
+            return CccxClassifierOutcome::Unavailable;
+        };
+        parse_cccx_classifier_content(content)
+            .map(CccxClassifierOutcome::Available)
+            .unwrap_or(CccxClassifierOutcome::Unavailable)
+    }
+}
+
+impl CccxAutoClassifier for CccxNineRouterAutoClassifier {
+    fn classify(&self, action: CccxNormalizedAction) -> CccxAutoClassifierFuture<'_> {
+        Box::pin(async move { self.classify_inner(action).await })
+    }
+}
+
+fn parse_cccx_classifier_content(content: &str) -> Option<CccxPolicyClassifierOutcome> {
+    let trimmed = content.trim();
+    let decision = serde_json::from_str::<CccxClassifierDecision>(trimmed).ok()?;
+    let reason = decision
+        .reason
+        .filter(|reason| !reason.trim().is_empty())
+        .unwrap_or_else(|| "classifier".to_string());
+    match decision.decision.as_str() {
+        "allow" => Some(CccxPolicyClassifierOutcome::Allow),
+        "deny" => Some(CccxPolicyClassifierOutcome::Deny { reason }),
+        "require_approval" => Some(CccxPolicyClassifierOutcome::RequireApproval { reason }),
+        "reroute_to_cx" => Some(CccxPolicyClassifierOutcome::RerouteToCx { reason }),
+        _ => None,
+    }
+}
+
 fn cccx_circuit_breaker_requirement(command: &[String]) -> Option<ExecApprovalRequirement> {
-    let command_summary = command.join(" ");
-    let action = CccxNormalizedAction {
-        action_type: CccxActionType::Shell,
-        summary: command_summary.clone(),
-        command: Some(command_summary),
-        target_paths: Vec::new(),
-        tool_name: Some("exec".to_string()),
-        task_id: "codex-core-exec".to_string(),
-        changed_files: 0,
-        changed_lines: 0,
-    };
+    let action = cccx_shell_action(command);
     let session = CccxPolicySession {
         // Use Bypass deliberately: this pre-gate only wants the invariant
         // circuit-breaker layer. All non-circuit policy remains owned by the
@@ -287,6 +431,20 @@ fn cccx_circuit_breaker_requirement(command: &[String]) -> Option<ExecApprovalRe
             ..
         } => Some(ExecApprovalRequirement::Forbidden { reason }),
         _ => None,
+    }
+}
+
+fn cccx_shell_action(command: &[String]) -> CccxNormalizedAction {
+    let command_summary = command.join(" ");
+    CccxNormalizedAction {
+        action_type: CccxActionType::Shell,
+        summary: command_summary.clone(),
+        command: Some(command_summary),
+        target_paths: Vec::new(),
+        tool_name: Some("exec".to_string()),
+        task_id: "codex-core-exec".to_string(),
+        changed_files: 0,
+        changed_lines: 0,
     }
 }
 
@@ -362,18 +520,9 @@ pub(crate) fn cccx_mcp_requirement(
 fn cccx_full_shell_requirement(
     command: &[String],
     mode: CccxMainMode,
+    classifier: Option<CccxPolicyClassifierOutcome>,
 ) -> Option<ExecApprovalRequirement> {
-    let command_summary = command.join(" ");
-    let action = CccxNormalizedAction {
-        action_type: CccxActionType::Shell,
-        summary: command_summary.clone(),
-        command: Some(command_summary),
-        target_paths: Vec::new(),
-        tool_name: Some("exec".to_string()),
-        task_id: "codex-core-exec".to_string(),
-        changed_files: 0,
-        changed_lines: 0,
-    };
+    let action = cccx_shell_action(command);
     let session = CccxPolicySession {
         mode,
         thresholds: CccxModeThresholds {
@@ -383,7 +532,7 @@ fn cccx_full_shell_requirement(
         explicit_allow_rules: Vec::new(),
     };
 
-    match cccx_evaluate_action(&action, &session, &CccxPolicySet::default_m4(), None) {
+    match cccx_evaluate_action(&action, &session, &CccxPolicySet::default_m4(), classifier) {
         CccxPolicyDecision::Deny { reason, .. } => {
             Some(ExecApprovalRequirement::Forbidden { reason })
         }
@@ -476,7 +625,18 @@ impl ExecPolicyManager {
         Self {
             policy: ArcSwap::from(policy),
             update_lock: Semaphore::new(/*permits*/ 1),
+            cccx_auto_classifier: CccxNineRouterAutoClassifier::from_env()
+                .map(|classifier| Arc::new(classifier) as Arc<dyn CccxAutoClassifier>),
         }
+    }
+
+    #[cfg(test)]
+    fn with_cccx_auto_classifier_for_test(
+        mut self,
+        classifier: Arc<dyn CccxAutoClassifier>,
+    ) -> Self {
+        self.cccx_auto_classifier = Some(classifier);
+        self
     }
 
     #[instrument(level = "info", skip_all)]
@@ -520,7 +680,20 @@ impl ExecPolicyManager {
         // Run full cccx policy (escalate + allowlist).
         // The mode is threaded from the session's active cccx mode state.
         // When no session is available, fall back to Default.
-        if let Some(requirement) = cccx_full_shell_requirement(command, cccx_mode) {
+        let classifier = if cccx_mode == CccxMainMode::Auto {
+            match self.cccx_auto_classifier.as_ref() {
+                Some(classifier) => match classifier.classify(cccx_shell_action(command)).await {
+                    CccxClassifierOutcome::Available(outcome) => Some(outcome),
+                    CccxClassifierOutcome::Unavailable => {
+                        Some(CccxPolicyClassifierOutcome::Unavailable)
+                    }
+                },
+                None => Some(CccxPolicyClassifierOutcome::Unavailable),
+            }
+        } else {
+            None
+        };
+        if let Some(requirement) = cccx_full_shell_requirement(command, cccx_mode, classifier) {
             // Forbidden (Plan-mode, DontAsk+escalate): hard-deny immediately.
             // NeedsApproval (escalate in Default/AcceptEdits): bubble
             // up so user gets a meaningful prompt from cccx policy.
@@ -1495,7 +1668,7 @@ mod cccx_policy_wiring_tests {
     #[test]
     fn p2_plan_mode_denies_shell_mutation() {
         let result =
-            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::Plan);
+            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::Plan, None);
         assert!(
             matches!(result, Some(ExecApprovalRequirement::Forbidden { .. })),
             "Phase 2: Plan mode must deny shell commands. Architecture.md §4: \
@@ -1518,6 +1691,7 @@ mod cccx_policy_wiring_tests {
                 "main".into(),
             ],
             CccxMainMode::Default,
+            None,
         );
         assert!(
             matches!(
@@ -1551,9 +1725,12 @@ mod cccx_policy_wiring_tests {
     #[test]
     fn p2_plan_and_default_produce_different_decisions() {
         let plan_result =
-            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::Plan);
-        let default_result =
-            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::Default);
+            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::Plan, None);
+        let default_result = cccx_full_shell_requirement(
+            &["npm".into(), "test".into()],
+            CccxMainMode::Default,
+            None,
+        );
 
         // Plan must hard-deny; Default must either deny or ask
         match (&plan_result, &default_result) {
@@ -1580,6 +1757,7 @@ mod cccx_policy_wiring_tests {
         let shell_result = cccx_full_shell_requirement(
             &["echo".into(), "hello".into()],
             CccxMainMode::AcceptEdits,
+            None,
         );
         assert!(
             matches!(
@@ -1623,8 +1801,11 @@ mod cccx_policy_wiring_tests {
     /// còn lại từ chối im lặng"
     #[test]
     fn p2_dont_ask_denies_shell_without_explicit_allow() {
-        let result =
-            cccx_full_shell_requirement(&["npm".into(), "test".into()], CccxMainMode::DontAsk);
+        let result = cccx_full_shell_requirement(
+            &["npm".into(), "test".into()],
+            CccxMainMode::DontAsk,
+            None,
+        );
         assert!(
             matches!(result, Some(ExecApprovalRequirement::Forbidden { .. })),
             "DontAsk with empty explicit_allow_rules must deny shell. \
@@ -1647,6 +1828,115 @@ mod cccx_policy_wiring_tests {
         assert!(
             bypass_result.is_none(),
             "Bypass mode should skip non-circuit MCP approval requirements. Got: {bypass_result:?}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct TestAutoClassifier {
+        outcome: CccxClassifierOutcome,
+    }
+
+    impl CccxAutoClassifier for TestAutoClassifier {
+        fn classify(&self, _action: CccxNormalizedAction) -> CccxAutoClassifierFuture<'_> {
+            let outcome = self.outcome.clone();
+            Box::pin(async move { outcome })
+        }
+    }
+
+    fn test_exec_request(command: &[&str]) -> ExecApprovalRequest<'static> {
+        let command: Vec<String> = command.iter().map(|part| part.to_string()).collect();
+        let command: &'static [String] = Box::leak(command.into_boxed_slice());
+        ExecApprovalRequest {
+            command,
+            approval_policy: AskForApproval::OnRequest,
+            permission_profile: PermissionProfile::Disabled,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            prefix_rule: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn p3_auto_shell_uses_classifier_allow_outcome() {
+        let manager = ExecPolicyManager::default().with_cccx_auto_classifier_for_test(Arc::new(
+            TestAutoClassifier {
+                outcome: CccxClassifierOutcome::Available(cccx_policy::ClassifierOutcome::Allow),
+            },
+        ));
+
+        let result = manager
+            .create_exec_approval_requirement_for_command_in_mode(
+                test_exec_request(&["npm", "test"]),
+                CccxMainMode::Auto,
+            )
+            .await;
+
+        assert!(
+            matches!(result, ExecApprovalRequirement::Skip { .. }),
+            "Auto mode must honor classifier allow after deterministic gates. Got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn p3_auto_shell_requires_approval_when_classifier_unavailable() {
+        let manager = ExecPolicyManager::default().with_cccx_auto_classifier_for_test(Arc::new(
+            TestAutoClassifier {
+                outcome: CccxClassifierOutcome::Unavailable,
+            },
+        ));
+
+        let result = manager
+            .create_exec_approval_requirement_for_command_in_mode(
+                test_exec_request(&["npm", "test"]),
+                CccxMainMode::Auto,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                ExecApprovalRequirement::NeedsApproval { reason: Some(ref reason), .. }
+                    if reason == "classifier_unavailable"
+            ),
+            "Auto mode must fail closed to approval when classifier is unavailable. Got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn p3_auto_shell_circuit_breaker_does_not_call_classifier() {
+        let manager = ExecPolicyManager::default().with_cccx_auto_classifier_for_test(Arc::new(
+            TestAutoClassifier {
+                outcome: CccxClassifierOutcome::Available(cccx_policy::ClassifierOutcome::Allow),
+            },
+        ));
+
+        let result = manager
+            .create_exec_approval_requirement_for_command_in_mode(
+                test_exec_request(&["bash", "-lc", "rm -rf /"]),
+                CccxMainMode::Auto,
+            )
+            .await;
+
+        assert!(
+            matches!(result, ExecApprovalRequirement::Forbidden { .. }),
+            "Circuit breaker must run before classifier and remain non-bypassable. Got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn p3_auto_classifier_parser_rejects_invalid_output() {
+        assert_eq!(parse_cccx_classifier_content("not json"), None);
+        assert_eq!(
+            parse_cccx_classifier_content(r#"{"decision":"escalate_to_root"}"#),
+            None
+        );
+        assert_eq!(
+            parse_cccx_classifier_content(
+                r#"{"decision":"require_approval","reason":"needs user"}"#
+            ),
+            Some(CccxPolicyClassifierOutcome::RequireApproval {
+                reason: "needs user".to_string()
+            })
         );
     }
 }

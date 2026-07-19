@@ -1887,3 +1887,98 @@ Result:
 - Production Bypass remains disabled unless the host backend implements
   `AttestationProvider::bypass_sandbox_attestation_for(...)`, which is the
   intended fail-closed behavior.
+
+---
+
+## Phase 3H — Auto-mode classifier shell runtime wiring (2026-07-20)
+
+Scope:
+
+- `codex-rs/core/src/exec_policy.rs`
+
+Skills/roles used:
+
+- `gateguard`
+- `agent-harness-construction`
+- `error-handling`
+- `ai-regression-testing`
+- ECC role references: `tdd-guide`, `security-reviewer`, `code-reviewer`
+
+### Implemented
+
+1. Added a core `CccxAutoClassifier` seam with async boxed future output.
+2. Added `CccxNineRouterAutoClassifier`, a 9router-only Chat Completions
+   classifier client:
+   - endpoint: `https://9router.ai/api/v1/chat/completions`;
+   - API key env: `CCCX_API_KEY`;
+   - classifier model env: `CCCX_AUTO_CLASSIFIER_MODEL`;
+   - non-streaming request;
+   - fixed timeout;
+   - compact JSON-only classifier contract.
+3. `ExecPolicyManager` now owns an optional Auto classifier provider.
+4. Shell permission path now calls classifier only when:
+   - active mode is `Auto`;
+   - circuit breaker did not already deny.
+5. Classifier output is passed into `cccx_policy::evaluate_action(...)`, so it
+   remains bounded by deterministic circuit/static/threshold gates.
+6. Missing provider, timeout, HTTP failure, invalid response, empty response or
+   unknown decision all map to `ClassifierOutcome::Unavailable`, which policy
+   converts to `RequireApproval(reason="classifier_unavailable")`.
+7. Circuit breaker still short-circuits before classifier.
+
+### RED/GREEN evidence
+
+Initial RED:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo test -p codex-core p3_auto_shell_uses_classifier_allow_outcome --lib
+```
+
+Result:
+
+- Failed to compile because `CccxAutoClassifier`,
+  `CccxAutoClassifierFuture`, `CccxClassifierOutcome`, and the test injection
+  method did not exist.
+
+Final GREEN:
+
+```powershell
+cargo test -p codex-core p3_auto_ --lib
+cargo test -p codex-core p3_accept_edits_reroutes_when_cumulative_changed_lines_exceed_threshold --lib
+cargo test -p codex-core cccx_post_tool_use_counter --lib
+cargo test -p codex-core cccx_thread_settings_enters_bypass_with_backend_sandbox_attestation --lib
+cargo test -p cccx-policy classifier_failure_requires_approval_in_auto
+```
+
+Results:
+
+- `p3_auto_*`: 4 passed.
+- `p3_accept_edits_reroutes_when_cumulative_changed_lines_exceed_threshold`: passed.
+- `cccx_post_tool_use_counter_*`: 2 passed.
+- `cccx_thread_settings_enters_bypass_with_backend_sandbox_attestation`: passed.
+- `classifier_failure_requires_approval_in_auto`: passed.
+
+Formatting:
+
+```powershell
+cargo fmt --all
+```
+
+Result:
+
+- Completed. Rustfmt emitted the existing stable-toolchain warning for
+  `imports_granularity = Item`.
+
+### Remaining Phase 3 gaps
+
+- Auto classifier currently has env-based production configuration only
+  (`CCCX_AUTO_CLASSIFIER_MODEL` + `CCCX_API_KEY`). A TOML/user config surface
+  for classifier model/profile remains to be added if required by the final UX
+  contract.
+- Auto classifier is wired for shell permission path. Edit/MCP/network
+  classifier call-sites still need parity if those paths can reach Auto with
+  classifier-eligible actions after deterministic gates.
+- PostToolUse-blocked hook path is protected by commit ordering in registry,
+  but still lacks a dedicated hook-config integration regression test.
