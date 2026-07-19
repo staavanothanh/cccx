@@ -2485,6 +2485,27 @@ The core test command reports only the pre-existing unused methods warning in
 queue lifecycle, targeted worker cancel/resume, checkpoint wiring, and working
 tree leases.
 
+## 2026-07-20 — Phase 6A: native approval queue resolution (partial)
+
+- Command and patch approval paths now retain the cccx queue request ID until
+  the native Codex approval channel resolves. The final native decision then
+  atomically approves or denies that exact queue entry; approval reuses the
+  digest captured at enqueue time.
+- Resolving the active entry promotes the next queued request. If the entry was
+  already stale/cancelled, the resolver logs the typed queue error instead of
+  granting a different request.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 check -p codex-core
+cargo +1.95.0 test -p codex-core native_approval_resolution_clears_the_active_queue_entry --lib
+```
+
+This is only the first Phase 6 slice. Permission request identity still needs
+logical worker/task/attempt metadata, and Phase 6 must still wire targeted
+cancel, checkpoint/resume, worker leases, and `/agents` commands.
+
 ## 2026-07-20 — Phase 5D: Task Graph writer lease
 
 - Added `update_task_graph()`, a project-local writer-lease transaction for

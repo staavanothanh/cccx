@@ -176,6 +176,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::client::ModelClient;
+use crate::permission_queue_bridge::CccxPermissionQueue;
 use crate::codex_thread::ThreadConfigSnapshot;
 #[cfg(test)]
 use crate::compact::collect_user_messages;
@@ -464,6 +465,28 @@ pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
 const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
 const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyber-safety";
+
+async fn resolve_cccx_permission_request(
+    queue: &CccxPermissionQueue,
+    request_id: &str,
+    decision: &ReviewDecision,
+) {
+    let approved = matches!(
+        decision,
+        ReviewDecision::Approved
+            | ReviewDecision::ApprovedForSession
+            | ReviewDecision::ApprovedExecpolicyAmendment { .. }
+            | ReviewDecision::NetworkPolicyAmendment {
+                network_policy_amendment: NetworkPolicyAmendment {
+                    action: NetworkPolicyRuleAction::Allow,
+                    ..
+                },
+            }
+    );
+    if let Err(error) = queue.resolve_native_decision(request_id, approved).await {
+        warn!(%request_id, %error, "cccx permission queue could not resolve native approval");
+    }
+}
 
 impl Session {
     /// Spawn and initialize a new session.
@@ -2249,7 +2272,14 @@ impl Session {
             parsed_cmd,
         });
         self.send_event(turn_context, event).await;
-        rx_approve.await.unwrap_or(ReviewDecision::Abort)
+        let decision = rx_approve.await.unwrap_or(ReviewDecision::Abort);
+        resolve_cccx_permission_request(
+            &self.services.cccx_permission_queue,
+            &cccx_request_id,
+            &decision,
+        )
+        .await;
+        decision
     }
 
     #[expect(
@@ -2328,7 +2358,14 @@ impl Session {
             grant_root,
         });
         self.send_event(turn_context, event).await;
-        rx_approve.await.unwrap_or(ReviewDecision::Abort)
+        let decision = rx_approve.await.unwrap_or(ReviewDecision::Abort);
+        resolve_cccx_permission_request(
+            &self.services.cccx_permission_queue,
+            &cccx_request_id,
+            &decision,
+        )
+        .await;
+        decision
     }
 
     #[expect(

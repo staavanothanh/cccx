@@ -47,6 +47,27 @@ impl CccxPermissionQueue {
         self.inner.lock().await.deny(request_id)
     }
 
+    /// Resolve the cccx queue entry when the native Codex approval UI has
+    /// returned. Approval always reuses the digest captured at enqueue time;
+    /// a stale or cancelled entry remains rejected by the policy queue.
+    pub async fn resolve_native_decision(
+        &self,
+        request_id: &str,
+        approved: bool,
+    ) -> Result<(), QueueError> {
+        let mut queue = self.inner.lock().await;
+        if approved {
+            let digest = queue
+                .get(request_id)
+                .ok_or_else(|| QueueError::UnknownRequest(request_id.to_string()))?
+                .digest
+                .clone();
+            queue.approve(request_id, &digest)
+        } else {
+            queue.deny(request_id)
+        }
+    }
+
     pub async fn cancel_agent_requests(&self, agent_session_id: &str) {
         self.inner
             .lock()
@@ -291,5 +312,39 @@ mod tests {
             Some(second.as_str()),
             "Phase 7: after deny, second request must be promoted to active"
         );
+    }
+
+    #[tokio::test]
+    async fn native_approval_resolution_clears_the_active_queue_entry() {
+        let queue = CccxPermissionQueue::new();
+        let first = queue
+            .enqueue(
+                "agent-1".to_string(),
+                "worker-1".to_string(),
+                "T1".to_string(),
+                action("T1"),
+                "first approval".to_string(),
+            )
+            .await;
+        let second = queue
+            .enqueue(
+                "agent-2".to_string(),
+                "worker-2".to_string(),
+                "T2".to_string(),
+                action("T2"),
+                "second approval".to_string(),
+            )
+            .await;
+
+        queue
+            .resolve_native_decision(&first, true)
+            .await
+            .expect("native approval should resolve the active queue request");
+
+        assert_eq!(
+            queue.get(&first).await.map(|request| request.status),
+            Some(PermissionRequestStatus::Approved)
+        );
+        assert_eq!(queue.active_request_id().await.as_deref(), Some(second.as_str()));
     }
 }
