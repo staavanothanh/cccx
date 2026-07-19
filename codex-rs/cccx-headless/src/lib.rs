@@ -411,4 +411,104 @@ mod tests {
             "terminal event is the final event in the design contract"
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 0 RED tests — exec wiring gap
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // Issue: implementer-issues.md §High — "cccx.exec_event.v1 chưa wire vào
+    //   cccx exec --json; exec vẫn emit upstream ThreadEvent."
+    //
+    // The cccx-headless crate has the full schema (HeadlessEventEnvelope →
+    // HeadlessEvent {Answer, AgentUpdate, TaskUpdate, PermissionRequest,
+    // Terminal, ...}) and all contract tests pass, BUT:
+    //
+    // 1. The real exec path (codex-rs/exec/src/event_processor_with_jsonl_output.rs)
+    //    emits upstream ThreadEvent on stdout, NOT HeadlessEventEnvelope.
+    // 2. The `--json` flag maps to `EventProcessorWithJsonOutput` which has its
+    //    own schema (turn_id, type, item, raw_item), not cccx.exec_event.v1.
+    // 3. No code in the exec crate imports or uses cccx_headless types.
+
+    /// Prove that the cccx-headless schema is complete and would satisfy the
+    /// design if wired. The RED gap is the integration between
+    /// EventProcessorWithJsonOutput and HeadlessEventEnvelope.
+    #[test]
+    fn p0_exec_wiring_schema_is_ready_but_unwired() {
+        // All required event types exist
+        let _answer = HeadlessEvent::Answer(AnswerPayload { text: "x".into() });
+        let _terminal = HeadlessEvent::Terminal(TerminalPayload {
+            status: TerminalStatus::Success,
+            exit_code: Some(0),
+        });
+        let _agent_update = HeadlessEvent::AgentUpdate(AgentUpdatePayload {
+            logical_session_id: "x".into(),
+            display_name: "x".into(),
+            role: "x".into(),
+            status: "x".into(),
+            model_route: ModelRoutePayload {
+                selection_source: "x".into(),
+                requested_route_id: "x".into(),
+                effective_route_id: "x".into(),
+            },
+        });
+        let _task_update = HeadlessEvent::TaskUpdate(TaskUpdatePayload {
+            task_id: "x".into(),
+            status: "x".into(),
+            verified: false,
+        });
+        let _permission = HeadlessEvent::PermissionRequest(PermissionRequestPayload {
+            request_id: "x".into(),
+            agent_display_name: "x".into(),
+            action: "x".into(),
+            scope: "x".into(),
+            risk: "x".into(),
+        });
+        let _error = HeadlessEvent::Error(ErrorPayload {
+            message: "x".into(),
+            recoverable: false,
+        });
+        let _approval = HeadlessEvent::ApprovalDenied(ApprovalDeniedPayload {
+            request_id: "x".into(),
+            reason: "x".into(),
+        });
+
+        // Schema version constant is established
+        assert_eq!(CCCX_HEADLESS_EVENT_SCHEMA_VERSION, "cccx.exec_event.v1");
+
+        // GREEN: schema is complete and well-structured.
+        // RED: codex-rs/exec/src/event_processor_with_jsonl_output.rs
+        //      does not import or emit any cccx_headless types.
+        let exec_wired = false;
+        assert!(
+            exec_wired,
+            "RED (P0-EXEC): cccx-headless schema exists and validates, \
+             but the exec --json path emits upstream ThreadEvent instead of \
+             HeadlessEventEnvelope. No code in exec/ uses cccx_headless."
+        );
+    }
+
+    /// Every event in the design contract must carry schemaVersion + sessionId +
+    /// turnId + seq. This is enforced at the serialization layer but NOT at the
+    /// exec runtime output layer.
+    #[test]
+    fn p0_exec_envelope_must_contain_required_fields() {
+        let envelope = HeadlessEventEnvelope::new(
+            1,
+            HeadlessEvent::Terminal(TerminalPayload {
+                status: TerminalStatus::Success,
+                exit_code: Some(0),
+            }),
+        );
+        let json = serde_json::to_value(&envelope).unwrap();
+
+        assert_eq!(json["schemaVersion"], "cccx.exec_event.v1");
+        assert!(json.get("sessionId").is_some());
+        assert!(json.get("turnId").is_some());
+        assert_eq!(json["seq"], 1);
+        assert_eq!(json["type"], "terminal");
+        assert!(json.get("payload").is_some());
+
+        // GREEN: envelope schema is correct.
+        // RED: exec --json output uses ThreadEvent, not this envelope.
+    }
 }

@@ -40,6 +40,52 @@ $env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
 $env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
 ```
 
+### Windows V8 junction prerequisite
+
+Trên Windows, crate `v8`/`rusty_v8` có thể fail khi build trong shared target
+dir vì bước symlink `gn_root` không tạo được đúng cách. Trước khi chạy các test
+đụng `codex-core`, `code-mode`, hoặc workspace build/check rộng, implementer
+phải kiểm tra junction này:
+
+```powershell
+$v8Version = "149.2.0"
+$v8Source = Get-ChildItem -Directory -Recurse `
+  -Path C:\Users\Admin\.cargo\registry\src `
+  -Filter "v8-$v8Version" `
+  -ErrorAction SilentlyContinue |
+  Select-Object -First 1 -ExpandProperty FullName
+
+if (-not $v8Source) {
+  throw "Missing Cargo registry source for v8-$v8Version. Run a targeted cargo test/build once to fetch it, then rerun this block."
+}
+
+$gnRoot = "D:\cargo-targets\cccx\debug\gn_root"
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $gnRoot) | Out-Null
+
+if (Test-Path -LiteralPath $gnRoot) {
+  $item = Get-Item -LiteralPath $gnRoot -Force
+  if ($item.LinkType -eq "Junction" -or $item.LinkType -eq "SymbolicLink") {
+    Remove-Item -LiteralPath $gnRoot -Force
+  } else {
+    throw "Refusing to replace non-link path: $gnRoot"
+  }
+}
+
+New-Item -ItemType Junction -Path $gnRoot -Target $v8Source | Out-Null
+Get-Item -LiteralPath $gnRoot -Force | Select-Object FullName,LinkType,Target
+```
+
+Validation nhanh sau khi tạo junction:
+
+```powershell
+Test-Path D:\cargo-targets\cccx\debug\gn_root\BUILD.gn
+Test-Path D:\cargo-targets\cccx\debug\gn_root\src
+```
+
+Nếu `Cargo.lock` đổi version `v8`, cập nhật `$v8Version` theo version trong
+`codex-rs/Cargo.lock` trước khi tạo junction. Không tạo junction vào repo; đây
+là workaround local cho `D:\cargo-targets\cccx`.
+
 Stop condition chung:
 
 - Test đỏ vì thiếu feature đúng như phase mong muốn → tiếp tục implement.
