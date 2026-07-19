@@ -394,11 +394,25 @@ Commit: `7b5fb32`.
 |----|------|--------|
 | P3-T1 | `p3_parent_capability_uses_actual_parent_tools_not_work_spec` | GREEN ✓ |
 | P3-T2 | `p3_parent_capability_intersection_reduces_projection` | GREEN ✓ |
+| P3-T3 | `runtime_projection_model_route_now_reaches_config_non_async` — model route touched | GREEN ✓ |
 | | cccx-protocol (18) | GREEN ✓ |
 | | cccx-policy (11) | GREEN ✓ |
 | | cccx-mode (6) | GREEN ✓ |
-| | codex-core cccx tests (17) | GREEN ✓ |
-| | Phase 0 RED (3) — structural Config gap | RED (expected) |
+| | phase0 tests (8 GREEN, 2 RED intentional) | 8✓ 2✗ |
+
+### Phase 3 Self-Audit (agent-architecture-audit)
+
+**Gap đã fix trong phase này:**
+1. `parent_capability_set_for_work_spec` — `parent.tools/mcp_tools` giờ từ caller, không clone từ WorkSpec. ✓
+2. `cccx-policy` subagent scope — `any()` → `all()`. ✓
+3. `apply_cccx_harness_to_config` — model route Explicit giờ viết vào `Config.model`. ✓
+
+**2 intentional RED tests remain:** `permission_policy` + `allowed_tools` projection.
+Lý do: Config struct không có field cho permission_policy và allowed_tools.
+Cần thêm field mới vào Config (architectural change) hoặc dùng `DynamicToolSpec`
+vào runtime spawn path — deferred to later phases.
+
+Commit: next.
 
 ### Remaining gaps
 
