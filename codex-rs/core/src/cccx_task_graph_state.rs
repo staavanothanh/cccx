@@ -177,7 +177,7 @@ pub async fn save_mode_state(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::BTreeMap;
 
     use cccx_task_graph::TaskNode;
     use cccx_task_graph::TaskStatus;
@@ -189,8 +189,9 @@ mod tests {
 
     fn verification_spec() -> VerificationSpec {
         VerificationSpec {
-            command: "cargo test -p cccx-task-graph".to_string(),
-            protected_paths: BTreeSet::new(),
+            command: None,
+            protected_digests: BTreeMap::new(),
+            verification_policy_id: Some("focused-tests".to_string()),
             spec_digest: "sha256:spec".to_string(),
         }
     }

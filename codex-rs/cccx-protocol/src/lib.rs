@@ -200,6 +200,9 @@ pub struct WorkConstraint {
 pub struct CommandSpec {
     pub argv: Vec<String>,
     pub cwd: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -522,6 +525,9 @@ pub struct VerificationRecord {
     pub checked_at: String,
     pub evidence_digest: String,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protected_input_digest: Option<String>,
+    #[serde(default)]
     pub findings: Vec<String>,
     pub reason: String,
 }
@@ -539,6 +545,9 @@ impl VerificationRecord {
         require_non_empty("verification.policy_id", &self.policy_id)?;
         require_non_empty("verification.checked_at", &self.checked_at)?;
         require_non_empty("verification.evidence_digest", &self.evidence_digest)?;
+        if let Some(digest) = &self.protected_input_digest {
+            require_non_empty("verification.protected_input_digest", digest)?;
+        }
         require_non_empty("verification.artifact_digest", &self.artifact_digest)?;
         require_non_empty("verification.reason", &self.reason)?;
         if let Some(command) = &self.command {
@@ -899,6 +908,7 @@ mod tests {
                 command: Some(CommandSpec {
                     argv: vec!["cargo".to_string(), "test".to_string()],
                     cwd: "D:/repo".to_string(),
+                    timeout_ms: Some(60_000),
                 }),
                 protected_digests: BTreeMap::from([(
                     "D:/repo/src/auth/generated".to_string(),
@@ -976,6 +986,7 @@ mod tests {
                 passed: true,
                 checked_at: "2026-07-16T00:00:00Z".to_string(),
                 evidence_digest: "sha256:test-log".to_string(),
+                protected_input_digest: Some("sha256:protected-inputs".to_string()),
                 findings: Vec::new(),
                 reason: "focused tests passed".to_string(),
             }),
@@ -1046,8 +1057,9 @@ mod tests {
                 }],
                 "verification_spec": {
                     "command": {
-                        "argv": ["cargo", "test"],
-                        "cwd": "D:/repo"
+                    "argv": ["cargo", "test"],
+                    "cwd": "D:/repo",
+                    "timeout_ms": 60000
                     },
                     "protected_digests": {
                         "D:/repo/src/auth/generated": "sha256:protected"

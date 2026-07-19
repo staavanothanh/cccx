@@ -5,6 +5,7 @@
 
 use cccx_protocol::Artifact;
 use cccx_protocol::ArtifactStatus;
+use cccx_protocol::CommandSpec;
 use cccx_protocol::VerificationRecord;
 use serde::Deserialize;
 use serde::Serialize;
@@ -39,9 +40,15 @@ pub enum WorkerStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationSpec {
-    pub command: String,
+    /// Exact command contract copied from the WorkSpec acceptance boundary.
+    /// It is intentionally structured: the harness must never shell-parse a
+    /// model supplied command string before verification.
     #[serde(default)]
-    pub protected_paths: BTreeSet<String>,
+    pub command: Option<CommandSpec>,
+    #[serde(default)]
+    pub protected_digests: BTreeMap<String, String>,
+    #[serde(default)]
+    pub verification_policy_id: Option<String>,
     pub spec_digest: String,
 }
 
@@ -197,6 +204,18 @@ impl TaskGraph {
         record
             .validate()
             .map_err(|error| TaskGraphError::InvalidVerification(error.to_string()))?;
+        if record.task_id != task_id {
+            return Err(TaskGraphError::VerificationTaskMismatch {
+                expected: task_id.to_string(),
+                actual: record.task_id,
+            });
+        }
+        if record.attempt_id != attempt_id {
+            return Err(TaskGraphError::VerificationAttemptMismatch {
+                expected: attempt_id.to_string(),
+                actual: record.attempt_id,
+            });
+        }
 
         let task = self
             .tasks
@@ -300,6 +319,10 @@ pub enum TaskGraphError {
     InvalidVerification(String),
     #[error("verification spec changed for task `{0}`")]
     VerificationSpecChanged(String),
+    #[error("verification record task mismatch: expected `{expected}`, got `{actual}`")]
+    VerificationTaskMismatch { expected: String, actual: String },
+    #[error("verification record attempt mismatch: expected `{expected}`, got `{actual}`")]
+    VerificationAttemptMismatch { expected: String, actual: String },
 }
 
 #[cfg(test)]
@@ -321,8 +344,12 @@ mod tests {
 
     fn verification_spec() -> VerificationSpec {
         VerificationSpec {
-            command: "cargo test -p cccx-task-graph".to_string(),
-            protected_paths: set(&["codex-rs/cccx-task-graph/src/lib.rs"]),
+            command: None,
+            protected_digests: BTreeMap::from([(
+                "codex-rs/cccx-task-graph/src/lib.rs".to_string(),
+                "sha256:protected".to_string(),
+            )]),
+            verification_policy_id: Some("focused-tests".to_string()),
             spec_digest: "sha256:verification-spec".to_string(),
         }
     }
@@ -404,6 +431,7 @@ mod tests {
             passed: true,
             checked_at: "2026-07-16T00:00:00Z".to_string(),
             evidence_digest: "sha256:test-log".to_string(),
+            protected_input_digest: None,
             findings: Vec::new(),
             reason: "verification passed".to_string(),
         }
@@ -488,6 +516,20 @@ mod tests {
             Some(&TaskStatus::Blocked)
         );
         assert!(!graph.can_stop());
+    }
+
+    #[test]
+    fn verification_record_cannot_be_attached_to_a_different_attempt() {
+        let mut graph = graph_with_one_started_task();
+        graph
+            .apply_artifact("T1", success_artifact())
+            .expect("apply success artifact");
+        let mut record = passed_verification();
+        record.attempt_id = "other-attempt".to_string();
+        assert!(matches!(
+            graph.record_verification("T1", "attempt-1", record, "sha256:verification-spec"),
+            Err(TaskGraphError::VerificationAttemptMismatch { .. })
+        ));
     }
 
     #[test]

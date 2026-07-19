@@ -20,6 +20,7 @@ use codex_protocol::ThreadId;
 use crate::artifact_collector::ArtifactCollector;
 use crate::cccx_task_graph_state;
 use crate::goal_evaluator::GoalEvaluator;
+use crate::verification_runner::run_verification;
 
 pub(crate) struct CccxRuntimeState {
     task_graph: TaskGraph,
@@ -98,8 +99,9 @@ impl CccxRuntimeState {
             artifact.verification = GoalEvaluator::evaluate(
                 self.task_graph
                     .tasks
-                    .get(&attempt.work_spec.task_id)
-                    .ok_or_else(|| format!("unknown cccx task `{}`", attempt.work_spec.task_id))?,
+                .get(&attempt.work_spec.task_id)
+                .ok_or_else(|| format!("unknown cccx task `{}`", attempt.work_spec.task_id))?,
+                &artifact.attempt_id,
                 exit_code,
                 log_digest,
             );
@@ -131,31 +133,47 @@ impl CccxRuntimeState {
         &self.task_graph
     }
 
+    fn record_harness_verification(
+        &mut self,
+        task_id: &str,
+        attempt_id: &str,
+        record: cccx_protocol::VerificationRecord,
+    ) -> Result<(), String> {
+        let spec_digest = self
+            .task_graph
+            .tasks
+            .get(task_id)
+            .ok_or_else(|| format!("unknown cccx task `{task_id}`"))?
+            .verification_spec
+            .spec_digest
+            .clone();
+        self.task_graph
+            .record_verification(task_id, attempt_id, record, &spec_digest)
+            .map_err(|error| error.to_string())
+    }
+
     fn ensure_task_exists(&mut self, work_spec: &WorkSpec) -> Result<(), String> {
         if self.task_graph.tasks.contains_key(&work_spec.task_id) {
             return Ok(());
         }
         use sha2::{Digest, Sha256};
-        let mut sorted_paths: Vec<_> = work_spec
-            .scope
-            .canonical_paths
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        sorted_paths.sort();
-        let paths_joined = sorted_paths.join(",");
-        let mut sorted_tools: Vec<_> = work_spec.allowed_tools.iter().map(|s| s.as_str()).collect();
-        sorted_tools.sort();
-        let tools_joined = sorted_tools.join(",");
-        let spec_payload = format!("{}|{}|{}", work_spec.objective, paths_joined, tools_joined);
-        let spec_digest = format!("sha256:{:x}", Sha256::digest(spec_payload.as_bytes()));
+        let protocol_spec = work_spec.verification_spec.clone().unwrap_or(
+            cccx_protocol::VerificationSpec {
+                command: None,
+                protected_digests: BTreeMap::new(),
+                verification_policy_id: None,
+            },
+        );
+        let spec_payload = serde_json::to_vec(&protocol_spec).map_err(|error| error.to_string())?;
+        let spec_digest = format!("sha256:{:x}", Sha256::digest(spec_payload));
         self.task_graph
             .add_task(TaskNode::new(
                 work_spec.task_id.clone(),
                 work_spec.objective.clone(),
                 VerificationSpec {
-                    command: "cccx subagent completion artifact".to_string(),
-                    protected_paths: work_spec.scope.protected_paths.clone(),
+                    command: protocol_spec.command,
+                    protected_digests: protocol_spec.protected_digests,
+                    verification_policy_id: protocol_spec.verification_policy_id,
                     spec_digest,
                 },
             ))
@@ -250,6 +268,42 @@ impl CccxRuntimeRegistry {
         // the pinned VerificationSpec and records its real exit code and log
         // digest through `record_verification`.
         state.complete(artifact, None, None)?;
+        if success {
+            let task_id = runtime.work_spec.task_id.clone();
+            let verification_spec = state
+                .task_graph()
+                .tasks
+                .get(&task_id)
+                .ok_or_else(|| format!("unknown cccx task `{task_id}`"))?
+                .verification_spec
+                .clone();
+            match run_verification(&runtime.project_root, &verification_spec).await {
+                Ok(Some(run)) => {
+                    use sha2::{Digest, Sha256};
+                    let artifact_digest = format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
+                    let task = state
+                        .task_graph()
+                        .tasks
+                        .get(&task_id)
+                        .ok_or_else(|| format!("unknown cccx task `{task_id}`"))?;
+                    let record = GoalEvaluator::evaluate_execution(
+                        task,
+                        &child_thread_id.to_string(),
+                        run.command,
+                        run.protected_input_digest,
+                        artifact_digest,
+                    );
+                    state.record_harness_verification(&task_id, &child_thread_id.to_string(), record)?;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    cccx_task_graph_state::save_task_graph(&runtime.project_root, state.task_graph())
+                        .await
+                        .map_err(|save_error| save_error.to_string())?;
+                    return Err(error.to_string());
+                }
+            }
+        }
         cccx_task_graph_state::save_task_graph(&runtime.project_root, state.task_graph())
             .await
             .map_err(|error| error.to_string())?;
@@ -340,8 +394,8 @@ mod tests {
     use super::*;
     use crate::artifact_collector::ArtifactCollector;
     use cccx_protocol::{
-        ArtifactProvenance, ForkPolicy, HarnessKind, ModelRouteSelection, PermissionPolicy,
-        RevisionRef, WorkRole, WorkScope,
+        ArtifactProvenance, CommandSpec, ForkPolicy, HarnessKind, ModelRouteSelection,
+        PermissionPolicy, RevisionRef, WorkRole, WorkScope,
     };
     use cccx_task_graph::{TaskNode, VerificationSpec};
     use std::collections::BTreeSet;
@@ -411,8 +465,9 @@ mod tests {
                 "T1",
                 "test",
                 VerificationSpec {
-                    command: "cargo test".into(),
-                    protected_paths: BTreeSet::new(),
+                    command: None,
+                    protected_digests: BTreeMap::new(),
+                    verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:s".into(),
                 },
             ))
@@ -437,6 +492,48 @@ mod tests {
             )
             .unwrap();
         assert!(runtime.task_graph().can_stop());
+    }
+
+    #[tokio::test]
+    async fn complete_spawn_runs_the_pinned_work_spec_verification_command() {
+        let project = tempfile::TempDir::new().unwrap();
+        let mut work_spec = work_spec();
+        work_spec.verification_spec = Some(cccx_protocol::VerificationSpec {
+            command: Some(CommandSpec {
+                argv: if cfg!(windows) {
+                    vec!["cmd".to_string(), "/C".to_string(), "echo cccx-wire".to_string()]
+                } else {
+                    vec!["sh".to_string(), "-c".to_string(), "printf cccx-wire".to_string()]
+                },
+                cwd: ".".to_string(),
+                timeout_ms: Some(5_000),
+            }),
+            protected_digests: BTreeMap::new(),
+            verification_policy_id: Some("pinned-test".to_string()),
+        });
+        let child_thread_id = ThreadId::new();
+        let runtime = CccxSpawnRuntime {
+            project_root: project.path().to_path_buf(),
+            work_spec,
+            display_name: "verification-worker".to_string(),
+            model_route_summary: "9router/test".to_string(),
+        };
+        let mut registry = CccxRuntimeRegistry::default();
+        registry.register_spawn(child_thread_id, runtime).await.unwrap();
+        assert!(registry
+            .complete_spawn(child_thread_id, "worker completed".to_string(), true)
+            .await
+            .unwrap());
+        let graph = cccx_task_graph_state::load_task_graph(project.path())
+            .await
+            .unwrap()
+            .unwrap();
+        let task = &graph.tasks["T1"];
+        assert!(task.is_verified());
+        let record = task.attempts[0].verification_records.last().unwrap();
+        assert_eq!(record.verifier, "cccx-verification-runner");
+        assert_eq!(record.command.as_ref().unwrap().exit_code, 0);
+        assert!(record.protected_input_digest.is_some());
     }
 
     // ── Phase 3 tests ──
@@ -633,8 +730,9 @@ mod tests {
                 "T1",
                 "prove the task",
                 VerificationSpec {
-                    command: "cargo test".to_string(),
-                    protected_paths: BTreeSet::new(),
+                    command: None,
+                    protected_digests: BTreeMap::new(),
+                    verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:spec".to_string(),
                 },
             ))
@@ -685,8 +783,9 @@ mod tests {
                 "T1",
                 "prove the task with evidence",
                 VerificationSpec {
-                    command: "cargo test".to_string(),
-                    protected_paths: BTreeSet::new(),
+                    command: None,
+                    protected_digests: BTreeMap::new(),
+                    verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:s".to_string(),
                 },
             ))
@@ -898,8 +997,9 @@ mod tests {
                 "T-p13",
                 "prove E2E spawn chain",
                 VerificationSpec {
-                    command: "cargo test".to_string(),
-                    protected_paths: BTreeSet::new(),
+                    command: None,
+                    protected_digests: BTreeMap::new(),
+                    verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:p13".to_string(),
                 },
             ))
@@ -954,8 +1054,9 @@ mod tests {
                 "T-p13r",
                 "prove regression detection",
                 VerificationSpec {
-                    command: "cargo test".to_string(),
-                    protected_paths: BTreeSet::new(),
+                    command: None,
+                    protected_digests: BTreeMap::new(),
+                    verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:p13r".to_string(),
                 },
             ))

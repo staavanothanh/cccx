@@ -54,6 +54,7 @@ mod exec_policy;
 #[cfg(test)]
 mod git_info_tests;
 mod goal_evaluator;
+mod verification_runner;
 mod guardian;
 mod hook_runtime;
 mod image_preparation;

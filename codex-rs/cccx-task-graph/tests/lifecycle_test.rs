@@ -12,12 +12,18 @@ use cccx_protocol::{
 use cccx_task_graph::{
     AttemptRecord, TaskGraph, TaskNode, TaskStatus, VerificationSpec, WorkerRecord, WorkerStatus,
 };
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 fn verification_spec(command: &str, digest: &str) -> VerificationSpec {
     VerificationSpec {
-        command: command.to_string(),
-        protected_paths: BTreeSet::new(),
+        command: Some(cccx_protocol::CommandSpec {
+            argv: command.split_whitespace().map(str::to_string).collect(),
+            cwd: ".".to_string(),
+            timeout_ms: Some(60_000),
+        }),
+        protected_digests: BTreeMap::new(),
+        verification_policy_id: Some("integration".to_string()),
         spec_digest: digest.to_string(),
     }
 }
@@ -83,11 +89,11 @@ fn success_artifact(art_id: &str, work_spec_id: &str, attempt_id: &str) -> Artif
     }
 }
 
-fn passed_verification() -> VerificationRecord {
+fn passed_verification(task_id: &str, attempt_id: &str) -> VerificationRecord {
     VerificationRecord {
         schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
-        task_id: "T1".to_string(),
-        attempt_id: "attempt-ws-1".to_string(),
+        task_id: task_id.to_string(),
+        attempt_id: attempt_id.to_string(),
         verifier: "goal-evaluator".to_string(),
         policy_id: "integration".to_string(),
         command: None,
@@ -99,6 +105,7 @@ fn passed_verification() -> VerificationRecord {
         passed: true,
         checked_at: "2026-07-19T00:00:00Z".to_string(),
         evidence_digest: "sha256:ev".to_string(),
+        protected_input_digest: None,
         findings: Vec::new(),
         reason: "verification passed".to_string(),
     }
@@ -150,7 +157,7 @@ fn verification_record_passed_marks_task_verified_and_allows_stop() {
         .apply_artifact("T1", artifact)
         .expect("apply artifact");
     graph
-        .record_verification("T1", "attempt-ws-1", passed_verification(), "sha256:spec")
+        .record_verification("T1", "attempt-ws-1", passed_verification("T1", "attempt-ws-1"), "sha256:spec")
         .expect("record verification");
 
     let task = graph.tasks.get("T1").expect("task exists");
@@ -193,7 +200,7 @@ fn blocked_task_cannot_start_until_dependency_is_verified() {
         .apply_artifact("T1", success_artifact("art-1", "ws-1", "attempt-ws-1"))
         .expect("apply T1 artifact");
     graph
-        .record_verification("T1", "attempt-ws-1", passed_verification(), "sha256:spec")
+        .record_verification("T1", "attempt-ws-1", passed_verification("T1", "attempt-ws-1"), "sha256:spec")
         .expect("verify T1");
 
     // Now T2 and T3 can start
@@ -209,13 +216,13 @@ fn blocked_task_cannot_start_until_dependency_is_verified() {
         .apply_artifact("T2", success_artifact("art-2", "ws-2", "attempt-ws-2"))
         .expect("apply T2");
     graph
-        .record_verification("T2", "attempt-ws-2", passed_verification(), "sha256:spec")
+        .record_verification("T2", "attempt-ws-2", passed_verification("T2", "attempt-ws-2"), "sha256:spec")
         .expect("verify T2");
     graph
         .apply_artifact("T3", success_artifact("art-3", "ws-3", "attempt-ws-3"))
         .expect("apply T3");
     graph
-        .record_verification("T3", "attempt-ws-3", passed_verification(), "sha256:spec")
+        .record_verification("T3", "attempt-ws-3", passed_verification("T3", "attempt-ws-3"), "sha256:spec")
         .expect("verify T3");
 
     assert!(graph.can_stop());
@@ -244,7 +251,7 @@ fn stop_is_blocked_when_any_task_remains_unverified() {
         .apply_artifact("T1", success_artifact("art-1", "ws-1", "attempt-ws-1"))
         .expect("apply T1");
     graph
-        .record_verification("T1", "attempt-ws-1", passed_verification(), "sha256:spec")
+        .record_verification("T1", "attempt-ws-1", passed_verification("T1", "attempt-ws-1"), "sha256:spec")
         .expect("verify T1");
 
     // T1 verified, T2 NOT started → can_stop must be false
@@ -259,7 +266,7 @@ fn stop_is_blocked_when_any_task_remains_unverified() {
         .apply_artifact("T2", success_artifact("art-2", "ws-2", "attempt-ws-2"))
         .expect("apply T2");
     graph
-        .record_verification("T2", "attempt-ws-2", passed_verification(), "sha256:spec")
+        .record_verification("T2", "attempt-ws-2", passed_verification("T2", "attempt-ws-2"), "sha256:spec")
         .expect("verify T2");
 
     // Now can stop
@@ -289,7 +296,7 @@ fn verification_spec_change_blocks_tampered_verification() {
         graph.record_verification(
             "T1",
             "attempt-ws-1",
-            passed_verification(),
+            passed_verification("T1", "attempt-ws-1"),
             "sha256:tampered"
         ),
         Err(cccx_task_graph::TaskGraphError::VerificationSpecChanged(

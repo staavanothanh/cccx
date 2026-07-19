@@ -2423,3 +2423,34 @@ Result: 18 passed, 0 failed. Existing warnings only.
   cccx_task_graph_state --lib` — 3 passed.
 - Remaining Phase 5 scope: pinned verification runner, state writer lease/CAS,
   mode/attempt store unification, and `/goal` wiring.
+
+## 2026-07-20 — Phase 5C: pinned harness verification evidence
+
+- Unified Task Graph verification data with the structured `WorkSpec` contract:
+  exact `argv`, `cwd`, optional `timeout_ms`, protected file digests, and
+  verification policy are no longer reduced to a shell-like command string.
+- Added a harness-owned verification runner. It canonicalizes and confines the
+  working directory to the project, checks protected input digests before the
+  command starts, enforces the pinned timeout, and captures the real exit code
+  and combined stdout/stderr SHA-256 digest.
+- `complete_spawn()` now invokes that runner after a successful artifact. It
+  records the actual `CommandExecution` and protected-input digest in a
+  `VerificationRecord`; no command or failed protected check leaves the task
+  unverified/blocked.
+- Verification records are now bound to both their Task and Attempt. An old or
+  copied record can no longer verify a different task/attempt.
+
+Validation (all green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p cccx-protocol
+cargo +1.95.0 test -p cccx-task-graph
+cargo +1.95.0 test -p codex-core verification_runner --lib
+cargo +1.95.0 test -p codex-core cccx_runtime --lib
+cargo +1.95.0 test -p codex-core goal_evaluator --lib
+```
+
+The runtime suite includes an end-to-end assertion that `complete_spawn()`
+executes a pinned `WorkSpec` verification command and persists its resulting
+record. Remaining Phase 5 scope is the unified single-writer state store,
+`/goal`, and bounded audit correction.
