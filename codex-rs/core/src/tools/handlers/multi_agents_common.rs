@@ -260,10 +260,15 @@ pub(crate) fn apply_cccx_work_spec_to_spawn_config(
     // Subagents (CC-harness or CX-harness) are forbidden from spawning more workers.
     // This is defense-in-depth: CX already has orchestrator_mcp_enabled=false (Phase 3),
     // but this gate ensures the scheduler boundary is enforced at the runtime level.
+    //
+    // Phase 4 fix: previous version checked for "cccx_harness_cx"/"cccx_harness_cc"
+    // substrings that do NOT appear in the actual harness prompts. The prompts say
+    // "CC-harness (control-plane) subagent" and "CX-harness (execution-plane) agent".
+    // Now checks for the actual prompt content.
     if let Some(harness) = config.developer_instructions.as_ref()
-        .and_then(|s| if s.contains("cccx_harness_cx") {
+        .and_then(|s| if s.contains("CX-harness (execution-plane)") {
             Some("CX")
-        } else if s.contains("cccx_harness_cc") {
+        } else if s.contains("CC-harness (control-plane)") {
             Some("CC-subagent")
         } else {
             None

@@ -457,7 +457,7 @@ Commit: `6e6463ac`.
 **Gap 2: `ActorIdentity::can_spawn()` existed but never called from runtime**
 - Contract correct: `MainCc=true`, `CcSubagent=false`, `CxSubagent=false`
 
-**Gap 3: Spawn guard uses prompt substring** — still correct (harness prompts are deterministic)
+**Gap 3: Spawn guard used broken substring match** — prompt texts changed in Phase 4, guard didn't match. FIXED.
 
 ### Fix
 
@@ -466,6 +466,7 @@ Commit: `6e6463ac`.
 | `cccx-harness-cc/src/lib.rs` | Rewrote CC prompt: bounded worker referencing Main CC |
 | `cccx-harness-cc/src/lib.rs` | Phase 4 prompt audit test (no scheduler/ADR self-claim) |
 | `cccx-protocol/src/lib.rs` | Phase 4 tests (4): can_spawn() contract |
+| `core/src/tools/handlers/multi_agents_common.rs` | Spawn guard substring: `"cccx_harness_cx"` → `"CX-harness (execution-plane)"` |
 
 ### Test results
 
@@ -476,5 +477,13 @@ Commit: `6e6463ac`.
 | cccx-harness-cx | 2 | ✓ |
 | cccx-mode, cccx-policy | 17 | ✓ |
 
-Commit: next.
+### Phase 4 Self-Audit (agent-architecture-audit + gateguard)
+
+**Phát hiện critical: spawn guard substring không khớp prompt thật**
+- Guard cũ: `contains("cccx_harness_cx")` → CX prompt thật không chứa chuỗi này
+- Guard cũ: `contains("cccx_harness_cc")` → CC prompt thật không chứa chuỗi này
+- → Guard luôn trả `None` → subagent có thể spawn thêm subagent (gap kiến trúc)
+- **Sửa:** cập nhật match sang `"CX-harness (execution-plane)"` / `"CC-harness (control-plane)"`
+
+**Diagnostic #6 (gateguard):** Spawn guard giờ dùng runtime code gate check actual prompt content. ✓
 Commit: next.
