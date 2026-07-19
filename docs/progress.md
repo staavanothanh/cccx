@@ -2129,3 +2129,79 @@ Remaining note:
   configured test classifier remains useful for stronger end-to-end coverage,
   but the previous shell-only classifier gap is no longer true for the core
   permission evaluator.
+
+## Phase 4A — WorkSpec projection reaches child Config
+
+Status: complete.
+
+Scope:
+
+- `codex-rs/core/src/config/mod.rs`
+- `codex-rs/core/src/cccx_spawn.rs`
+
+Skills / workflow used:
+
+- `agent-harness-construction`
+- `path-types`
+- `mcp-server-patterns`
+- `gateguard`
+- `code-breaking-changes`
+- MCP-first discovery through `codebase-memory-mcp`; file reads were used only
+  after MCP identified the exact config and spawn adapter files.
+
+Implemented:
+
+1. Added explicit child projection fields to runtime `Config`:
+   - `cccx_child_permission_policy`
+   - `cccx_child_allowed_tools`
+   - `cccx_child_allowed_mcp_tools`
+   - `cccx_child_writable_scope`
+2. Initialized those fields to empty/`None` for main sessions.
+3. Wired `apply_cccx_harness_to_config(...)` so the computed
+   `project_child_config(...)` result is retained on the child config instead
+   of only being logged.
+4. Replaced source-audit/boolean projection tests with runtime tests using a
+   real `crate::config::test_config().await`.
+5. Added runtime assertions for model route, permission policy, tool allowlist,
+   MCP allowlist and writable scope projection.
+
+RED/GREEN evidence:
+
+Initial targeted run:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 test -p codex-core runtime_projection_ --lib
+```
+
+Result:
+
+- 4 passed, 1 failed.
+- Failure was in `runtime_projection_writable_scope_must_reach_config`.
+- Root cause: the test fixture expected `"reduced-scope-path"` to survive, but
+  parent writable roots did not include that path. The projection contract was
+  correctly intersecting child scope with parent capability.
+
+Final GREEN:
+
+```powershell
+cargo +1.95.0 test -p codex-core runtime_projection_ --lib
+cargo +1.95.0 test -p codex-core contract_projection_ --lib
+cargo +1.95.0 fmt --all
+```
+
+Results:
+
+- `runtime_projection_`: 5 passed.
+- `contract_projection_`: 1 passed.
+- Formatting completed. Rustfmt emitted the existing stable-toolchain warning
+  for `imports_granularity = Item`.
+
+Remaining Phase 4 work:
+
+- These fields now make the projection available to downstream runtime code,
+  but this slice does not yet prove all downstream enforcement layers:
+  model-visible catalog filtering, dynamic `tool_search` filtering, MCP
+  stable-id/schema-digest checks, multi-target path extraction, and OS sandbox
+  narrowing still need separate Phase 4 slices.

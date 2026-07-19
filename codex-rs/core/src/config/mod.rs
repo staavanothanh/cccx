@@ -122,6 +122,7 @@ use rmcp::model::UrlElicitationCapability;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::ErrorKind;
@@ -693,6 +694,20 @@ pub struct Config {
 
     /// The single cccx harness governing this agent instance for its lifecycle.
     pub cccx_harness: cccx_protocol::HarnessKind,
+
+    /// WorkSpec-projected permission ceiling for a child session.
+    ///
+    /// `None` means this is not a WorkSpec-projected child config.
+    pub cccx_child_permission_policy: Option<cccx_protocol::PermissionPolicy>,
+
+    /// WorkSpec-projected model-visible tool allowlist for a child session.
+    pub cccx_child_allowed_tools: BTreeSet<String>,
+
+    /// WorkSpec-projected MCP tool/server allowlist for a child session.
+    pub cccx_child_allowed_mcp_tools: BTreeSet<String>,
+
+    /// WorkSpec-projected writable scope for a child session.
+    pub cccx_child_writable_scope: BTreeSet<String>,
 
     /// Guardian-specific policy config override from requirements.toml or config.toml.
     /// This is inserted into the fixed guardian prompt template under the
@@ -3930,6 +3945,10 @@ impl Config {
             developer_instructions,
             cccx_actor_identity: cccx_protocol::ActorIdentity::MainCc,
             cccx_harness: cccx_protocol::HarnessKind::Cc,
+            cccx_child_permission_policy: None,
+            cccx_child_allowed_tools: BTreeSet::new(),
+            cccx_child_allowed_mcp_tools: BTreeSet::new(),
+            cccx_child_writable_scope: BTreeSet::new(),
             compact_prompt,
             include_permissions_instructions,
             include_apps_instructions,

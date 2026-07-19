@@ -31,6 +31,10 @@ pub fn apply_cccx_harness_to_config(
         HarnessKind::Cc => ActorIdentity::CcSubagent,
         HarnessKind::Cx => ActorIdentity::CxSubagent,
     };
+    config.cccx_child_permission_policy = Some(projection.permission_policy);
+    config.cccx_child_allowed_tools = projection.allowed_tools.clone();
+    config.cccx_child_allowed_mcp_tools = projection.allowed_mcp_tools.clone();
+    config.cccx_child_writable_scope = projection.writable_scope.clone();
 
     // --- harness prompt fragment ---
     let harness_prompt = match work_spec.harness {
@@ -225,29 +229,22 @@ mod phase0_tests {
 
     /// Phase 3: model_route Explicit is now written to Config.model.
     /// This test was RED in Phase 0; it is now GREEN after Phase 3 fix.
-    #[test]
-    fn runtime_projection_model_route_now_reaches_config_non_async() {
+    #[tokio::test]
+    async fn runtime_projection_model_route_now_reaches_config() {
+        let mut config = crate::config::test_config().await;
         let mut ws = test_work_spec();
         ws.model_route = ModelRouteSelection::Explicit {
             route_id: "9router/main".into(),
         };
-        let parent = test_parent(); // model_routes = {"9router/main"} ✓
+        let parent = test_parent();
 
-        // Phase 3: apply_cccx_harness_to_config writes model route for Explicit
-        // We can't use test_config() here (async + complex setup),
-        // but the logic is proven by tracing the code path:
-        //   apply_cccx_harness_to_config() →
-        //     match projection.model_route {
-        //       Explicit { route_id } => config.model = Some(route_id.clone())
-        //     }
-        // Verified via source audit at cccx_spawn.rs line ~56.
-        let projected_model_set = true;
-        assert!(
-            projected_model_set,
-            "Phase 3 GREEN: model_route Explicit now written to Config.model. \
-             Verified by source audit of apply_cccx_harness_to_config."
+        apply_cccx_harness_to_config(&mut config, &parent, &ws).unwrap();
+
+        assert_eq!(
+            config.model.as_deref(),
+            Some("9router/main"),
+            "Explicit WorkSpec model_route must be written to child Config.model"
         );
-        let _ = (ws, parent);
     }
 
     /// P0-RED-2: apply_cccx_harness_to_config MUST write permission_policy
@@ -261,26 +258,23 @@ mod phase0_tests {
     /// Currently RED: exec_policy.rs hardcodes ModeKind::Default for all
     /// cccx permission evaluation. The projection's permission_policy is
     /// never read by any permission gate.
-    #[test]
-    fn runtime_projection_permission_policy_must_reach_config() {
+    #[tokio::test]
+    async fn runtime_projection_permission_policy_must_reach_config() {
+        let mut config = crate::config::test_config().await;
         let mut parent = test_parent();
         parent.permission_ceiling = PermissionPolicy::Deny;
+        let ws = test_work_spec();
 
-        let projection = cccx_protocol::project_child_config(&test_work_spec(), &parent).unwrap();
+        let projection = cccx_protocol::project_child_config(&ws, &parent).unwrap();
         // Contract correctly downgraded
         assert_eq!(projection.permission_policy, PermissionPolicy::Deny);
 
-        // RED: exec_policy hardcodes ModeKind::Default at line ~317.
-        // The projected Deny policy is computed but never placed into
-        // Config.permissions or any field read by the permission gate.
-        let policy_in_config = false;
-        assert!(
-            policy_in_config,
-            "RED (P0-RED-2): Config does not carry projection.permission_policy. \
-             exec_policy hardcodes ModeKind::Default; cccx_circuit_breaker_requirement \
-             and cccx_full_shell_requirement never read the projected policy. \
-             Architecture §3.2: 'Subagent permission evaluation uses pipeline \
-             based on WorkSpec, not Main CC mode.'"
+        apply_cccx_harness_to_config(&mut config, &parent, &ws).unwrap();
+
+        assert_eq!(
+            config.cccx_child_permission_policy,
+            Some(PermissionPolicy::Deny),
+            "Projected WorkSpec permission policy must reach child Config"
         );
     }
 
@@ -294,27 +288,63 @@ mod phase0_tests {
     /// Currently RED: the function logs "allowed_tools = %N" but never stores
     /// the allowlist anywhere in Config. The tool catalog builder has no way
     /// to filter what tools the child model sees.
-    #[test]
-    fn runtime_projection_tool_allowlist_must_reach_config() {
-        let projection =
-            cccx_protocol::project_child_config(&test_work_spec(), &test_parent()).unwrap();
+    #[tokio::test]
+    async fn runtime_projection_tool_allowlist_must_reach_config() {
+        let mut config = crate::config::test_config().await;
+        let ws = test_work_spec();
+        let parent = test_parent();
+        let projection = cccx_protocol::project_child_config(&ws, &parent).unwrap();
         // Only "shell_command" survived the intersection
         assert_eq!(projection.allowed_tools.len(), 1);
         assert!(projection.allowed_tools.contains("shell_command"));
         // "spawn" was in parent but NOT in WorkSpec — correctly excluded
         assert!(!projection.allowed_tools.contains("spawn"));
 
-        // RED: Config has no cccx tool allowlist field. The tool catalog
-        // sent to the child model includes ALL parent tools.
-        let config_has_tool_allowlist = false;
+        apply_cccx_harness_to_config(&mut config, &parent, &ws).unwrap();
+
+        assert_eq!(
+            config.cccx_child_allowed_tools,
+            BTreeSet::from(["shell_command".into()]),
+            "Projected WorkSpec tool allowlist must reach child Config"
+        );
+        assert!(!config.cccx_child_allowed_tools.contains("spawn"));
+    }
+
+    #[tokio::test]
+    async fn runtime_projection_mcp_allowlist_must_reach_config() {
+        let mut config = crate::config::test_config().await;
+        let ws = test_work_spec();
+        let parent = test_parent();
+
+        apply_cccx_harness_to_config(&mut config, &parent, &ws).unwrap();
+
+        assert_eq!(
+            config.cccx_child_allowed_mcp_tools,
+            BTreeSet::from(["codebase-memory-mcp".into()]),
+            "Projected WorkSpec MCP allowlist must reach child Config"
+        );
         assert!(
-            config_has_tool_allowlist,
-            "RED (P0-RED-3): Config has no cccx tool allowlist field. \
-             apply_cccx_harness_to_config() computes the projection but only \
-             logs it via tracing (line ~56-62). Architecture §6 step 2: \
-             'Áp WorkSpec.allowedTools: chỉ enable tools được liệt kê tường minh.' \
-             The tool catalog builder cannot filter — the child model sees \
-             the full parent tool set."
+            !config
+                .cccx_child_allowed_mcp_tools
+                .contains("sequential-thinking")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_projection_writable_scope_must_reach_config() {
+        let mut config = crate::config::test_config().await;
+        let ws = test_work_spec();
+        let mut parent = test_parent();
+        parent
+            .writable_roots
+            .insert("reduced-scope-path".to_string());
+
+        apply_cccx_harness_to_config(&mut config, &parent, &ws).unwrap();
+
+        assert_eq!(
+            config.cccx_child_writable_scope,
+            BTreeSet::from(["reduced-scope-path".into()]),
+            "Projected WorkSpec writable scope must reach child Config"
         );
     }
 
@@ -373,7 +403,7 @@ mod phase0_tests {
             "GREEN: WorkSpec projection must set the child harness lifecycle"
         );
 
-        // ── After apply: fields that are NOT written (arch. gap) ──
+        // ── After apply: projected fields are retained on Config ──
         // Contract level: projection is correctly computed
         let projection = cccx_protocol::project_child_config(&ws, &parent).unwrap();
         assert_eq!(projection.allowed_tools.len(), 1);
@@ -389,7 +419,22 @@ mod phase0_tests {
             "Phase 3: InheritMainEffective model_route preserves parent model"
         );
 
-        // RED: No cccx-projection fields exist on Config (tool allowlist, MCP allowlist, policy)
-        // These structural gaps are documented in P0-RED-3 and P0-RED-2.
+        assert_eq!(
+            config.cccx_child_permission_policy,
+            Some(projection.permission_policy),
+            "Projected permission policy must be retained on child Config"
+        );
+        assert_eq!(
+            config.cccx_child_allowed_tools, projection.allowed_tools,
+            "Projected tool allowlist must be retained on child Config"
+        );
+        assert_eq!(
+            config.cccx_child_allowed_mcp_tools, projection.allowed_mcp_tools,
+            "Projected MCP allowlist must be retained on child Config"
+        );
+        assert_eq!(
+            config.cccx_child_writable_scope, projection.writable_scope,
+            "Projected writable scope must be retained on child Config"
+        );
     }
 }
