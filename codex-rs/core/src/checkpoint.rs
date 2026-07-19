@@ -212,28 +212,36 @@ mod tests {
 
     // ── Phase 8 tests ──
 
-    /// Phase 8: checkpoint must carry all WorkSpec identity fields
-    /// so subagent lifecycle (spawn/cancel/resume) can reference them.
+    /// Phase 8: checkpoint must persist all WorkSpec identity fields
+    /// through save→load cycle. Proves the full persistence path works.
     /// task.md: "SubagentStop ghi checkpoint với logicalSessionId/attemptId/baseCommit."
-    #[test]
-    fn p8_checkpoint_stores_workerspec_context() {
+    #[tokio::test]
+    async fn p8_checkpoint_round_trip_preserves_workerspec_context() {
+        let dir = TempDir::new().unwrap();
         let ck = SubagentCheckpoint {
             logical_session_id: "logical-sess-1".into(),
             worker_incarnation_id: "inc-v2".into(),
             task_id: "T-root".into(),
             attempt_id: "attempt-3".into(),
             last_completed_step: "cargo test passes".into(),
-            partial_diff: "diff".into(),
+            partial_diff: "--- a/src/lib.rs".into(),
             pending_steps: vec!["commit".into()],
             checkpointed_at: chrono::Utc::now().to_rfc3339(),
             base_commit: Some("abc1234".to_string()),
         };
+        save_checkpoint(dir.path(), &ck).await.unwrap();
 
-        assert_eq!(ck.logical_session_id, "logical-sess-1");
-        assert_eq!(ck.worker_incarnation_id, "inc-v2");
-        assert_eq!(ck.task_id, "T-root");
-        assert_eq!(ck.attempt_id, "attempt-3");
-        assert_eq!(ck.base_commit.as_deref(), Some("abc1234"));
+        let loaded = load_checkpoint(dir.path(), "logical-sess-1")
+            .await
+            .unwrap()
+            .expect("Phase 8: checkpoint must survive save→load");
+
+        assert_eq!(loaded.logical_session_id, "logical-sess-1");
+        assert_eq!(loaded.worker_incarnation_id, "inc-v2");
+        assert_eq!(loaded.task_id, "T-root");
+        assert_eq!(loaded.attempt_id, "attempt-3");
+        assert_eq!(loaded.base_commit.as_deref(), Some("abc1234"));
+        assert_eq!(loaded.pending_steps, vec!["commit"]);
     }
 
     /// Phase 8: stale checkpoint due to age is rejected.

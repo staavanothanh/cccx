@@ -712,9 +712,19 @@ task.md Phase 8 exit criteria requires **runtime-level checkpoint context** test
 
 | Criteria | Status |
 |----------|--------|
-| SubagentStop ghi checkpoint với logicalSessionId/attemptId/baseCommit | ✓ P8-T1 |
+| SubagentStop ghi checkpoint với logicalSessionId/attemptId/baseCommit | ✓ P8-T1 (round-trip persistence) |
 | Resume dùng checkpoint thật và drift check | ✓ P8-T2, P8-T3, P8-T4 |
 | `/agents cancel <id>` không cancel toàn bộ stream | ⚠️ TUI blocked (v8), msg corrected in prior audit |
 | User không thể chat trực tiếp với subagent trong attach view | ⚠️ TUI blocked (v8) |
+
+### Phase 8 Self-Audit (agent-architecture-audit)
+
+**Phát hiện 1 gap:**
+
+| # | Severity | Finding | Fix |
+|---|----------|---------|-----|
+| 1 | MEDIUM | P8-T1 là struct-shape test — chỉ assert field value, không gọi save/load/validate | Rewrote thành async `p8_checkpoint_round_trip_preserves_workerspec_context`: save→load→verify all 6 WorkSpec fields |
+
+**Kết luận:** checkpoint API có 3 validate gate thật (P8-T2 age, P8-T3 matching head, P8-T4 missing commit) + 1 persistence round-trip (P8-T1). TUI `/agents view/cancel/resume` không test được do v8 build issue.
 
 Commit: next.
