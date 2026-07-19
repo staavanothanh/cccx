@@ -599,4 +599,23 @@ block when unverified, allow when all verified.
 | StopHook allow final answer khi mọi task verified | ✓ P6-T2 |
 | GoalEvaluator chạy verification command + evidence thật | ✓ P6-T3 |
 
+### Phase 6 Self-Audit (agent-architecture-audit + gateguard)
+
+**Phát hiện 2 gap:**
+
+| # | Severity | Finding | Fix |
+|---|----------|---------|-----|
+| 1 | HIGH | `ensure_task_exists()` dùng placeholder `sha256:cccx-runtime-{ws_id}` làm spec_digest — giống pattern đã fix ở Phase 5 cho provenance | SHA256(objective + canonical_paths + allowed_tools) |
+| 2 | LOW | P6-T3 trùng với 3 test goal_evaluator.rs có sẵn (None handling, exit_code=0, exit_code!=0) — redundant | Xóa P6-T3, thay bằng `p6_audit_spec_digest_is_real_sha256_not_placeholder` |
+
+**Diagnostic #6 (gateguard):** StopHook (`cccx_stop_guard_outcome`) là CODE GATE trong `run_turn_stop_hooks()` — gọi `task_graph.can_stop()` qua `stop_guard()`, không phải prompt. ✓
+
+### Test results (sau audit)
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| codex-core cccx_runtime | 11 (3 P6 + 1 audit) | ✓ |
+| cccx-task-graph | 6 | ✓ |
+| goal_evaluator | 3 | ✓ |
+
 Commit: next.

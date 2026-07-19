@@ -135,7 +135,20 @@ impl CccxRuntimeState {
         if self.task_graph.tasks.contains_key(&work_spec.task_id) {
             return Ok(());
         }
-        let spec_digest = format!("sha256:cccx-runtime-{}", work_spec.work_spec_id);
+        use sha2::{Digest, Sha256};
+        let mut sorted_paths: Vec<_> = work_spec.scope.canonical_paths.iter().map(|s| s.as_str()).collect();
+        sorted_paths.sort();
+        let paths_joined = sorted_paths.join(",");
+        let mut sorted_tools: Vec<_> = work_spec.allowed_tools.iter().map(|s| s.as_str()).collect();
+        sorted_tools.sort();
+        let tools_joined = sorted_tools.join(",");
+        let spec_payload = format!(
+            "{}|{}|{}",
+            work_spec.objective,
+            paths_joined,
+            tools_joined
+        );
+        let spec_digest = format!("sha256:{:x}", Sha256::digest(spec_payload.as_bytes()));
         self.task_graph
             .add_task(TaskNode::new(
                 work_spec.task_id.clone(),
@@ -673,34 +686,41 @@ mod tests {
         );
     }
 
-    /// Phase 6: GoalEvaluator requires command evidence AND exit_code=0.
-    /// task.md: "GoalEvaluator chỉ đánh giá evidence; không tự tạo evidence."
+    /// Phase 6 audit: verify `ensure_task_exists()` now produces SHA256 spec_digest,
+    /// not the placeholder `sha256:cccx-runtime-*` pattern.
     #[test]
-    fn p6_goal_evaluator_produces_verification_record_with_command_evidence() {
-        let task = TaskNode::new(
-            "T1",
-            "prove with command evidence",
-            VerificationSpec {
-                command: "cargo test -p cccx-task-graph".to_string(),
-                protected_paths: BTreeSet::new(),
-                spec_digest: "sha256:spec".to_string(),
-            },
+    fn p6_audit_spec_digest_is_real_sha256_not_placeholder() {
+        let mut graph = TaskGraph::new("g", "test");
+        let mut runtime = CccxRuntimeState::new(graph);
+
+        // register_work_spec triggers ensure_task_exists if task doesn't exist
+        let mut ws = work_spec();
+        ws.task_id = "T-spec".to_string();
+        runtime
+            .register_work_spec(
+                ws,
+                "attempt-spec".into(),
+                "thread-spec".into(),
+                "worker".into(),
+                "route".into(),
+            )
+            .unwrap();
+
+        let spec_digest = &runtime.task_graph().tasks["T-spec"]
+            .verification_spec
+            .spec_digest;
+
+        assert!(
+            spec_digest.starts_with("sha256:"),
+            "Phase 6 audit: spec_digest must start with sha256:"
         );
-
-        // Pass: exit_code=0 + digest → verified
-        let record = GoalEvaluator::evaluate(&task, Some(0), Some("sha256:real"))
-            .expect("verification record");
-        assert!(record.passed);
-        assert_eq!(record.verifier, "goal-evaluator");
-
-        // Fail: exit_code!=0 → not verified (but record still produced)
-        let record = GoalEvaluator::evaluate(&task, Some(1), Some("sha256:log"))
-            .expect("verification record");
-        assert!(!record.passed);
-        assert!(!record.findings.is_empty());
-
-        // Missing evidence → no record at all (neither pass nor fail)
-        assert!(GoalEvaluator::evaluate(&task, Some(0), None).is_none());
-        assert!(GoalEvaluator::evaluate(&task, None, Some("sha256:log")).is_none());
+        assert!(
+            !spec_digest.contains("cccx-runtime"),
+            "Phase 6 audit: spec_digest must NOT contain cccx-runtime placeholder. Got: {}",
+            spec_digest
+        );
+        let hex_part = spec_digest.strip_prefix("sha256:").unwrap();
+        assert_eq!(hex_part.len(), 64, "spec_digest must be 64 hex chars");
+        assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
