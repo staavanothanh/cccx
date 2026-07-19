@@ -78,6 +78,17 @@ pub struct AttemptRecord {
     pub verification_records: Vec<VerificationRecord>,
 }
 
+/// Persisted active-worker projection. The source of truth stays in TaskGraph
+/// attempts so it is updated atomically with task/artifact lifecycle changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveAttemptMetadata {
+    pub task_id: String,
+    pub attempt_id: String,
+    pub logical_session_id: String,
+    pub display_name: String,
+    pub worker_status: WorkerStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskNode {
     pub task_id: String,
@@ -90,6 +101,10 @@ pub struct TaskNode {
     /// optional goal condition. It must never be written by model prose.
     #[serde(default)]
     pub goal_condition_met: Option<bool>,
+    /// A failed independent verification is actionable evidence for Main CC to
+    /// create one bounded correction WorkSpec; it is not an automatic retry.
+    #[serde(default)]
+    pub correction_required: Option<String>,
     #[serde(default)]
     pub blocked_by: BTreeSet<String>,
     pub status: TaskStatus,
@@ -276,8 +291,10 @@ impl TaskGraph {
         if record.passed {
             task.status = TaskStatus::Verified;
             task.verified_at = Some(record.checked_at.clone());
+            task.correction_required = None;
         } else {
             task.status = TaskStatus::Blocked;
+            task.correction_required = Some(record.reason.clone());
         }
         if task.goal_condition.is_some() {
             task.goal_condition_met = Some(record.passed);
@@ -297,6 +314,27 @@ impl TaskGraph {
         self.tasks
             .values()
             .filter(|task| !task.is_verified())
+            .collect()
+    }
+
+    pub fn active_attempts(&self) -> Vec<ActiveAttemptMetadata> {
+        self.tasks
+            .values()
+            .flat_map(|task| {
+                task.attempts.iter().filter_map(move |attempt| {
+                    matches!(
+                        &attempt.worker.status,
+                        WorkerStatus::Running | WorkerStatus::Waiting
+                    )
+                    .then(|| ActiveAttemptMetadata {
+                        task_id: task.task_id.clone(),
+                        attempt_id: attempt.attempt_id.clone(),
+                        logical_session_id: attempt.worker.logical_session_id.clone(),
+                        display_name: attempt.worker.display_name.clone(),
+                        worker_status: attempt.worker.status.clone(),
+                    })
+                })
+            })
             .collect()
     }
 
@@ -331,6 +369,7 @@ impl TaskNode {
             objective: objective.into(),
             goal_condition: None,
             goal_condition_met: None,
+            correction_required: None,
             blocked_by: BTreeSet::new(),
             status: TaskStatus::Pending,
             verification_spec,
@@ -608,6 +647,43 @@ mod tests {
             )
             .expect("record independent verification");
         assert_eq!(graph.tasks["T1"].goal_condition_met, Some(true));
+    }
+
+    #[test]
+    fn failed_verification_records_one_actionable_correction_reason() {
+        let mut graph = graph_with_one_started_task();
+        graph
+            .apply_artifact("T1", success_artifact())
+            .expect("apply artifact");
+        let mut record = passed_verification();
+        record.passed = false;
+        record.reason = "focused tests failed".to_string();
+        record.findings = vec!["test failure".to_string()];
+        graph
+            .record_verification("T1", "attempt-1", record, "sha256:verification-spec")
+            .expect("record failed verification");
+        let task = &graph.tasks["T1"];
+        assert_eq!(task.status, TaskStatus::Blocked);
+        assert_eq!(
+            task.correction_required.as_deref(),
+            Some("focused tests failed")
+        );
+        assert!(!task.is_verified());
+    }
+
+    #[test]
+    fn active_attempt_projection_is_derived_from_persisted_task_graph() {
+        let graph = graph_with_one_started_task();
+        assert_eq!(
+            graph.active_attempts(),
+            vec![ActiveAttemptMetadata {
+                task_id: "T1".to_string(),
+                attempt_id: "attempt-1".to_string(),
+                logical_session_id: "ls-a1".to_string(),
+                display_name: "a1-task".to_string(),
+                worker_status: WorkerStatus::Running,
+            }]
+        );
     }
 
     #[test]

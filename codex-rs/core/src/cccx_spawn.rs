@@ -198,6 +198,7 @@ mod phase0_tests {
             action_classes: None,
             approval_policy: None,
             verification_spec: None,
+            audit_depth: None,
             expected_artifact: None,
         }
     }

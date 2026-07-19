@@ -988,6 +988,7 @@ mod tests {
             action_classes: None,
             approval_policy: Some(cccx_protocol::ApprovalPolicyKind::AskCc),
             verification_spec: None,
+            audit_depth: None,
             expected_artifact: None,
         }
     }

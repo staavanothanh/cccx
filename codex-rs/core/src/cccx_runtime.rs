@@ -434,6 +434,7 @@ mod tests {
             action_classes: None,
             approval_policy: None,
             verification_spec: None,
+            audit_depth: None,
             expected_artifact: None,
         }
     }
@@ -534,6 +535,47 @@ mod tests {
         assert_eq!(record.verifier, "cccx-verification-runner");
         assert_eq!(record.command.as_ref().unwrap().exit_code, 0);
         assert!(record.protected_input_digest.is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_pinned_verification_persists_one_correction_path() {
+        let project = tempfile::TempDir::new().unwrap();
+        let mut work_spec = work_spec();
+        work_spec.verification_spec = Some(cccx_protocol::VerificationSpec {
+            command: Some(CommandSpec {
+                argv: if cfg!(windows) {
+                    vec!["cmd".to_string(), "/C".to_string(), "exit /B 7".to_string()]
+                } else {
+                    vec!["sh".to_string(), "-c".to_string(), "exit 7".to_string()]
+                },
+                cwd: ".".to_string(),
+                timeout_ms: Some(5_000),
+            }),
+            protected_digests: BTreeMap::new(),
+            verification_policy_id: Some("pinned-test".to_string()),
+        });
+        let child_thread_id = ThreadId::new();
+        let runtime = CccxSpawnRuntime {
+            project_root: project.path().to_path_buf(),
+            work_spec,
+            display_name: "verification-worker".to_string(),
+            model_route_summary: "9router/test".to_string(),
+        };
+        let mut registry = CccxRuntimeRegistry::default();
+        registry.register_spawn(child_thread_id, runtime).await.unwrap();
+        assert!(registry
+            .complete_spawn(child_thread_id, "worker completed".to_string(), true)
+            .await
+            .unwrap());
+        let graph = cccx_task_graph_state::load_task_graph(project.path())
+            .await
+            .unwrap()
+            .unwrap();
+        let task = &graph.tasks["T1"];
+        assert!(!task.is_verified());
+        assert!(task.correction_required.as_deref().is_some_and(|reason| reason.contains("exit code 7")));
+        assert_eq!(task.attempts[0].verification_records.len(), 1);
+        assert!(!task.attempts[0].verification_records[0].passed);
     }
 
     // ── Phase 3 tests ──

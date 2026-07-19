@@ -2455,6 +2455,36 @@ executes a pinned `WorkSpec` verification command and persists its resulting
 record. Remaining Phase 5 scope is the unified single-writer state store,
 `/goal`, and bounded audit correction.
 
+## 2026-07-20 — Phase 5F: unified survivor state and bounded correction
+
+- Active worker metadata is now a persisted projection of `TaskGraph` attempts
+  (`load_active_attempts()`), rather than a second independently writable state
+  file. It therefore remains coherent with task, artifact, and attempt updates.
+- Mode writes use the same per-project writer lease as TaskGraph lifecycle
+  transactions. Both files still use same-directory temp-write, `sync_all`, and
+  rename, so an interrupted replacement preserves the previous committed file.
+- A failed independent verification leaves the task blocked and persists one
+  actionable `correction_required` reason. It does not automatically retry or
+  manufacture a passing result; Main CC must choose whether to issue a bounded
+  follow-up WorkSpec.
+- `WorkSpec.audit_depth` permits only one nested follow-up and only for a CX
+  `Auditor`. Ordinary correction work remains a new top-level CC-scheduled
+  attempt, avoiding recursive audit/repair loops.
+
+Validation (all green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p cccx-protocol       # 31 passed
+cargo +1.95.0 test -p cccx-task-graph     # 10 unit + 5 lifecycle passed
+cargo +1.95.0 test -p codex-core mode_and_task_graph_share_a_safe_project_write_boundary --lib
+cargo +1.95.0 test -p codex-core failed_pinned_verification_persists_one_correction_path --lib
+```
+
+The core test command reports only the pre-existing unused methods warning in
+`permission_queue_bridge.rs`. Phase 5 is complete; Phase 6 owns permission
+queue lifecycle, targeted worker cancel/resume, checkpoint wiring, and working
+tree leases.
+
 ## 2026-07-20 — Phase 5D: Task Graph writer lease
 
 - Added `update_task_graph()`, a project-local writer-lease transaction for

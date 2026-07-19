@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use cccx_mode::CccxModeState;
+use cccx_task_graph::ActiveAttemptMetadata;
 use cccx_task_graph::TaskGraph;
 use thiserror::Error;
 use tokio::fs;
@@ -134,6 +135,17 @@ pub async fn set_task_goal_condition(
     .await
 }
 
+/// Read active worker metadata from the same persisted TaskGraph transaction
+/// source rather than duplicating it in an independently drifting state file.
+pub async fn load_active_attempts(
+    project_root: &Path,
+) -> Result<Vec<ActiveAttemptMetadata>, TaskGraphStateError> {
+    Ok(load_task_graph(project_root)
+        .await?
+        .map(|graph| graph.active_attempts())
+        .unwrap_or_default())
+}
+
 fn project_writer(project_root: &Path) -> Arc<tokio::sync::Mutex<()>> {
     let key = project_root.to_path_buf();
     let writers = PROJECT_WRITERS.get_or_init(|| Mutex::new(BTreeMap::new()));
@@ -223,6 +235,11 @@ pub async fn save_mode_state(
     project_root: &Path,
     mode: &CccxModeState,
 ) -> Result<(), TaskGraphStateError> {
+    // Mode and TaskGraph make up one compaction-survivor state boundary. Use
+    // the same per-project lease as graph mutations so a mode write cannot
+    // interleave with a lifecycle transaction for the same project.
+    let writer = project_writer(project_root);
+    let _lease = writer.lock().await;
     let path = mode_state_path(project_root);
     let Some(parent) = path.parent() else {
         return Err(TaskGraphStateError::Write {
@@ -247,6 +264,7 @@ mod tests {
     use cccx_task_graph::TaskNode;
     use cccx_task_graph::TaskStatus;
     use cccx_task_graph::VerificationSpec;
+    use cccx_policy::MainMode;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -363,5 +381,68 @@ mod tests {
         assert_eq!(task.goal_condition.as_deref(), Some("focused tests must pass"));
         assert_eq!(task.goal_condition_met, None);
         assert!(!task.is_verified());
+    }
+
+    #[tokio::test]
+    async fn active_attempts_are_loaded_from_the_task_graph_store() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut graph = TaskGraph::new("graph-1", "attempts");
+        graph
+            .add_task(TaskNode::new("T1", "first", verification_spec()))
+            .expect("add task");
+        graph
+            .start_attempt(
+                "T1",
+                cccx_task_graph::AttemptRecord {
+                    attempt_id: "attempt-1".to_string(),
+                    work_spec_id: "ws-1".to_string(),
+                    worker: cccx_task_graph::WorkerRecord {
+                        logical_session_id: "logical-1".to_string(),
+                        display_name: "worker-1".to_string(),
+                        role: "Implementer".to_string(),
+                        status: cccx_task_graph::WorkerStatus::Running,
+                        model_route_summary: "9router/test".to_string(),
+                    },
+                    artifact_ids: Vec::new(),
+                    verification_records: Vec::new(),
+                },
+            )
+            .expect("start attempt");
+        save_task_graph(temp_dir.path(), &graph).await.expect("save graph");
+        let active = load_active_attempts(temp_dir.path()).await.expect("load active");
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].attempt_id, "attempt-1");
+        assert_eq!(active[0].logical_session_id, "logical-1");
+    }
+
+    #[tokio::test]
+    async fn mode_and_task_graph_share_a_safe_project_write_boundary() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let graph = TaskGraph::new("graph-1", "shared state");
+        let graph_write = update_task_graph(temp_dir.path(), graph, |graph| {
+            graph
+                .add_task(TaskNode::new("T1", "first", verification_spec()))
+                .map_err(|error| TaskGraphStateError::Mutation(error.to_string()))
+        });
+        let mode = CccxModeState::new(MainMode::Auto);
+        let mode_write = save_mode_state(temp_dir.path(), &mode);
+
+        let (graph_write, mode_write) = tokio::join!(graph_write, mode_write);
+        graph_write.expect("graph transaction");
+        mode_write.expect("mode transaction");
+        assert!(load_task_graph(temp_dir.path())
+            .await
+            .expect("load graph")
+            .expect("graph exists")
+            .tasks
+            .contains_key("T1"));
+        assert!(matches!(
+            load_mode_state(temp_dir.path())
+                .await
+                .expect("load mode")
+                .expect("mode exists")
+                .current,
+            MainMode::Auto
+        ));
     }
 }

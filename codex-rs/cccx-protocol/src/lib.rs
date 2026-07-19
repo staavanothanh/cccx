@@ -271,6 +271,11 @@ pub struct WorkSpec {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_spec: Option<VerificationSpec>,
+    /// CX audit nesting is a hard safety cap. A missing value means this is
+    /// not an audit follow-up; `Some(1)` is the sole permitted audit depth.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_depth: Option<u8>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_artifact: Option<ExpectedArtifact>,
@@ -326,6 +331,16 @@ impl WorkSpec {
         }
         if let Some(spec) = &self.verification_spec {
             spec.validate()?;
+        }
+        if let Some(depth) = self.audit_depth
+            && depth > 1
+        {
+            return Err(ProtocolError::AuditDepthExceeded(depth));
+        }
+        if self.audit_depth.is_some()
+            && (!matches!(self.harness, HarnessKind::Cx) || !matches!(self.role, WorkRole::Auditor))
+        {
+            return Err(ProtocolError::AuditDepthRequiresCxAuditor);
         }
         Ok(())
     }
@@ -734,6 +749,10 @@ pub enum ProtocolError {
     /// Phase 5: provenance cannot contain placeholder digests.
     #[error("provenance field `{0}` contains placeholder value `{1}`")]
     PlaceholderProvenance(&'static str, String),
+    #[error("audit depth `{0}` exceeds the hard cap of 1")]
+    AuditDepthExceeded(u8),
+    #[error("audit depth is reserved for a CX auditor work spec")]
+    AuditDepthRequiresCxAuditor,
 }
 
 fn require_exact_version(
@@ -916,6 +935,7 @@ mod tests {
                 )]),
                 verification_policy_id: Some("focused-tests".to_string()),
             }),
+            audit_depth: None,
             expected_artifact: Some(ExpectedArtifact {
                 required_status: ArtifactStatus::Success,
                 required_evidence_kinds: vec![EvidenceKind::TestLog],
@@ -1076,6 +1096,28 @@ mod tests {
         let decoded: WorkSpec = serde_json::from_value(value).expect("deserialize workspec");
         assert_eq!(decoded, work_spec);
         decoded.validate().expect("valid workspec");
+    }
+
+    #[test]
+    fn work_spec_rejects_audit_depth_above_hard_cap() {
+        let mut spec = sample_work_spec();
+        spec.audit_depth = Some(2);
+        assert_eq!(spec.validate(), Err(ProtocolError::AuditDepthExceeded(2)));
+    }
+
+    #[test]
+    fn audit_depth_requires_a_cx_auditor() {
+        let mut spec = sample_work_spec();
+        spec.audit_depth = Some(1);
+
+        assert_eq!(
+            spec.validate(),
+            Err(ProtocolError::AuditDepthRequiresCxAuditor)
+        );
+
+        spec.role = WorkRole::Auditor;
+        spec.validate()
+            .expect("CX auditor can perform one bounded audit follow-up");
     }
 
     #[test]
