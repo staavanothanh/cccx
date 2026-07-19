@@ -1,72 +1,52 @@
-Kết luận audit 2026-07-16: thiết kế `cccx` đã qua được các vấn đề critical/high ban đầu ở mức đặc tả, nhưng chưa nên coi là frozen spec để implement ngay. Trạng thái hiện tại tốt hơn bản audit cũ: repo đã `git init`, Codex upstream local có commit thật, WorkSpec/Artifact đã có route model/provenance, permission queue và headless contract đã rõ hơn. Các rủi ro còn lại chủ yếu nằm ở việc biến đặc tả thành enforcement trong Codex fork.
-
-## Scope
-
-- Audited docs: `docs/architecture.md`, `docs/design.md`.
-- Codex upstream local baseline: `D:\Learning_Programing\codex-cli-src`, HEAD `800715d201651a2a07c2706dca10400109dae3d3`.
-- Skills used: `agent-architecture-audit`, `agent-harness-construction`, `loop-design-check`, `autonomous-agent-harness`.
-- Claude Code source leak remains non-authoritative. Use only public/observable behavior and clean-room design notes.
-
-## Findings
-
-1. **[High] Baseline drift must become a repeated gate, not a one-time note.**
-
-   `architecture.md` now pins Codex baseline to `800715d201651a2a07c2706dca10400109dae3d3`, but the project depends heavily on upstream Codex internals: hooks, multi-agent spawn/resume, command registry, config layering and model provider behavior. Every `git pull` can invalidate "kế thừa nguyên" claims.
-
-   Required fix: add an implementation checklist later: after upstream pull, run source checks for hook event names, `spawn_agent`, `resume_agent_from_rollout`, command registry, model override semantics, and config schema before editing cccx.
-
-2. **[High] WorkSpec policy is strong, but implementation must not reuse Codex child config inheritance directly.**
-
-   Current architecture correctly requires deny-by-default child config and `WorkSpec.allowedTools`. Codex upstream builds child config from parent runtime state and role overlays. That is useful baseline behavior, but unsafe as-is for cccx because CC/CX authority must be the intersection of WorkSpec, parent permission and sandbox scope.
-
-   Required fix: implement `WorkSpecToChildConfigAdapter` as a hard boundary. Treat native Codex inheritance as input data, not as final authority.
-
-3. **[High] Full-history fork is incompatible with normal CX execution.**
-
-   Codex upstream full-history fork rejects child overrides for agent type/model/reasoning. `architecture.md` now documents `forkMode = "workspec_only" | "full_history_debug"`, with default `workspec_only`. This is the right direction.
-
-   Required fix: implementation must enforce that CX execution never runs via full-history fork. Full-history fork can be debug/read-only only, inherits parent, and cannot override harness/model/permission.
-
-4. **[Medium] Model route policy is now coherent; implementation must enforce catalog freshness.**
-
-   The design now says `requestedRouteId` is an opaque 9router id and resolver validates against allowlist/capability profile. `architecture.md` also requires a local `ModelRouteCatalog` with timestamp/source/digest and fail-closed spawn behavior.
-
-   Required implementation fix: make route validation a core resolver step, not a UI-only warning.
-
-5. **[Medium] Goal/evaluator loop is safer; implementation must protect acceptance boundaries.**
-
-   VerificationRecord and StopHook reduce "agent says done" risk. `architecture.md` now adds `verificationSpec` with protected paths/digests so Build/CX cannot silently weaken tests, edit acceptance commands, or rewrite verification policy to pass.
-
-   Required implementation fix: enforce protected paths in permission gate and verify digests before marking any task verified.
-
-6. **[Medium] Headless contract now has `agent-update`, but event payloads need one manifest.**
-
-   `design.md` now includes `agent-update` with `modelRoute`, but command help, TUI status, JSONL and TaskGraph still risk diverging if each is hand-coded.
-
-   Required fix: generate command metadata and JSONL event schemas from a single typed manifest where practical.
-
-7. **[Low] Accessibility/plain fallback is intentionally strict for personal UX, but should be explicit.**
-
-   The design intentionally requires Unicode/true-color for interactive TUI and relies on headless/plain modes for machine-readable fallback. That is acceptable for this personal project, but it should stay framed as a conscious product constraint, not an accidental accessibility omission.
-
-   Required fix: keep `--json`, `cccx exec`, and stderr/stdout separation non-negotiable. Add `--plain` only if interactive fallback becomes a real need.
-
-## Resolved Since Previous Audit
-
-- Repo now has `.git`; old "no git" P0 is obsolete.
-- Architecture baseline now points to current Codex local HEAD.
-- WorkSpec now includes `modelRoute`, `forkMode`, route provenance and fallback policy.
-- WorkSpec now includes `verificationSpec` with protected paths/digests.
-- Provider Gateway now records `requestedRouteId/effectiveRouteId` instead of only model names.
-- UX now has `/agents model <preset> <route|inherit-main-requested|inherit-main-effective>`.
-- Headless JSONL now has an `agent-update` event with model route provenance.
-- Plugin agent presets now include optional model route fields and allowed route list.
-
-## Next Implementation Order
-
-1. Implement baseline drift checks and upstream feature map.
-2. Implement `WorkSpecToChildConfigAdapter` deny-by-default.
-3. Implement `ModelRouteResolver` + `ModelRouteCatalog`.
-4. Implement permission gate as core policy, with hooks as extensions only.
-5. Implement JSONL/command manifest from typed schema.
-6. Add verification boundary protection before enabling autonomous CX repair loops.
+cccx Final Completion Gate — Audit Report
+Date: 2026-07-19 | Method: Read-only, 3 parallel subagents cross-referencing code, docs, tests
+1. Final Gate: 16 Criteria Verdict
+#	Criterion	Status	Key Evidence
+1	Main CC chạy CC harness từ startup	FAIL	apply_cccx_harness_to_config() only runs for subagents. No call-site applies CC harness to Main agent.
+2	Mọi subagent có actor identity rõ	PARTIAL	ActorIdentity exists + prompt fragments injected for children. But runtime uses substring match (multi_agents_common.rs:268), not structured check.
+3	Chỉ Main CC có scheduler/spawn/ADR authority	PARTIAL	CX orchestrator disabled + forbidden tools list in prompt. But no actor.can_spawn() runtime guard before spawn.
+4	Mode state machine là source of truth cho permission	FAIL	cccx-mode has complete 6-mode state machine. Permission pipeline hardcodes CccxMainMode::Default everywhere (exec_policy.rs:318,374,432). TUI never calls CccxModeState::change_mode().
+5	Bypass cần sandbox attestation thật	FAIL	Circuit breaker retention ✓. attest_mode() does no sandbox verification — only sets mode flag.
+6	WorkSpec projection áp vào child config	FAIL	project_child_config() computes full projection. apply_cccx_harness_to_config() applies only: harness prompt + orchestrator flags + explicit model route. allowed_tools, allowed_mcp_tools, writable_scope, permission_policy are COMPUTED BUT DISCARDED (logged only).
+7	Subagent không thể dùng tool ngoài WorkSpec	PARTIAL	Gates exist for shell/edit/MCP. But LLM tool catalog sent unfiltered (consequence of #6). Reactive enforcement, not proactive.
+8	Mọi LLM call đi qua 9router fail-closed	PASS	provider_boundary_active() hardcoded true. check_fail_closed() rejects non-9router. All calls gated.
+9	Provider provenance/digest evidence thật	PASS	SHA256 from WorkSpec payload. effective_route_id="unknown" without evidence. verify_placeholders() gate.
+10	Task verified chỉ từ VerificationRecord.passed=true	PASS	record_verification() sets verified_at only on passed=true. StopGuard blocks without it.
+11	StopHook block final answer khi TaskGraph unverified	PASS	stop_guard() checks can_stop(). Integrated into run_turn_stop_hooks(). Phase 6 + Phase 13 tests prove.
+12	/agents, /permissions, /tasks, /goal, /model, /remember, /mcp không placeholder	PASS	All 7 have real implementations (Phase 5-8). Some have post-MVP limitation messages but are honest, not stubs.
+13	cccx exec --json emit cccx.exec_event.v1	PASS	HeadlessEventEnvelope with schema version. Terminal event always last. Phase 11 wired.
+14	MCP defaults init đúng	PASS	merge_cccx_mcp_defaults() auto-inserts both. If missing → disabled_reason. User config takes precedence.
+15	Project Memory/ADR/plugin isolation	PARTIAL	Plugin isolation ✓. ADR boundary ✓ (CX forbidden). Storage path: .cccx/memory/ vs designed ~/.cccx/projects/<hash>/memory/. Not loaded at startup.
+16	Target/build artifacts không git tracked	PASS	.gitignore covers all known artifact paths comprehensively.
+Score: 8 PASS / 4 PARTIAL / 4 FAIL
+2. The 4 FAILs — Shared Root Cause
+All 4 FAILs converge on a single architectural gap: the control-plane/execution-plane boundary exists in design docs and contract crates but is not fully wired into the runtime execution path:
+FAIL#	What's Broken	Root Cause
+#1	Main CC harness not installed	apply_cccx_harness_to_config() only wired for subagent spawns
+#4	Mode state machine doesn't drive permissions	CccxModeState not persisted from TUI to session; exec_policy hardcodes Default
+#5	Bypass no sandbox attestation	attest_mode() is a no-op transition — no isolation verification
+#6	WorkSpec projection not applied to Config	allowed_tools/allowed_mcp_tools/writable_scope computed but not written into Config struct (structural Config limitation)
+3. Implementer-Issues Status
+Group	FIXED	PARTIAL	OPEN
+Critical	0	3 (C2 scope+capacity, C3 prompt+guard, C4 provenance+digest)	1 (C1 mode split-brain)
+High	3 (H5 route, H11 exec_event, H15 surface boundary)	1 (H14 /model catalog)	7 (H6-H10, H12-H13)
+7 remaining High issues are in "runtime wiring" — APIs exist but not connected to execution paths: /goal no persistence, TaskGraph only on spawn, /permissions stub, /agents cancel all-streams, checkpoint no runtime call-site, plugin no runtime loader, Project Memory wrong path + not loaded at startup.
+4. Architecture vs Runtime Gap Map
+Architecture Claim	Actual Runtime
+"Mode là state machine"	State machine exists but TUI never writes to it — split-brain
+"Main CC chạy CC harness"	Only subagents get harness injection — Main CC bare
+"Bypass cần sandbox attestation"	attest_mode() no-ops — bypass gate is open
+"WorkSpec projection áp toàn bộ"	Only harness prompt + model route applied — tool/MCP/scope discarded
+"MCP defaults luôn đăng ký"	✓ Implemented
+"9router fail-closed"	✓ Implemented (hard boundary)
+"TaskGraph file-based"	✓ Implemented
+"StopHook block unverified"	✓ Implemented
+"Headless JSONL v1"	✓ Implemented
+"Artsifact/Verification evidence thật"	✓ Implemented
+5. Verdict
+Claim "cccx khớp thiết kế MVP" is NOT fully supported by code evidence. The system has 4 FAIL criteria that form a connected cluster around three critical areas:
+1. Main CC has no harness identity at runtime (#1) — the architectural anchor of CC-led/CX-delegated is missing
+2. Mode system is split-brain (#4) — the 6-mode state machine is correct but disconnected from the permission pipeline
+3. WorkSpec projection is incomplete (#6) — tool/MCP/scope projection is computed but the result is thrown away, leaving subagent boundaries at prompt-level enforcement only
+Conversely, 8 criteria PASS with strong evidence — notably 9router fail-closed, provenance integrity, verification pipeline, UX commands, headless output, MCP defaults, and build hygiene. These confirm substantial progress on the execution-side boundaries.
+The project has landed correct contract designs (cccx-protocol, cccx-policy, cccx-mode, cccx-task-graph, cccx-headless, cccx-ux) but the runtime wiring from those contracts into the Codex execution loop is still partial. The system architecture is sound on paper, viable at the contract-test level, but not yet enforced at every runtime boundary as required by AGENTS.md: "Harness behavior must be enforced by state machines, permission gates, hooks, and structured artifacts, not by prompt wording alone."

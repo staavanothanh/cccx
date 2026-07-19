@@ -1,38 +1,116 @@
-# cccx implementation plan — finish-to-design
+# cccx remediation plan — runtime truth to design completion
 
-Tài liệu này là plan thực thi cho implementer sau audit hiện tại. Nguồn sự
-thật bắt buộc:
+Ngày lập lại plan: 2026-07-19.
 
-- `docs/architecture.md`
-- `docs/design.md`
-- `docs/implementer-issues.md`
+Plan này thay toàn bộ plan cũ sau khi đối chiếu:
 
-Mục tiêu cuối: khi hoàn thành 100% plan này, `cccx` phải đúng thiết kế
-CC-led/CX-delegated, 9router-only, WorkSpec/Artifact boundary enforced bằng
-runtime state/gate, không chỉ bằng prompt hoặc contract test.
+- `docs/architecture.md` — source of truth cho harness, mode, permission,
+  WorkSpec/Artifact, Task Graph, memory, MCP, 9router và lifecycle.
+- `docs/design.md` — source of truth cho TUI, command, status line, secure input
+  và headless contract.
+- `docs/progress.md` từ line 174 — những gì implementer đã claim/đã test.
+- `docs/audit.md` — input từ ba audit agent; không được coi mọi verdict PASS
+  trong file này là bằng chứng cuối nếu runtime call-site cho kết quả ngược lại.
+- Code và test tại commit `25ecb5f2e0` — bằng chứng thực thi hiện tại.
 
-## Quy tắc thực thi chung
+Mục tiêu: khi hoàn thành 100% plan này, cccx phải thực sự là CLI
+CC-led/CX-delegated, 9router-only, enforce bằng typed runtime state, tool
+executor, sandbox, hook và structured artifacts; không chỉ đúng ở prompt,
+parser hoặc unit contract rời.
 
-1. Làm theo thứ tự phase. Không nhảy phase trừ khi phase trước đã đạt exit
-   criteria.
-2. Mỗi phase bắt đầu bằng test đỏ. Nếu không viết được test đỏ, dừng và ghi rõ
-   vì sao contract chưa đủ rõ.
-3. Mọi phase có runtime wiring phải có ít nhất một test chạm call-site runtime.
-   Không được chỉ green bằng crate contract độc lập.
-4. Dùng codebase-memory-mcp trước khi sửa code:
-   - `index_repository(repo_path="D:\\Learning_Programing\\cccx", name="cccx", mode="full")`
-     nếu graph stale.
-   - `search_graph`, `search_code`, `trace_path`, `get_code_snippet` trước
-     khi fallback sang `rg`.
-5. Không dùng leaked Claude Code source làm input implementation. Chỉ tham khảo từ đó hoặc
-   dựa vào public/observable behavior và docs của repo.
-6. Không thêm provider path trực tiếp. Mọi LLM call phải đi qua 9router.
-7. Tiết kiệm disk:
-   - Luôn dùng `CARGO_TARGET_DIR=D:\cargo-targets\cccx`.
-   - Không chạy full workspace build sau từng file.
-   - Dùng targeted tests trước, full gate chỉ ở cuối milestone.
+## 0. Kết luận audit đã verify
 
-Lệnh PowerShell chuẩn cho mọi validation:
+### Những phần đã có nền tảng tốt và cần giữ
+
+- Các crate `cccx-mode`, `cccx-policy`, `cccx-protocol`,
+  `cccx-task-graph`, `cccx-provider-gateway`, `cccx-headless`, `cccx-ux` đã
+  tạo được vocabulary/contract ban đầu.
+- Provider mặc định 9router và fail-closed check đã được chèn vào Responses,
+  Chat Completions, compaction và memory summarization paths.
+- MCP defaults có merge logic; user config được ưu tiên.
+- Circuit breaker chạy trước Bypass trong policy contract.
+- Task Graph có persistence cơ bản; Stop hook đã đọc Task Graph.
+- TUI branding/persona, slash-command registration và chat-completions stream
+  cơ bản đã hoạt động trong smoke test của owner.
+- `.gitignore` không track target/build artifacts đã biết.
+
+### Các verdict trong `audit.md` cần hiệu chỉnh
+
+| Hạng mục | Verdict sau verify | Bằng chứng runtime |
+|---|---|---|
+| Main CC chạy CC harness | FAIL | `cccx_harness_cc::system_prompt_fragment()` chỉ được gọi trong child adapter. |
+| Typed actor/scheduler boundary | FAIL | `ActorIdentity::can_spawn()` không có production caller; spawn guard dò substring trong prompt. |
+| Mode là source of truth | FAIL | TUI đổi collaboration mask; shell/edit/MCP vẫn truyền `MainMode::Default`. |
+| Bypass attestation | FAIL | `attest_mode()` chỉ đổi enum, không nhận bằng chứng sandbox thật. |
+| WorkSpec child projection | FAIL | parent tool/MCP set truyền `Default::default()`; projection chỉ ghi prompt/model và log count. |
+| Tool/MCP/scope enforcement | PARTIAL | Có reactive gate cho shell/edit/MCP nhưng catalog model thấy chưa lọc; path chỉ so string, không canonicalize/symlink-resolve. |
+| Permission queue | PARTIAL | Approval được enqueue nhưng native Y/N không resolve queue; các command approve/deny/batch còn báo `post-MVP`. |
+| Provenance 9router | FAIL | effective route được suy ra từ local provider/model, record bị trace rồi drop; Artifact dùng `unknown`, không nối cùng attempt. |
+| Verification/StopGuard | FAIL về end-to-end | `AgentStatus::Completed` được biến thành `exit_code=0` và hash status text, nên task có thể verified mà không chạy verification command. |
+| Headless JSONL | PARTIAL | Answer/Error/Terminal đã map; AgentUpdate/TaskUpdate/PermissionRequest/ApprovalDenied chưa map đầy đủ. |
+| Project Memory | FAIL | lưu project-local `.cccx/memory`, không dùng `CCCX_HOME/projects/<hash>`, `load_context()` không có production caller. |
+| Checkpoint/resume | FAIL | save/load/validate chỉ có unit tests, không có production call-site. |
+| Plugin isolation | FAIL | mới có parser/schema test rút gọn; không có loader/runtime integration. |
+| UX command completion | PARTIAL | `/agents model`, resume/cancel, `/permissions ...` còn placeholder hoặc global interrupt. |
+| Compaction survivor | PARTIAL | chỉ re-inject Task Graph; thiếu active WorkSpec/Artifact, ADR và Project Memory. |
+
+### Lỗi correctness đặc biệt nghiêm trọng
+
+1. `core/src/cccx_runtime.rs::complete_spawn()` truyền `Some(0)` cho mọi
+   subagent có `AgentStatus::Completed`, dù không chạy command trong
+   `VerificationSpec`. Đây là false verification, phải sửa trước khi tin
+   StopGuard.
+2. `CccxRuntimeRegistry::register_spawn()` và `complete_spawn()` đều
+   load-modify-write `task-graph.json`; không có writer lease/CAS/atomic merge.
+   Hai worker hoàn thành gần nhau có thể làm mất update.
+3. Hai test trong `core/src/cccx_spawn.rs` vẫn dùng boolean `false`, còn model
+   projection test dùng boolean `true`. Đây không phải runtime proof; targeted
+   suite tương ứng chưa thể xanh thật.
+4. `apply_cccx_work_spec_to_spawn_config()` truyền parent tool/MCP catalog rỗng,
+   vì vậy deny-by-default projection thường rỗng rồi bị bỏ đi.
+
+## 1. Quy tắc thực thi bắt buộc
+
+1. Làm phase theo thứ tự. Không đóng phase sau nếu dependency phase trước chưa
+   đạt exit criteria.
+2. Mỗi feature dùng TDD tại call-site thật:
+   - viết test đỏ;
+   - lưu output đỏ trong progress;
+   - implement tối thiểu;
+   - chạy lại xanh;
+   - review negative path.
+3. Không được dùng các kiểu test sau để claim done:
+   - `assert!(true)`/`assert!(false)`;
+   - biến boolean tự gán để mô phỏng field runtime;
+   - đọc source bằng `include_str!` rồi tìm substring thay cho gọi API;
+   - dựng provenance/Artifact fixture không đi qua request/stream/runtime path;
+   - parser/renderer unit test để claim TUI command đã chạy thật.
+4. Một phase chỉ commit khi targeted tests của phase xanh. Không giữ
+   intentional RED test trong HEAD.
+5. Re-index trước mỗi phase cross-module và dùng MCP-first:
+
+```text
+index_repository(repo_path="D:\Learning_Programing\cccx", name="cccx", mode="moderate")
+get_architecture(project="cccx")
+search_graph(project="cccx", query="...")
+trace_path(project="cccx", function_name="...")
+get_code_snippet(project="cccx", qualified_name="...")
+```
+
+Chỉ fallback `rg` cho docs/config/log/literal hoặc khi graph thiếu.
+
+6. Không dùng leaked Claude Code source. Chỉ dùng public/observable behavior,
+   Codex public source và hai design docs.
+7. Không mở provider trực tiếp. Tất cả LLM calls phải qua 9router.
+8. Không sửa rộng upstream chỉ để “đẹp code”. Tách cccx-owned runtime seams rõ,
+   giữ khả năng rebase Codex.
+9. Mỗi phase cập nhật `docs/progress.md` với:
+   - requirement → symbol/call-site;
+   - test đỏ và test xanh;
+   - limitation còn lại;
+   - commit hash.
+
+### PowerShell và disk discipline
 
 ```powershell
 Set-Location D:\Learning_Programing\cccx\codex-rs
@@ -40,12 +118,16 @@ $env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
 $env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
 ```
 
+- Dùng đúng một shared target dir.
+- Targeted test trước; không full build sau từng file.
+- Không tạo target trong repo.
+- Trước full gate, kiểm tra dung lượng `Get-PSDrive D`.
+- Chỉ cleanup đúng absolute path đã verify; không xóa Cargo registry source.
+
 ### Windows V8 junction prerequisite
 
-Trên Windows, crate `v8`/`rusty_v8` có thể fail khi build trong shared target
-dir vì bước symlink `gn_root` không tạo được đúng cách. Trước khi chạy các test
-đụng `codex-core`, `code-mode`, hoặc workspace build/check rộng, implementer
-phải kiểm tra junction này:
+`Cargo.lock` hiện pin `v8 = 149.2.0`. Trước test đụng `codex-core`,
+`codex-tui`, `code-mode` hoặc build rộng:
 
 ```powershell
 $v8Version = "149.2.0"
@@ -56,7 +138,7 @@ $v8Source = Get-ChildItem -Directory -Recurse `
   Select-Object -First 1 -ExpandProperty FullName
 
 if (-not $v8Source) {
-  throw "Missing Cargo registry source for v8-$v8Version. Run a targeted cargo test/build once to fetch it, then rerun this block."
+  throw "Missing Cargo registry source for v8-$v8Version"
 }
 
 $gnRoot = "D:\cargo-targets\cccx\debug\gn_root"
@@ -64,7 +146,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $gnRoot) | Out-Nul
 
 if (Test-Path -LiteralPath $gnRoot) {
   $item = Get-Item -LiteralPath $gnRoot -Force
-  if ($item.LinkType -eq "Junction" -or $item.LinkType -eq "SymbolicLink") {
+  if ($item.LinkType -in @("Junction", "SymbolicLink")) {
     Remove-Item -LiteralPath $gnRoot -Force
   } else {
     throw "Refusing to replace non-link path: $gnRoot"
@@ -73,271 +155,277 @@ if (Test-Path -LiteralPath $gnRoot) {
 
 New-Item -ItemType Junction -Path $gnRoot -Target $v8Source | Out-Null
 Get-Item -LiteralPath $gnRoot -Force | Select-Object FullName,LinkType,Target
+Test-Path "$gnRoot\BUILD.gn"
+Test-Path "$gnRoot\src"
 ```
 
-Validation nhanh sau khi tạo junction:
-
-```powershell
-Test-Path D:\cargo-targets\cccx\debug\gn_root\BUILD.gn
-Test-Path D:\cargo-targets\cccx\debug\gn_root\src
-```
-
-Nếu `Cargo.lock` đổi version `v8`, cập nhật `$v8Version` theo version trong
-`codex-rs/Cargo.lock` trước khi tạo junction. Không tạo junction vào repo; đây
-là workaround local cho `D:\cargo-targets\cccx`.
-
-Stop condition chung:
-
-- Test đỏ vì thiếu feature đúng như phase mong muốn → tiếp tục implement.
-- Test đỏ vì spec mâu thuẫn hoặc API upstream không cho phép enforce đúng
-  boundary → dừng, cập nhật `docs/implementer-issues.md`, hỏi owner.
-- Build/test sinh thêm target quá lớn hoặc thiếu dung lượng → dừng, báo dung
-  lượng hiện tại và đề xuất cleanup rõ target.
+Nếu `Cargo.lock` đổi version, đọc lại version và cập nhật `$v8Version`. Không
+hardcode junction vào repo và không commit nó.
 
 ---
 
-## Phase 0 — Baseline, inventory, và regression harness
+## Phase 0 — Re-baseline test truth và dependency map
 
-### Skills implementer cần load
+### Skills/roles
 
-- `agent-harness-construction`: xác định đúng runtime call-site và boundary harness cần test.
-- `ai-regression-testing`: thiết kế regression matrix chứng minh feature chạy thật, không chỉ green bằng contract rời.
-- `code-review-testing`: siết test để phát hiện greenwash, fixture giả, và coverage hổng.
+- Skills: `agent-architecture-audit`, `code-review-context`,
+  `ai-regression-testing`, `code-review-testing`.
+- ECC roles: `explorer` để trace call path; `tdd_guide` để kiểm tra test proof.
 
-Mục tiêu: khóa lại trạng thái hiện tại, tạo baseline test map để các phase sau
-không greenwash bằng test rời rạc.
+### Mục tiêu
 
-### RED tests cần thêm trước
-
-- `codex-rs/core/tests/cccx_runtime_contract_test.rs`
-  - Test helper dựng `Config` + `WorkSpec` + `ParentCapabilitySet` thật.
-  - Assert projection từ WorkSpec phải hiện diện trong child runtime config,
-    không chỉ trong log.
-- `codex-rs/tui/tests/cccx_tui_contract_test.rs` hoặc test module tương ứng
-  trong `codex-rs/tui/src/...`
-  - Assert mode command cập nhật cả TUI visible mode và core session mode event.
-- `codex-rs/exec/tests/cccx_exec_contract_test.rs`
-  - Assert `cccx exec --json` chỉ emit envelope `cccx.exec_event.v1`.
-
-Nếu repo không có test harness phù hợp cho một đường, tạo test nhỏ nhất trong
-crate chứa code đó. Không tạo crate test giả chỉ validate pure struct.
+Khóa một baseline trung thực trước khi sửa runtime; chỉ rõ test nào hiện đỏ,
+test nào greenwash và call-site nào phải được chạm ở từng phase.
 
 ### Công việc
 
-1. Chạy inventory bằng MCP + `git status --short`.
-2. Liệt kê các call-site cccx hiện có:
-   - mode: `cccx-mode`, TUI slash/keyboard, `Session.cccx_mode`,
-     `exec_policy`.
-   - spawn: `multi_agents_common`, `cccx_spawn`, `cccx_runtime`,
-     `cccx-protocol`.
-   - gateway: `client.rs`, `model-provider-info`, `provider_gateway_bridge`.
-   - task graph/goal/stop: `cccx_task_graph_state`, `goal_evaluator`,
-     `hook_runtime`.
-   - TUI: `/agents`, `/permissions`, `/tasks`, `/goal`, `/model`.
-   - headless: `exec`, `cccx-headless`.
-3. Ghi test matrix vào comment đầu file test hoặc `docs/progress.md`.
+1. Re-index và tạo requirement matrix trong `docs/progress.md`:
+   `design requirement → runtime entry → enforcement point → persisted state →
+   user surface → test`.
+2. Chạy riêng ba test `cccx_spawn` hiện tại để xác nhận:
+   - permission projection RED;
+   - tool allowlist projection RED;
+   - model projection test hiện là greenwash.
+3. Inventory production caller cho:
+   - `ActorIdentity::can_spawn`;
+   - `CccxModeState::change_mode/attest_mode`;
+   - `evaluate_action/evaluate_subagent`;
+   - `save_checkpoint/load_checkpoint`;
+   - `CccxPluginManifest`;
+   - `ProjectMemory::load_context`;
+   - `GatewayProvenance::record_retry/record_stream_termination`;
+   - mọi `HeadlessEvent` variant.
+4. Không sửa production code trong phase này. Không commit test đỏ mới.
+
+### Validation/exit criteria
+
+- Baseline ghi đúng expected RED thay vì claim toàn suite xanh.
+- Không còn hạng mục “PASS” chỉ dựa trên schema/parser/fixture.
+- Có danh sách exact test target cho Phase 1–12.
+
+---
+
+## Phase 1 — Canonical protocol và typed runtime identity
+
+### Skills/roles
+
+- Skills: `api-design`, `agent-harness-construction`, `path-types`,
+  `coding-standards`.
+- ECC roles: `architect` trước, `tdd_guide` implement, `reviewer` kiểm tra
+  compatibility.
+
+### Mục tiêu
+
+Biến WorkSpec/Artifact và actor identity thành contract đầy đủ đúng
+`architecture.md`, đủ dữ liệu để các phase sau enforce mà không dò prompt.
+
+### Scope chính
+
+- `cccx-protocol/src/lib.rs`
+- `cccx-protocol/src/plugin.rs` chỉ sửa type dùng chung, chưa wire loader
+- `core/src/config/mod.rs`
+- `core/src/session/session.rs`, `session/turn_context.rs`
+- serialization/persistence fixtures liên quan
+
+### RED tests trước
+
+1. WorkSpec JSON snapshot phải dùng `cccx.work_spec.v1` và có:
+   `id/taskId/attemptId/createdAt/expiresAt/baseRevision`, typed scope,
+   typed enforced/advisory constraints, typed tool grants
+   `stableId/serverId/schemaDigest`, rich immutable model route,
+   verificationSpec, expectedArtifact, checkpoint/baseCommit.
+2. Reject role↔harness mismatch.
+3. Reject expired WorkSpec, empty/duplicate stable IDs, schemaDigest mismatch,
+   unknown fallback policy và invalid parent attempt chain.
+4. Artifact snapshot phải có lifecycle status, changedFiles/testsRun,
+   residualRisks/followUp, evidence và full provenance.
+5. Config→Session→TurnContext round-trip phải giữ typed
+   `ActorIdentity`, `HarnessKind`, attempt/logical session IDs; không thể đổi
+   harness giữa lifecycle.
+
+### Implement
+
+1. Tách schema constants cho WorkSpec, Artifact và TaskGraph; không dùng chung
+   `cccx.protocol.v1` cho mọi object.
+2. Dùng discriminated union hoặc validation tương đương cho role↔harness.
+3. Thay string tool set bằng stable tool grant; giữ conversion adapter tại
+   boundary Codex tool registry.
+4. ModelRoute phải mang selection source, requested route, model/capability
+   profile, fallback policy và parent provenance; route id luôn opaque.
+5. Artifact provenance phải có requested/effective model/provider nếu có,
+   gateway/trace ID, retry/fallback chain, input/output/tool-call-sequence digest.
+6. Thêm typed actor/harness runtime context vào Config/Session/TurnContext.
+7. Xử lý persisted legacy schema hiện tại bằng migration rõ hoặc fail với
+   backup path + actionable message; không silently deserialize sai.
 
 ### Validation
 
 ```powershell
 cargo test -p cccx-protocol
+cargo test -p cccx-task-graph
+cargo test -p codex-core cccx_protocol --lib
+```
+
+### Exit criteria
+
+- Không còn authority/model/tool/scope quyết định bằng string heuristic.
+- WorkSpec/Artifact round-trip đúng hai design docs.
+- Runtime context biết chính xác actor/harness/attempt của caller.
+
+---
+
+## Phase 2 — Main CC bootstrap và scheduler authority
+
+### Skills/roles
+
+- Skills: `agent-harness-construction`, `autonomous-agent-harness`,
+  `gateguard`, `agent-introspection-debugging`.
+- ECC roles: `architect`, `implementer`, `security_reviewer`, `reviewer`.
+
+### Mục tiêu
+
+Main agent thực sự chạy CC harness từ startup; chỉ Main CC có scheduler,
+reroute và ADR commit authority.
+
+### RED tests trước
+
+1. TUI và exec bootstrap với cccx enabled phải tạo Session actor `MainCc`,
+   harness `Cc`, và model-visible instructions chứa Main CC control-plane
+   contract.
+2. CC/CX child Session phải có actor tương ứng và đúng một harness suốt resume.
+3. Gọi spawn từ `CcSubagent` hoặc `CxSubagent` bị deny bằng typed guard dù
+   developer instructions bị xóa/sửa.
+4. MainCc spawn vẫn đi qua WorkSpec validation; không có raw-context default.
+5. ADR write từ child bị deny tại executor/gate, không chỉ trong prompt.
+
+### Implement
+
+1. Tách prompt fragment cho Main CC khỏi prompt CC subagent.
+2. Inject Main CC harness trong shared startup path dùng chung TUI/headless,
+   trước model call đầu tiên.
+3. Thay prompt substring guard trong `multi_agents_common.rs` bằng
+   `actor_identity.can_spawn()` và typed authority checks.
+4. Chỉ MainCc được tạo/sửa Task scheduling state, approve reroute, commit ADR.
+5. Child config bắt buộc carry actor/harness immutable; resume giữ identity cũ.
+6. Prompt vẫn dùng để hướng dẫn model nhưng không còn là enforcement source.
+
+### Validation
+
+```powershell
+cargo test -p cccx-harness-cc
+cargo test -p cccx-harness-cx
+cargo test -p codex-core cccx_actor --lib
+cargo test -p codex-core cccx_spawn_authority --lib
+```
+
+### Exit criteria
+
+- Main startup proof chạm Session thật.
+- Xóa harness text không làm child có quyền spawn/ADR.
+- Một instance không thể đồng thời là CC và CX.
+
+---
+
+## Phase 3 — Mode single source of truth và Main permission pipeline
+
+### Skills/roles
+
+- Skills: `gateguard`, `agent-harness-construction`, `error-handling`,
+  `ai-regression-testing`.
+- ECC roles: `tdd_guide`, `security_reviewer`, `reviewer`.
+
+### Mục tiêu
+
+Sáu mode thực sự điều khiển permission từ một state machine; Bypass chỉ mở khi
+sandbox backend attestation thật; Auto classifier và cumulative counter hoạt
+động đúng.
+
+### RED tests trước
+
+1. TUI `/plan`, `/default`, `/accept-edits`, `/auto`, `/dont-ask`, `/bypass`
+   phát typed mode-change op đến core; Session state, persisted state, status
+   line và TurnContext cùng giá trị.
+2. Shift+Tab chỉ cycle Plan→Default→AcceptEdits→Auto→Plan theo design; không
+   tự vào DontAsk/Bypass.
+3. Shell/edit/MCP/network cùng một action cho decision khác nhau theo live mode.
+4. Restart/compaction giữ mode; CLI > project config > user config > Plan.
+5. Bypass bị reject khi chỉ có user confirm nhưng không có verified sandbox
+   attestation; circuit breaker vẫn deny sau attestation.
+6. Cumulative threshold chỉ tăng sau successful PostToolUse; deny/pending/fail
+   không tăng; duplicate hook không double-count.
+7. Auto gọi classifier qua 9router, invalid/timeout → require approval.
+
+### Implement
+
+1. Tạo core-owned mode service/state; TUI chỉ gửi user intent, không dựng
+   `CccxModeState::default()` tạm.
+2. TurnContext snapshot mode từ Session; mọi main tool executor gọi policy với
+   mode thật. Xóa các `MainMode::Default` hardcode tại apply_patch, MCP và exec.
+3. Implement sandbox attestation type chỉ do backend tạo. Trên backend không
+   chứng minh isolation, Bypass disabled với message rõ.
+4. Implement projected cumulative counters và commit-once PostToolUse record.
+5. Implement classifier client bằng 9router route/profile riêng; classifier chỉ
+   giảm quyền trong deterministic ceiling.
+6. Bảo toàn priority circuit-breaker > escalate > allowlist và full audit log.
+
+### Validation
+
+```powershell
 cargo test -p cccx-mode
 cargo test -p cccx-policy
-cargo test -p cccx-provider-gateway
-cargo test -p cccx-task-graph
-cargo test -p cccx-headless
-```
-
-### Exit criteria
-
-- Baseline test mới tồn tại và đỏ đúng vì runtime chưa wire, không đỏ do compile
-  lỗi tùy tiện.
-- Có danh sách call-site runtime cần sửa cho từng phase.
-
----
-
-## Phase 1 — 9router-only ProviderGateway là hard boundary
-
-### Skills implementer cần load
-
-- `agent-harness-construction`: giữ 9router là boundary bắt buộc cho mọi LLM call.
-- `api-design`: chuẩn hóa contract provider gateway, route id, metadata, và lỗi fail-closed.
-- `gateguard`: ép điều tra trust boundary trước khi sửa các call-site có thể bypass provider gateway.
-
-Mục tiêu: không còn direct OpenAI/upstream provider route nào có thể chạy trong
-`cccx`, kể cả main, subagent, classifier, compaction, summarize memory,
-goal-evaluator, headless.
-
-### RED tests cần thêm trước
-
-- `codex-rs/core/src/client.rs` tests:
-  - main request với provider khác 9router bị fail-closed trước network.
-  - `compact_conversation_history()` với provider khác 9router bị fail-closed.
-  - `summarize_memories()` với provider khác 9router bị fail-closed.
-- `codex-rs/core/tests/cccx_gateway_runtime_test.rs`:
-  - spawn subagent pin route không thuộc 9router → reject WorkSpec/attempt.
-  - classifier/goal evaluator route không thuộc 9router → reject config.
-- `codex-rs/features/src/cccx_mvp.rs` tests:
-  - env escape hatch `CCCX_MVP_ALLOW_UPSTREAM_SURFACES` không được disable
-    provider boundary. Nếu vẫn cần debug flag, nó chỉ được mở UI legacy, không
-    mở LLM route.
-
-### Công việc
-
-1. Tạo một boundary function duy nhất, ví dụ `ensure_cccx_gateway_provider(...)`
-   hoặc mở rộng `ProviderGatewayBridge`, dùng chung mọi call-site LLM.
-2. Fail-closed theo provider id/wire_api/base_url:
-   - chỉ provider logical `9router-local` hoặc config marked `cccx_gateway=true`
-     được phép.
-   - model id là opaque 9router route id; không infer provider từ model string.
-3. Loại bỏ hoặc thu hẹp `CCCX_MVP_ALLOW_UPSTREAM_SURFACES`:
-   - được phép expose legacy UI debug.
-   - không được bypass gateway fail-closed.
-4. Provider provenance:
-   - attempt phải ghi `requestedRouteId`, `effectiveRouteId` nếu response/header
-     có dữ liệu.
-   - nếu 9router không trả effective route, ghi `unknown`, không giả mạo.
-   - input/output/tool digest phải là digest thực từ payload/stream, không phải
-     chuỗi placeholder.
-5. Retry transport:
-   - retry chỉ trước observable side effect.
-   - sau tool call/permission/artifact thì không replay stream như cùng attempt.
-
-### Validation
-
-```powershell
-cargo test -p codex-core cccx_gateway --lib
-cargo test -p codex-core provider_gateway --lib
-cargo test -p cccx-provider-gateway
-cargo test -p cccx-headless
-```
-
-### Exit criteria
-
-- Không có LLM call-site cccx nào bypass boundary.
-- Search literal `CCCX_MVP_ALLOW_UPSTREAM_SURFACES` cho thấy flag không thể mở
-  direct provider route.
-- Tests có ít nhất một case đi qua runtime client/core path.
-
----
-
-## Phase 2 — Mode single source of truth và permission state machine
-
-### Skills implementer cần load
-
-- `agent-harness-construction`: map mode UX sang core harness state thay vì prompt/UI-only.
-- `autonomous-agent-harness`: thiết kế mode transition như state machine có enforcement.
-- `gateguard`: ép điều tra permission semantics trước khi sửa bypass/dont-ask hoặc quyền file/shell.
-
-Mục tiêu: 6 mode là security state machine thật của Main CC; TUI, session,
-tool executor và permission gate đọc cùng một state.
-
-### RED tests cần thêm trước
-
-- `codex-rs/core/src/exec_policy.rs`:
-  - Plan deny edit/shell mutate/MCP write.
-  - Default yêu cầu approval cho write/shell non-read.
-  - AcceptEdits allow edit trong threshold nhưng shell vẫn ask.
-  - Auto gọi classifier gate hoặc deterministic classifier stub.
-  - DontAsk chỉ allow explicit allowlist, deny silent phần còn lại.
-  - Bypass vẫn chặn circuit breaker.
-- `codex-rs/core/src/session/tests.rs`:
-  - mode slash/setting cập nhật `Session.cccx_mode`.
-  - restored session giữ mode đúng.
-- `codex-rs/tui/src/chatwidget/tests/...`:
-  - `/plan`, `/default`, `/accept-edits`, `/auto`, `/dont-ask`,
-    `/bypass --confirm` update status line và gửi event core.
-  - Shift+Tab chỉ cycle Plan → Default → AcceptEdits → Auto.
-  - DontAsk/Bypass không nằm trong quick cycle.
-
-### Công việc
-
-1. Chọn source of truth: `CccxModeState` trong core session.
-2. TUI mode command không chỉ đổi collaboration mask; phải gửi/ghi event làm
-   core session mode đổi.
-3. `exec_policy` không hardcode `ModeKind::Default`; đọc mode từ session/context.
-4. `collaboration_modes` chỉ là UX preset/compat layer, không là security state.
-5. `/bypass --confirm`:
-   - cần sandbox capability attestation thật.
-   - nếu chưa detect được isolation backend, mode switch phải bị deny rõ lý do.
-   - env var/user confirm không đủ.
-6. Counter/threshold:
-   - projected counter chỉ tính trước quyết định.
-   - commit counter đúng một lần ở PostToolUse khi action thành công.
-
-### Validation
-
-```powershell
-cargo test -p cccx-mode
 cargo test -p codex-core cccx_mode --lib
-cargo test -p codex-core exec_policy --lib
+cargo test -p codex-core cccx_permission --lib
 cargo test -p codex-tui cccx_mode
-cargo check -p codex-tui
 ```
 
 ### Exit criteria
 
-- Một mode switch trong TUI làm thay đổi state mà tool executor đọc được.
-- Plan mode không thể edit/shell mutate kể cả model yêu cầu tool trực tiếp.
-- Bypass không bật nếu không có isolation attestation.
+- Không production caller nào hardcode Default thay cho active mode.
+- Auto classifier, counter và attestation có positive/negative runtime tests.
+- Circuit breaker không thể bypass bằng mode/config/env.
 
 ---
 
-## Phase 3 — WorkSpec-to-ChildConfig deny-by-default projection
+## Phase 4 — WorkSpec projection, proactive catalog filtering và executor gates
 
-### Skills implementer cần load
+### Skills/roles
 
-- `agent-harness-construction`: enforce WorkSpec/ChildConfig là structured boundary thật.
-- `path-types`: xử lý canonical path, symlink, workspace root, và path allow/deny chính xác.
-- `gateguard`: ép điều tra đầy đủ tool/MCP/network/filesystem surface trước khi mở quyền.
+- Skills: `agent-harness-construction`, `path-types`, `mcp-server-patterns`,
+  `gateguard`, `code-breaking-changes`.
+- ECC roles: `architect`, `tdd_guide`, `security_reviewer`, `reviewer`.
 
-Mục tiêu: WorkSpec là boundary thực cho mọi subagent. Child chỉ thấy và chỉ chạy
-được tool/MCP/model/scope mà Main CC cấp.
+### Mục tiêu
 
-### RED tests cần thêm trước
+Projection phải thực sự hạ quyền child ở ba lớp: model-visible tool catalog,
+runtime executor và OS sandbox.
 
-- `cccx-protocol`:
-  - `project_child_config()` intersection với parent capability thật.
-  - forbiddenTools thắng allowedTools.
-  - model route explicit ngoài parent allowlist bị reject.
-  - permission ceiling parent thấp hơn WorkSpec thì child bị hạ quyền.
-- `codex-core` runtime:
-  - `apply_cccx_harness_to_config()` thật sự mutate `Config`:
-    tool allowlist, MCP allowlist, writable roots, model, permission policy.
-  - child tool catalog gửi cho model không có tool ngoài WorkSpec.
-  - child executor từ chối function tool không nằm trong allowedTools.
-- `cccx-policy`:
-  - edit nhiều path: tất cả path phải nằm trong scope, không dùng `any()`.
-  - path canonical/symlink ngoài scope bị deny.
-  - shell/MCP args extract multi-path và check tất cả path.
+### RED tests trước
 
-### Công việc
+1. Spawn bằng Config thật: projected permission/tool/MCP/scope/model route phải
+   tồn tại trong child runtime config. Thay ba boolean test hiện tại bằng test
+   gọi API thật.
+2. Parent capability lấy từ actual ToolRegistry, MCP manager, sandbox roots và
+   model catalog; không lấy từ WorkSpec và không truyền empty default.
+3. Tool không có trong WorkSpec không xuất hiện trong request gửi model.
+4. `tool_search`/dynamic tool discovery không thể re-enable tool bị cấm.
+5. MCP stableId/serverId/schemaDigest mismatch bị deny trước call.
+6. Multi-file edit có một path ngoài scope bị deny; Windows case/path URI,
+   `..`, junction/symlink escape bị deny.
+7. Shell/MCP args có nhiều target phải extract và kiểm tra tất cả.
+8. OS sandbox writable roots không rộng hơn projection.
 
-1. `ParentCapabilitySet` phải lấy từ runtime parent config/capability, không lấy
-   lại từ chính WorkSpec.
-2. `project_child_config()` trả `ChildRuntimeProjection` có đủ:
-   - `allowed_tools`
-   - `allowed_mcp_tools`
-   - `writable_scope`
-   - `protected_paths`
-   - `permission_policy`
-   - `model_route`
-   - `fallback_policy_id`
-3. `apply_cccx_harness_to_config()` phải apply projection vào `Config`.
-4. Wire tool catalog builder:
-   - tool sent-to-model = intersection runtime executable tool ∩ WorkSpec.
-   - MCP tools phải filter bằng stable id/server/schema digest.
-5. Wire executor gate cho mọi function tool:
-   - shell
-   - edit/patch
-   - MCP
-   - spawn/agent tools
-   - plugin/hook/custom tools
-6. Scope normalization:
-   - canonical absolute paths.
-   - symlink resolution.
-   - reject unresolved path khi tool có side effect.
-   - multi-target uses `all()` semantics.
+### Implement
+
+1. Thêm child capability projection vào Config/TurnContext bằng typed fields.
+2. Lấy parent ceiling tại spawn từ actual registries, không từ WorkSpec.
+3. Lọc ToolSpec trước model request; áp double-deny cho forbidden tools.
+4. Lọc MCP registry per child; verify schema digest tại spawn/call.
+5. Reactive executor gate cho read/edit/shell/MCP/network/decision write.
+6. Dùng canonical absolute path + symlink/junction resolution và path-boundary
+   APIs; không so string prefix thô.
+7. Implement deterministic direct-read ngay trước write để chống stale MCP
+   graph; mismatch → blocked Artifact, không ghi đè.
+8. WorkSpec permission độc lập Main mode; Main Bypass không propagate child.
 
 ### Validation
 
@@ -345,651 +433,470 @@ Mục tiêu: WorkSpec là boundary thực cho mọi subagent. Child chỉ thấy
 cargo test -p cccx-protocol
 cargo test -p cccx-policy
 cargo test -p codex-core cccx_spawn --lib
-cargo test -p codex-core subagent --lib
-cargo test -p codex-core tool_catalog --lib
+cargo test -p codex-core cccx_tool_projection --lib
+cargo test -p codex-core cccx_subagent_scope --lib
 ```
 
 ### Exit criteria
 
-- Subagent không thể thấy tool ngoài WorkSpec trong prompt/tool schema.
-- Nếu model cố gọi tool ngoài WorkSpec, executor deny trước side effect.
-- WorkSpec explicit model route được áp vào child config thật.
+- Hai intentional RED tests cũ được thay bằng runtime tests xanh.
+- Model không thấy capability ngoài WorkSpec.
+- Nếu model đoán tên tool hoặc dùng path escape, executor và sandbox vẫn deny.
 
 ---
 
-## Phase 4 — Harness identity, scheduler boundary, và subagent lifecycle
+## Phase 5 — Task Graph, verification evidence, Goal và single-writer state
 
-### Skills implementer cần load
+### Skills/roles
 
-- `agent-harness-construction`: đảm bảo một agent instance chỉ chạy một harness suốt lifecycle.
-- `autonomous-agent-harness`: thiết kế scheduler/main-agent và bounded worker lifecycle.
-- `agent-architecture-audit`: rà module boundary CC-led/CX-delegated trước khi wire sâu.
+- Skills: `autonomous-loops`, `eval-harness`, `gateguard`,
+  `content-hash-cache-pattern`, `error-handling`.
+- ECC roles: `architect`, `tdd_guide`, `reviewer`.
 
-Mục tiêu: Main CC là scheduler duy nhất; CC-harness subagent không có quyền
-Main CC; CX không spawn/ADR/scope-expand. Không nhận diện actor bằng prompt text.
+### Mục tiêu
 
-### RED tests cần thêm trước
+Loại bỏ false verification và lost update; Task chỉ verified từ bằng chứng độc
+lập đúng VerificationSpec.
 
-- `cccx-protocol`/`codex-core`:
-  - `ActorIdentity::MainCc.can_spawn() == true`.
-  - `ActorIdentity::CcSubagent.can_spawn() == false`.
-  - `ActorIdentity::CxSubagent.can_spawn() == false`.
-  - Subagent attempt gọi spawn tool → denied with `scheduler_only`.
-- `codex-core` spawn path:
-  - main startup inject CC harness fragment.
-  - CC subagent prompt không tuyên bố là final scheduler.
-  - CX prompt không chứa planner/ADR/scheduler quyền.
-- TUI/headless:
-  - `/agents view` attach read-only, không có input path vào subagent.
+### RED tests trước
 
-### Công việc
+1. `AgentStatus::Completed` không có verification output phải để task
+   unverified và StopGuard block.
+2. Verification command thực sự chạy với argv/cwd/timeout đã pin; exit code và
+   log digest lấy từ output thật.
+3. Artifact summary text “tests pass” không thể tạo `passed=true`.
+4. VerificationSpec/protected digest drift block verification.
+5. Hai concurrent spawn/complete không làm mất task/artifact/attempt.
+6. Crash giữa temp write và rename giữ được file TaskGraph hợp lệ trước đó.
+7. `/goal` tạo task-scoped goal condition và VerificationRecord; không chỉ dùng
+   upstream thread-goal UI state.
+8. StopGuard chỉ cho root final khi mọi task verified; failed evaluator tạo
+   correction path, không infinite loop.
 
-1. Thêm explicit `ActorIdentity` vào session/turn/subagent config.
-2. Bỏ substring prompt check để nhận diện child.
-3. Main startup:
-   - inject CC harness vào Main CC.
-   - set actor identity = `MainCc`.
-4. Subagent spawn:
-   - WorkSpec.harness = CC → actor identity = `CcSubagent`.
-   - WorkSpec.harness = CX → actor identity = `CxSubagent`.
-5. Tool catalog:
-   - spawn/reroute/task scheduling tools chỉ available cho `MainCc`.
-   - CC subagent có MCP phân tích nếu WorkSpec cấp, nhưng không có scheduler/ADR.
-   - CX không có sequential-thinking mặc định; chỉ có nếu WorkSpec explicit.
-6. Artifact nếu subagent cần thêm scope/worker:
-   - trả `SchedulingRequest` trong Artifact.
-   - Main CC quyết định tạo WorkSpec mới.
+### Implement
 
-### Validation
-
-```powershell
-cargo test -p cccx-harness-cc
-cargo test -p cccx-harness-cx
-cargo test -p cccx-protocol actor
-cargo test -p codex-core cccx_actor --lib
-cargo test -p codex-core subagent --lib
-cargo test -p codex-tui agents
-```
-
-### Exit criteria
-
-- Không còn actor detection bằng prompt substring.
-- Chỉ Main CC có thể spawn/cancel/reroute/schedule.
-- CC subagent và CX subagent đều là bounded workers.
-
----
-
-## Phase 5 — Artifact, VerificationRecord, provenance thật
-
-### Skills implementer cần load
-
-- `agent-harness-construction`: chuẩn hóa Artifact/VerificationRecord làm output boundary.
-- `ai-regression-testing`: tạo test chứng minh verification dựa trên evidence thực thi.
-- `architecture-decision-records`: ghi provenance/decision khi contract verification thay đổi.
-
-Mục tiêu: task không thể được đánh dấu success bằng self-report/prose. Verified
-chỉ đến từ `VerificationRecord.passed=true` có evidence digest thật.
-
-### RED tests cần thêm trước
-
-- `cccx-task-graph`:
-  - `completed` Artifact không tự set `verifiedAt`.
-  - chỉ `record_verification(passed=true)` set verified projection.
-- `codex-core`:
-  - native subagent completed mà không Artifact chuẩn → status `unverified`.
-  - exit code 0 giả lập không đủ nếu thiếu evidence/log digest.
-  - provenance digest phải thay đổi khi payload thay đổi.
-  - requested/effective route không được giả mạo giống nhau nếu gateway không có
-    evidence.
-
-### Công việc
-
-1. Chuẩn hóa Artifact schema runtime:
-   - `status`: success/failed/blocked/interrupted/cancelled.
-   - `changes`: file list/diff digest.
-   - `verification`: command, exit code, log digest, findings.
-   - `provenance`: gateway attempts thật.
-   - `schedulingRequests`: optional.
-2. `complete_spawn()` không tự dựng success Artifact khi chỉ thấy native
-   completed. Nó phải:
-   - parse Artifact từ child output nếu có.
-   - nếu không có Artifact hợp lệ → `completed_unverified`.
-3. Digest thật:
-   - input payload digest.
-   - output digest.
-   - tool call sequence digest.
-   - log digest cho verification command.
-4. Artifact validation:
-   - mismatch WorkSpec id/attempt id → reject.
-   - Artifact ngoài scope → reject.
-   - verification command không khớp spec hoặc thiếu digest → unverified.
+1. Xóa `Some(0)` giả trong `complete_spawn()`.
+2. Tạo verification runner thuộc harness; record command, cwd, timeout,
+   exit code, captured-log digest và protected input digest.
+3. Artifact Success chỉ chuyển task sang awaiting-verification; chỉ
+   `VerificationRecord.passed=true` hợp lệ mới set verifiedAt.
+4. Tạo core-owned `CccxStateStore`/writer service:
+   - một writer lease;
+   - atomic temp-write + fsync/rename thích hợp;
+   - generation/CAS hoặc merge dưới lock;
+   - recovery từ corrupt partial write.
+5. Dùng cùng store cho TaskGraph/mode/active attempt metadata.
+6. Wire `/goal` vào cccx task goal; evaluator model tùy chọn vẫn qua 9router và
+   không được tự set verifiedAt.
+7. Bounded audit correction theo `auditDepth`/changed-region rules.
 
 ### Validation
 
 ```powershell
 cargo test -p cccx-task-graph
-cargo test -p cccx-protocol artifact
 cargo test -p codex-core cccx_runtime --lib
-cargo test -p codex-core goal_evaluator --lib
+cargo test -p codex-core cccx_state_store --lib
+cargo test -p codex-core cccx_goal --lib
 ```
 
 ### Exit criteria
 
-- “Agent nói xong” không đủ để Task verified.
-- Mọi verified task có VerificationRecord và evidence digest thật.
-- Provenance không còn placeholder `sha256:cccx-runtime-*`.
+- Không còn đường nào coi terminal status/prose là test exit code.
+- Concurrency/crash tests chứng minh persistence không lost update.
+- StopGuard trở thành safety proof thật, không phải proof dựa trên record giả.
 
 ---
 
-## Phase 6 — TaskGraph, GoalEvaluator, StopHook runtime loop
+## Phase 6 — Permission queue và subagent lifecycle/resume/cancel
 
-### Skills implementer cần load
+### Skills/roles
 
-- `autonomous-loops`: thiết kế loop task/goal/stop có điều kiện dừng rõ và chống chạy vô hạn.
-- `agent-harness-construction`: wire TaskGraph/GoalEvaluator/StopHook vào runtime harness.
-- `agent-introspection-debugging`: thêm state/event giúp debug khi loop không tiến triển.
+- Skills: `autonomous-agent-harness`, `continuous-agent-loop`,
+  `error-handling`, `gateguard`, `agent-introspection-debugging`.
+- ECC roles: `architect`, `tdd_guide`, `security_reviewer`, `reviewer`.
 
-Mục tiêu: Main CC tạo/quản lý TaskGraph bền vững; StopHook chặn “done” nếu còn
-task chưa verified; `/goal` lưu condition và chạy verification đúng flow.
+### Mục tiêu
 
-### RED tests cần thêm trước
+Biến subagent thành worker cancellable/resumable có logical identity ổn định;
+mọi permission prompt đi qua một queue thật.
 
-- `codex-core`:
-  - user task mới tạo TaskGraph node/task root.
-  - Plan mode tạo WorkSpec draft + TaskGraph nhưng không thực thi.
-  - StopHook block final answer khi còn unverified task.
-  - StopHook allow final answer khi mọi task verified.
-  - `/goal "..."` lưu goal condition vào task/session state.
-  - GoalEvaluator chạy verification command hoặc nhận command evidence thật,
-    không tự set verified từ prose.
-- `codex-tui`:
-  - `/tasks` render graph thật từ session, không placeholder.
-  - `/goal` status line hiển thị active goal.
+### RED tests trước
 
-### Công việc
+1. Hai agent hỏi quyền gần nhau: chỉ một active modal, còn lại queued.
+2. Native Y/N approve/deny cập nhật đúng queue request bằng digest; queue không
+   giữ request stale sau khi native approval kết thúc.
+3. `/permissions approve|deny|inspect|batch-approve` thao tác queue thật;
+   high-risk/circuit-breaker không batch approve.
+4. Cancel một agent chỉ cancel worker/request của agent đó; không interrupt
+   sibling/main stream.
+5. Interrupt lưu checkpoint và cho resume; cancel final không auto-resume.
+6. Checkpoint được ghi sau successful bounded step/PostToolUse và SubagentStop,
+   không chỉ trong unit helper.
+7. Resume đúng `logicalSessionId`, load checkpoint, validate age/baseCommit/
+   working-tree drift và inject partial state.
+8. Completed attempt không resume; work mới tạo attempt mới có parentAttemptId.
+9. Chỉ một write worker giữ working-tree lease; read-only CC/CX có thể song song.
 
-1. TaskGraph storage:
-   - project-local file theo architecture.
-   - load startup, save mutation.
-   - không phụ thuộc context window.
-2. Main CC runtime:
-   - tạo root task khi nhận user task.
-   - cho main direct work tạo node `cc:self`.
-   - spawn subagent gắn attempt vào task node.
-3. Goal:
-   - `/goal` parse và attach condition vào current/root task.
-   - CLI/headless `--goal` nếu đã có parser thì map cùng code path.
-4. Verification:
-   - nếu task có command verification, chạy command hoặc validate log digest
-     từ CX.
-   - `GoalEvaluator` chỉ đánh giá evidence; không tự tạo evidence.
-5. StopHook:
-   - deterministic read TaskGraph projection.
-   - block final answer khi còn task unverified.
-   - emit actionable reason.
+### Implement
+
+1. Kết nối CccxPermissionQueue với native approval request/response lifecycle;
+   queue là source of truth cho active/queued status.
+2. Queue record đủ requestId, agent identity/displayName, task/attempt, action,
+   digest, scope, risk và reason.
+3. Thêm targeted agent-control ops thay cho global `interrupt()`.
+4. Wire checkpoint save/load/validate vào PostToolUse, SubagentStop và
+   `resume_agent_from_rollout()`.
+5. Persist logicalSessionId/displayName/attempt/worker status trong state store.
+6. Implement disconnect→interrupted Artifact từ latest checkpoint.
+7. Wire `/agents view/logs/resume/cancel/model` và `/cancel <id>` vào runtime
+   registry; model/reroute chỉ tác động next attempt.
+8. Thu hồi queued permissions và write lease khi cancel/fail.
 
 ### Validation
 
 ```powershell
-cargo test -p cccx-task-graph
-cargo test -p codex-core cccx_task_graph --lib
-cargo test -p codex-core goal_evaluator --lib
-cargo test -p codex-core stop_hook --lib
-cargo test -p codex-tui tasks
+cargo test -p cccx-policy permission_queue
+cargo test -p codex-core cccx_permission_queue --lib
+cargo test -p codex-core cccx_checkpoint --lib
+cargo test -p codex-core cccx_agent_lifecycle --lib
+cargo test -p codex-tui cccx_agents
 ```
 
 ### Exit criteria
 
-- `/tasks` hiển thị state thật.
-- `/goal` có runtime state thật.
-- StopHook không thể bị pass nếu task graph còn unverified.
+- Không còn message “requires runtime wiring (post-MVP)”.
+- Targeted cancel không ảnh hưởng agent khác.
+- Checkpoint/resume có production call-site và drift negative tests.
 
 ---
 
-## Phase 7 — Permission queue và approval UX thật
+## Phase 7 — Canonical 9router transport, model catalog và end-to-end provenance
 
-### Skills implementer cần load
+### Skills/roles
 
-- `agent-harness-construction`: nối permission queue với runtime tool execution.
-- `gateguard`: ép điều tra request flow trước khi sửa centralized approval/escalation.
-- `accessibility`: đảm bảo prompt/queue không phụ thuộc màu và có stable identifiers.
+- Skills: `api-connector-builder`, `connections-optimizer`,
+  `cost-aware-llm-pipeline`, `error-handling`, `agent-introspection-debugging`.
+- ECC roles: `docs_researcher` để verify public 9router/OpenAI-compatible
+  contract, `implementer`, `security_reviewer`, `reviewer`.
 
-Mục tiêu: background subagent permission request không chồng modal; `/permissions`
-điều khiển queue thật bằng requestId/digest.
+### Mục tiêu
 
-### RED tests cần thêm trước
+Giữ cccx mỏng như OpenCode client: gửi OpenAI Chat Completions-compatible
+payload cho 9router, để 9router dịch provider; nhưng quản lý stream, retry,
+catalog và provenance đúng design.
 
-- `codex-core`:
-  - nhiều subagent gửi permission request → một active, còn lại queued.
-  - approve với digest mismatch → reject.
-  - deny request không cancel subagent; child nhận denial.
-  - batch approve không nhận high-risk/circuit breaker/mixed action class.
-- `codex-tui`:
-  - `/permissions` list queue thật.
-  - `/permissions approve pr-x`, `deny`, `inspect`, `batch-approve` mutate queue
-    hoặc trả lỗi rõ.
-  - Y/N chỉ áp dụng active request.
+### RED tests trước
 
-### Công việc
+1. Local mock 9router nhận prompt/context/tools/tool results đúng schema và
+   trả SSE tool-call→tool-result→final answer qua nhiều lượt.
+2. `[DONE]`/EOF hợp lệ không bị coi là truncated; premature EOF/tool-call
+   fragment tạo error/interrupted rõ.
+3. Retry 5/15/45 và max 3 bằng paused time; 429 dùng Retry-After.
+4. Sau observable side effect, transparent retry bị cấm và phải new
+   attempt/resume.
+5. Response metadata/header thực tế được nối vào cùng attempt Artifact;
+   thiếu metadata → `unknown`, không suy ra requested=effective.
+6. Retry count, fallback chain, stream termination và tool-call-sequence digest
+   được persist, không chỉ trace log.
+7. Mọi LLM surface: main/child/classifier/goal/compaction/review/audit đều
+   fail-closed nếu provider không phải 9router.
+8. `/model` chỉ hiện models từ cccx config/catalog + current configured model;
+   không hardcode model chưa được owner cấu hình.
+9. Resolver áp đúng priority user > role preset > agent suggestion > session
+   default > inherit main requested và validate capability profile.
 
-1. Tạo permission queue state trong core/session hoặc reuse bridge hiện có nhưng
-   phải có runtime call-site.
-2. Request shape:
-   - `requestId`
-   - `agent logicalSessionId/displayName`
-   - action type
-   - scope/risk
-   - digest of action payload
-   - status active/queued/approved/denied/stale.
-3. TUI:
-   - `/permissions` không mở upstream approval-mode popup nữa trong cccx mode.
-   - command grammar theo design.
-4. Tool executor:
-   - `requireApproval()` tạo queue request.
-   - approval resume đúng pending action nếu digest khớp.
-5. Headless:
-   - không block chờ approval.
-   - emit `approval-denied` JSONL event và deny mặc định.
+### Implement
+
+1. Chọn một canonical live transport trong `codex-core`; loại duplicate legacy
+   gateway khỏi runtime authority.
+2. Để 9router sở hữu downstream provider translation; cccx không parse provider
+   từ route string và không tự dịch theo từng provider.
+3. Tạo per-call/attempt gateway context sống đến stream terminal; feed metadata
+   vào Artifact/TaskGraph/headless events.
+4. Track state trước/sau side effect để quyết định retry an toàn.
+5. Record completed/truncated/timeout/error tại stream consumer, không tại lúc
+   chỉ mới nhận HTTP stream object.
+6. Thay static `LocalConfigCatalog::default()` bằng catalog đọc từ CCCX_HOME/
+   config và optional refresh; cache có fetchedAt/source/digest.
+7. Xóa misleading env bypass text; provider boundary không có debug escape.
+8. Redact secret/token khỏi digest/log/telemetry.
 
 ### Validation
 
 ```powershell
-cargo test -p codex-core permission_queue --lib
-cargo test -p codex-tui permissions
-cargo test -p cccx-headless approval
+cargo test -p cccx-provider-gateway
+cargo test -p codex-core cccx_9router --lib
+cargo test -p codex-core cccx_gateway_provenance --lib
+cargo test -p codex-tui cccx_model_popup
 ```
 
 ### Exit criteria
 
-- Chỉ một prompt active tại một thời điểm.
-- `/permissions approve|deny|inspect|batch-approve` điều khiển queue thật.
-- High-risk không thể batch approve.
+- Tool loop dài không mất context hoặc panic vì tool payload.
+- Provenance trong Artifact là cùng request/attempt thật.
+- Không có direct-provider LLM path hoặc catalog GPT upstream trong cccx mode.
 
 ---
 
-## Phase 8 — Subagent control, checkpoint, resume/cancel/reroute UX
+## Phase 8 — Durable context: compaction, Project Memory, ADR và MCP stale gate
 
-### Skills implementer cần load
+### Skills/roles
 
-- `autonomous-agent-harness`: thiết kế lifecycle cancel/resume/reroute cho worker bounded.
-- `agent-introspection-debugging`: expose task/session/checkpoint state đủ để debug.
-- `test-tui`: kiểm tra slash command, keyboard path, và TUI state transition.
+- Skills: `context-budget`, `architecture-decision-records`,
+  `mcp-server-patterns`, `content-hash-cache-pattern`, `knowledge-ops`.
+- ECC roles: `architect`, `tdd_guide`, `security_reviewer`, `reviewer`.
 
-Mục tiêu: `/agents` là control surface thật cho bounded workers; checkpoint và
-resume không chỉ là API/test rời rạc.
+### Mục tiêu
 
-### RED tests cần thêm trước
+Những state được thiết kế là durable phải sống qua restart/compaction và đúng
+authority/storage boundary.
 
-- `codex-core`:
-  - SubagentStop ghi checkpoint với logicalSessionId/attemptId/baseCommit.
-  - network interrupted → Artifact interrupted + checkpoint persisted.
-  - resume loads checkpoint, validates git HEAD drift, injects checkpoint context.
-  - cancel marks attempt cancelled and prevents further tool calls.
-  - reroute creates new WorkSpec/attempt; không mutate subagent đang chạy.
-- `codex-tui`:
-  - `/agents list` shows active/resumable/completed.
-  - `/agents view <id>` read-only attach.
-  - `/agents logs <id> --tail N` sanitized logs.
-  - `/agents resume <id> [--revalidate]` calls resume path.
-  - `/agents cancel <id>` cancels exact agent, không interrupt toàn session.
-  - `/agents model <preset> <route>` writes next-spawn config, validates route.
+### RED tests trước
 
-### Công việc
+1. Project hash ổn định theo canonical project root; memory nằm dưới
+   `CCCX_HOME/projects/<hash>/memory/MEMORY.md`.
+2. Main startup nạp tối đa 200 dòng memory; child chỉ nhận memory được WorkSpec
+   cho phép, không raw dump.
+3. `/remember` explicit write sống qua restart, không tự biến Artifact thành
+   memory.
+4. Compaction re-inject AGENTS, TaskGraph, ADR index, Project Memory, active
+   WorkSpec/Artifact/checkpoint refs; không chỉ TaskGraph.
+5. Chỉ MainCc commit ADR qua PreDecisionWrite gate; child trả ADRProposal.
+6. Hai default MCP được merge, health-check và warning đúng; user config thắng.
+7. MCP-first discovery không thay thế direct-read trước edit; stale mismatch
+   block write.
 
-1. `logicalSessionId` và `attemptId` là identity ổn định.
-2. Checkpoint storage:
-   - base commit/hash.
-   - last completed step.
-   - partial diff digest.
-   - WorkSpec id.
-3. Resume path:
-   - không fire SubagentStart như new spawn.
-   - load checkpoint.
-   - validate drift.
-   - inject checkpoint context.
-4. Cancel:
-   - cancel exact subagent.
-   - preserve checkpoint/diff for inspection.
-5. Reroute:
-   - stop/cancel old or wait stop.
-   - spawn new attempt with new WorkSpec/role/model.
+### Implement
+
+1. Tạo ProjectMemory store từ CCCX_HOME + canonical project hash; migrate hoặc
+   cảnh báo file project-local hiện tại.
+2. Nạp memory vào Main initial context và compaction replacement context.
+3. Tạo structured compaction survivor bundle thay vì một TaskGraph message.
+4. Persist active WorkSpec/Artifact/checkpoint refs trong state store.
+5. Wire ADR commit authority và proposal ingestion.
+6. Hoàn thiện MCP registry routing Main full / child WorkSpec-bounded và startup
+   degraded state.
+7. Đảm bảo MCP output injection scan/PostToolUse hook chạy đúng.
 
 ### Validation
 
 ```powershell
-cargo test -p codex-core checkpoint --lib
-cargo test -p codex-core subagent_resume --lib
-cargo test -p codex-tui agents
-cargo check -p codex-tui
+cargo test -p codex-core cccx_project_memory --lib
+cargo test -p codex-core cccx_compaction --lib
+cargo test -p codex-core cccx_adr --lib
+cargo test -p codex-core cccx_mcp --lib
 ```
 
 ### Exit criteria
 
-- `/agents cancel <id>` không cancel toàn bộ stream nếu có id cụ thể.
-- Resume dùng checkpoint thật và drift check.
-- User không thể chat trực tiếp với subagent trong attach view.
+- Restart/compaction integration test giữ đủ durable state.
+- Memory/ADR không vượt Main authority.
+- MCP discovery và stale-write safety đều có runtime proof.
 
 ---
 
-## Phase 9 — MCP defaults, Project Memory, ADR, plugin isolation
+## Phase 9 — Extended plugin loader và harness isolation
 
-### Skills implementer cần load
+### Skills/roles
 
-- `mcp-server-patterns`: cấu hình default MCP, tool allowlist, transport, và failure behavior.
-- `architecture-decision-records`: nối ADR lifecycle với decision/provenance của cccx.
-- `gateguard`: ép điều tra plugin/MCP/config boundary trước khi sửa hoặc mở scope.
+- Skills: `plugin-creator`, `mcp-server-patterns`, `gateguard`,
+  `config-gc`, `api-design`.
+- ECC roles: `architect`, `implementer`, `security_reviewer`, `reviewer`.
 
-Mục tiêu: startup/init và extension surfaces đúng thiết kế: MCP default luôn
-đăng ký, Project Memory lưu đúng nơi, ADR chỉ Main CC, plugin không tự mở quyền
-cho CX.
+### Mục tiêu
 
-### RED tests cần thêm trước
+`cccx-plugin.json` không chỉ parse được mà phải load qua native Codex trust flow
+và không tự mở quyền cho child.
 
-- MCP:
-  - startup config thiếu MCP vẫn auto-merge `codebase-memory-mcp` và
-    `sequential-thinking`.
-  - nếu binary MCP thiếu, warning rõ và `/mcp` hiển thị failed/default status.
-  - subagent chỉ thấy MCP trong WorkSpec.
-- Project Memory:
-  - `/remember` lưu dưới `CCCX_HOME/projects/<project-hash>/memory` hoặc home
-    cccx tương đương, không ghi vào project `.cccx/memory` nếu trái design.
-  - startup load memory summary vào Main CC context.
-  - CX không tự ghi memory.
-- ADR:
-  - chỉ Main CC có PreDecisionWriteHook/ADR commit.
-  - CC/CX subagent ADR write bị deny.
-- Plugin:
-  - `cccx-plugin.json` strict validates schema v1.
-  - native `plugin.json` load legacy vào Main CC sau trust.
-  - CX không thấy plugin tool trừ khi WorkSpec cấp stable id.
+### RED tests trước
 
-### Công việc
+1. Extended manifest round-trip đủ `rules`, `agents`, `skills`, `mcp_servers`,
+   `hooks`, `apps`; unknown fields/version fail closed.
+2. Missing harness default CC kèm warning; không default both.
+3. Native `plugin.json` load Main sau trust nhưng không tự cấp cho child.
+4. Untrusted/changed hook hash không chạy.
+5. CX chỉ nhận plugin tool khi WorkSpec grant stableId/server/schemaDigest đúng.
+6. Plugin preset model route vẫn qua catalog/capability validation.
 
-1. MCP auto-init:
-   - config merge ở startup core, không chỉ warning helper.
-   - registry state hiển thị được trong `/mcp`.
-2. Project Memory:
-   - xác định CCCX_HOME path resolver.
-   - migrate hoặc fallback nếu file cũ tồn tại.
-   - explicit-first `/remember`.
-3. ADR:
-   - implement PreDecisionWriteHook call-site.
-   - route qua codebase-memory-mcp ADR API nếu có; nếu không, fail rõ.
-4. Plugin loader:
-   - strict cccx schema.
-   - harness isolation.
-   - hook trust preserved.
+### Implement
+
+1. Mở rộng schema đúng architecture §15.
+2. Wire discovery/loader vào native plugin pipeline; không tạo marketplace song
+   song nếu Codex đã có surface tương đương.
+3. Map native vs extended manifest rõ và emit actionable diagnostics.
+4. Merge rules/agents/MCP/tools vào Main capability set sau trust.
+5. Child visibility luôn đi qua Phase 4 projection.
 
 ### Validation
 
 ```powershell
-cargo test -p codex-core mcp_auto_init --lib
-cargo test -p codex-core project_memory --lib
-cargo test -p codex-core adr --lib
-cargo test -p codex-core plugin --lib
-cargo test -p codex-tui mcp
-cargo test -p codex-tui remember
+cargo test -p cccx-protocol plugin
+cargo test -p codex-core cccx_plugin --lib
+cargo test -p codex-tui cccx_plugin
 ```
 
 ### Exit criteria
 
-- `/mcp` không nói “No MCP servers configured” khi default init khả dụng.
-- `/remember` survives restart and loads into Main CC context.
-- Plugin install không tự mở tool/MCP cho CX.
+- `CccxPluginManifest` có production loader caller.
+- Plugin install/trust/isolation có positive và adversarial tests.
 
 ---
 
-## Phase 10 — Model catalog và subagent model route policy
+## Phase 10 — TUI/command/secure-input completion đúng design
 
-### Skills implementer cần load
+### Skills/roles
 
-- `agent-harness-construction`: giữ main/subagent model routing theo CC/CX harness contract.
-- `cost-aware-llm-pipeline`: thiết kế fallback/default model policy có kiểm soát chi phí và năng lực.
-- `api-design`: chuẩn hóa model catalog là 9router route id opaque, không provider-specific.
+- Skills: `test-tui`, `accessibility`, `make-interfaces-feel-better`,
+  `browser-qa` chỉ khi cần terminal capture automation.
+- ECC roles: `tdd_guide`, `reviewer`.
 
-Mục tiêu: `/model` và subagent model selection dùng 9router catalog/config,
-không hardcode GPT/upstream hoặc danh sách tạm.
+### Mục tiêu
 
-### RED tests cần thêm trước
+Mọi surface đã claim phải điều khiển runtime thật, hiển thị state thật và không
+phụ thuộc màu.
 
-- `codex-tui`:
-  - `/model` under cccx reads configured 9router catalog/current config.
-  - no GPT upstream fallback appears unless user configured route through 9router.
-  - offline catalog shows current route + config routes, không fetch direct.
-- `codex-core`:
-  - WorkSpec model route resolve order:
-    explicit spawn override
-    → role/preset config
-    → agent-suggested route if allowlisted
-    → session default_subagent_model
-    → inherit-main-requested.
-  - inherit-main-requested vs inherit-main-effective được phân biệt.
-  - fallback policy pinned per attempt.
+### RED tests trước
 
-### Công việc
+1. Startup banner/persona, art alignment/color và `/model to change` snapshot ở
+   narrow/wide terminal.
+2. Status line dùng live core state: mode, Main harness, model route,
+   TaskGraph progress, context, permission queue, run status.
+3. Active agent sublines dùng logicalSessionId/displayName/role/objective/status;
+   >8 agent vẫn phân biệt bằng text.
+4. `/agents`, `/permissions`, `/tasks`, `/goal`, `/model`, `/remember`, `/mcp`
+   và `/cancel` dispatch action thật; không có `post-MVP`/placeholder text.
+5. Shift+Tab và risky-mode confirmation đúng Phase 3.
+6. Network retry/disconnect/resumable UX đúng design §12.
+7. Secure input: no echo, không history/transcript/log/telemetry, clear line,
+   persist qua OS keyring; inline secret value bị reject.
+8. Theme semantic token/accessibility: state không chỉ thể hiện bằng màu.
 
-1. Define 9router catalog provider:
-   - local config list.
-   - optional 9router catalog endpoint nếu có.
-   - offline cache.
-2. `/model` consumes catalog provider, not hardcoded presets.
-3. Subagent route resolver consumes same source + WorkSpec policy.
-4. Logs/headless events show requested/effective route and selection source.
+### Implement
+
+1. Thay cccx-ux renderer-only data bằng subscription/read model từ core state.
+2. Bổ sung task progress và queue data vào status line; không dùng legacy
+   collaboration mask làm cccx mode authority.
+3. Wire command events đến Phase 5/6/7/8 services.
+4. Implement deterministic displayName allocation/persistence.
+5. Tận dụng native secret input/keyring nhưng thêm cccx setup/config flow và
+   regression guards theo design.
+6. Đồng bộ `/help`, autocomplete và command availability.
 
 ### Validation
 
 ```powershell
-cargo test -p codex-core model_route --lib
-cargo test -p codex-tui model
-cargo test -p cccx-headless model_route
+cargo test -p cccx-ux
+cargo test -p codex-tui cccx
+cargo test -p codex-tui secure_input
 ```
 
 ### Exit criteria
 
-- Chỉ model route 9router configured/catalog xuất hiện.
-- Subagent attempt ghi route selection source rõ.
-- Gateway không tự chọn model thay scheduler.
+- Không còn command giả hành động bằng info message.
+- Snapshot và event tests chạm runtime state thật.
+- Secret không xuất hiện trong history/transcript/log fixture.
 
 ---
 
-## Phase 11 — Headless exec contract và JSONL event stream
+## Phase 11 — Headless `cccx.exec_event.v1` completion
 
-### Skills implementer cần load
+### Skills/roles
 
-- `api-design`: khóa schema `cccx.exec_event.v1` và compatibility contract.
-- `agent-harness-construction`: bảo đảm headless đi cùng runtime harness/gateway/mode path.
-- `ai-regression-testing`: test JSONL event stream end-to-end, ordering, và failure cases.
+- Skills: `api-design`, `e2e-testing`, `error-handling`,
+  `ai-regression-testing`.
+- ECC roles: `tdd_guide`, `reviewer`.
 
-Mục tiêu: `cccx exec` đáp ứng `design.md` mục 17; stdout/stderr sạch, JSONL
-versioned, terminal event cuối cùng bắt buộc.
+### Mục tiêu
 
-### RED tests cần thêm trước
+`cccx exec --json` emit đầy đủ machine contract, không chỉ Answer/Error/Terminal.
 
-- `codex-rs/exec/tests/cccx_exec_json_test.rs`:
-  - `cccx exec --json` emits only JSON objects on stdout.
-  - every event has `schemaVersion=sessionId=turnId=seq=type=payload`.
-  - final event type `terminal`.
-  - errors after writer ready are JSONL, không stderr.
-  - approval denied maps exit code 2.
-  - cancelled maps exit code 3.
-  - agent-update includes model route requested/effective/fallback chain.
-- `cccx-headless`:
-  - pure envelope serializer/deserializer snapshot.
-  - reject non-json stdout contamination.
+### RED tests trước
 
-### Công việc
+1. Scenario spawn worker emit AgentUpdate với logicalSessionId/displayName/
+   role/status/full model-route provenance.
+2. Task state transition emit TaskUpdate.
+3. Approval request emit PermissionRequest; headless deny mặc định emit
+   ApprovalDenied và exit code 2, không block.
+4. Cancel emit terminal cancelled/exit 3.
+5. Error sau writer init chỉ đi stdout JSONL; stderr chỉ bootstrap fatal trước
+   writer.
+6. Sequence tăng đơn điệu, session/turn IDs ổn định, terminal đúng một lần và
+   luôn cuối.
 
-1. Wire `cccx-headless` event envelope into real `exec` JSON path.
-2. Map upstream `ThreadEvent` → `CccxExecEvent`.
-3. Split stdout/stderr:
-   - plain: stdout final answer only.
-   - json: stdout JSONL only.
-   - bootstrap fatal before writer ready may go stderr.
-4. Add terminal event on all exits.
+### Implement
+
+1. Expose typed cccx runtime events từ core thay vì cố suy lại từ thiếu field
+   trong upstream `ThreadEvent`.
+2. Map mọi variant vào `HeadlessEventEnvelope`.
+3. Propagate Phase 7 provenance và Phase 6 permission/lifecycle state.
+4. Enforce noninteractive default-deny và stdout/stderr contract.
 
 ### Validation
 
 ```powershell
 cargo test -p cccx-headless
-cargo test -p codex-exec cccx
-cargo check -p cccx-cli --bin cccx
+cargo test -p codex-exec cccx_jsonl
 ```
 
 ### Exit criteria
 
-- Machine parser can consume entire stdout as JSONL.
-- No banner/persona/progress leaks into headless stdout.
+- Không còn test ghi “AgentUpdate deferred”.
+- Parser có thể đọc toàn bộ stdout JSONL và terminal là line cuối.
 
 ---
 
-## Phase 12 — UX completion pass
+## Phase 12 — Cross-crate E2E, coverage và release gate
 
-### Skills implementer cần load
+### Skills/roles
 
-- `test-tui`: kiểm tra command palette, Shift+Tab, status line, model list, permissions UI.
-- `accessibility`: bảo đảm stable id, không phụ thuộc màu, text/keyboard path rõ.
-- `make-interfaces-feel-better`: hoàn thiện terminal UX theo `docs/design.md` mà không thêm scope ngoài thiết kế.
+- Skills: `e2e-testing`, `agent-eval`, `production-audit`,
+  `delivery-gate`, `code-review-testing`, `code-review-change-size`,
+  `update-v8-version` khi Cargo.lock đổi V8.
+- ECC roles: `reviewer`, `security_reviewer`, `build_error_resolver` nếu test
+  harness/build hỏng.
 
-Mục tiêu: các command và UI cccx-specific trong `design.md` hoạt động hoặc được
-ẩn rõ nếu deferred; không để placeholder nói như đã implement.
+### Mục tiêu
 
-### RED tests cần thêm trước
+Chứng minh các feature chạy cùng nhau trong binary thật; loại toàn bộ
+greenwashing và đóng kế hoạch bằng evidence tái lập được.
 
-- `codex-tui`:
-  - startup banner đúng cccx persona art, mode, model, folder.
-  - status line fields: mode, harness, model, task progress, ctx, permission.
-  - `/help` lists cccx command set and hides removed/upstream commands.
-  - `/theme`, `/pets`/persona config at least no-op safe or implemented as
-    documented MVP.
-  - network error renders retry UX text.
-  - secure input path does not write secret to history/transcript.
+### E2E scenarios bắt buộc
 
-### Công việc
+1. Startup với test CCCX_HOME:
+   - MainCc/CC harness;
+   - 9router provider/model config;
+   - MCP defaults health/degraded message;
+   - Project Memory load.
+2. User đổi từng mode; permission decision và status line đồng bộ; Bypass fail
+   nếu không có attestation.
+3. Main tạo WorkSpec → typed projection → CX sees filtered tools → bounded edit
+   → Artifact real provenance → independent verification → Task verified →
+   StopGuard allow.
+4. Negative child tries spawn/tool/MCP/path escape/ADR → deny.
+5. Hai agents + permission queue + targeted cancel + sibling unaffected.
+6. Simulated disconnect trước side effect retries; sau side effect tạo
+   interrupted checkpoint; resume đúng logical worker.
+7. Concurrent TaskGraph writes không mất update.
+8. Compaction/restart giữ mode/TaskGraph/active WorkSpec/Artifact/checkpoint/
+   ADR/memory.
+9. Headless scenario emit đủ agent/task/permission/approval/terminal events.
+10. Plugin trust/isolation scenario.
 
-1. Replace remaining placeholder command outputs:
-   - `/agents model`
-   - `/permissions ...`
-   - `/tasks`
-   - `/goal`
-   - `/remember`
-2. Removed/hidden upstream commands:
-   - keep code if needed but `is_visible=false`.
-   - blocked surfaces return cccx-specific message.
-3. Secure input:
-   - API key/config token flow must avoid transcript/history.
-4. Persona:
-   - art matches `design.md`.
-   - disabled in headless.
+### Coverage/test quality
 
-### Validation
+- ≥80% line coverage aggregate cho cccx-owned crates.
+- Với upstream `codex-core`/`codex-tui` không yêu cầu 80% toàn crate, nhưng mọi
+  cccx runtime seam trong matrix phải có positive + negative test.
+- Không test source text thay runtime.
+- Không ignored cccx correctness test trừ platform-specific test có CI lane
+  tương ứng và lý do rõ.
 
-```powershell
-cargo test -p codex-tui cccx
-cargo test -p codex-tui help
-cargo test -p codex-tui secure_input
-cargo check -p codex-tui
-```
-
-### Exit criteria
-
-- No visible placeholder text for cccx-specific commands.
-- Help/status/banner match design.
-- Sensitive input is not persisted in test transcript/history.
-
----
-
-## Phase 13 — End-to-end proving suite
-
-### Skills implementer cần load
-
-- `e2e-testing`: dựng luồng end-to-end chứng minh main/subagent/MCP/permission/9router hoạt động cùng nhau.
-- `ai-regression-testing`: chống regression trên các contract cccx trọng yếu.
-- `agent-eval`: thiết kế scenario đánh giá agent behavior thay vì chỉ unit test struct.
-
-Mục tiêu: chứng minh các feature chính chạy cùng nhau trong runtime, không chỉ
-unit test từng crate.
-
-### E2E scenarios cần có
-
-1. Startup:
-   - CCCX_HOME test dir mới.
-   - 9router config present.
-   - MCP defaults merged.
-   - Main CC starts in configured/default mode.
-2. Mode gate:
-   - Plan denies edit.
-   - AcceptEdits allows small edit, asks shell.
-   - Bypass denied without sandbox attestation.
-3. Spawn CX:
-   - Main CC creates WorkSpec.
-   - CX receives limited tool catalog.
-   - CX attempts disallowed tool → denied.
-   - CX produces Artifact.
-   - Task verified only after VerificationRecord.
-4. Permission queue:
-   - two background permission requests.
-   - active + queued UI state.
-   - approve digest match, reject mismatch.
-5. 9router stream:
-   - mocked local 9router endpoint receives Chat Completions-compatible request.
-   - cccx consumes DONE without premature ResponseAborted regression.
-   - tool call stream maps correctly.
-6. Headless:
-   - `cccx exec --json` scenario with agent-update, permission-denied, terminal.
-
-### Validation
-
-```powershell
-cargo test -p codex-core cccx_e2e --test '*'
-cargo test -p codex-tui cccx_e2e
-cargo test -p codex-exec cccx_e2e
-```
-
-Nếu wildcard không phù hợp với crate hiện tại, implementer phải ghi lệnh chính
-xác vào `docs/progress.md` sau khi tạo test file.
-
-### Exit criteria
-
-- E2E fail nếu bỏ bất kỳ runtime wire quan trọng nào: mode, gateway, WorkSpec,
-  permission, TaskGraph, headless.
-- Không phụ thuộc network thật; 9router được mock/stub local.
-
----
-
-## Phase 14 — Coverage, cleanup, release smoke
-
-### Skills implementer cần load
-
-- `code-review-testing`: rà coverage, test gaps, và flaky tests trước khi đóng plan.
-- `production-audit`: kiểm tra release smoke, packaging, target cleanup, và cấu hình mặc định.
-- `code-review-change-size`: rà diff cuối để phát hiện scope creep hoặc thay đổi ngoài plan.
-
-Mục tiêu: đóng loop chất lượng; đảm bảo không regress compile, không giữ
-artifact rác, không track target.
-
-### Công việc
-
-1. Coverage:
-   - target ≥80% aggregate cho cccx-owned crates.
-   - Với `codex-core`/`codex-tui`, không cần 80% toàn upstream; cần coverage
-     meaningful cho cccx runtime seams.
-2. Cleanup:
-   - `target/`, `D:\cargo-targets\cccx*` không track git.
-   - generated temp files không nằm trong repo.
-3. Smoke binary:
-   - build `cccx-cli --bin cccx`.
-   - `cccx --version`.
-   - `cccx exec --help`.
-   - TUI startup with test CCCX_HOME.
-4. Docs sync:
-   - update `docs/progress.md`.
-   - nếu behavior khác design, sửa design/architecture hoặc issue, không để
-     mismatch.
-
-### Validation
+### Validation cuối
 
 ```powershell
 cargo test -p cccx-protocol
+cargo test -p cccx-harness-cc
+cargo test -p cccx-harness-cx
 cargo test -p cccx-mode
 cargo test -p cccx-policy
 cargo test -p cccx-provider-gateway
@@ -998,63 +905,94 @@ cargo test -p cccx-ux
 cargo test -p cccx-headless
 cargo test -p codex-core cccx --lib
 cargo test -p codex-tui cccx
+cargo test -p codex-exec cccx
 cargo check -p cccx-cli --bin cccx
 ```
 
-Optional coverage gate khi đủ dung lượng:
+Chỉ build binary một lần sau targeted tests xanh:
+
+```powershell
+cargo build -p cccx-cli --bin cccx
+& "D:\cargo-targets\cccx\debug\cccx.exe" --version
+& "D:\cargo-targets\cccx\debug\cccx.exe" exec --help
+```
+
+Coverage khi đủ dung lượng:
 
 ```powershell
 $env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx-llvmcov"
-cargo llvm-cov --workspace --lcov --output-path D:\cargo-targets\cccx-coverage.lcov
+cargo llvm-cov `
+  -p cccx-protocol -p cccx-harness-cc -p cccx-harness-cx `
+  -p cccx-mode -p cccx-policy -p cccx-provider-gateway `
+  -p cccx-task-graph -p cccx-ux -p cccx-headless `
+  --lcov --output-path D:\cargo-targets\cccx-coverage.lcov
 ```
+
+### Cleanup/docs
+
+1. Scan và loại mọi `post-MVP`, `deferred`, intentional RED, boolean proof và
+   placeholder provenance khỏi feature đã claim.
+2. `docs/progress.md` ghi exact commands/results/coverage/commit.
+3. Cập nhật `docs/audit.md` hoặc tạo final audit section với verdict mới dựa
+   trên E2E evidence.
+4. Đồng bộ architecture/design nếu owner chủ động đổi requirement; không tự
+   sửa spec để làm code hiện tại “pass”.
+5. `git status --short` không chứa target/generated artifacts.
 
 ### Exit criteria
 
-- All cccx targeted tests pass.
-- Binary builds.
-- `git status --short` không có target/generated artifact.
-- `docs/progress.md` phản ánh đúng feature done/deferred.
+- Toàn bộ commands trên xanh.
+- Binary smoke xanh với test CCCX_HOME và local mock 9router.
+- Coverage đạt gate.
+- Không còn known critical/high gap trong requirement matrix.
 
 ---
 
 ## Final completion gate
 
-Chỉ được báo “cccx khớp thiết kế MVP” khi tất cả điều kiện sau đúng:
+Chỉ được báo “cccx hoàn thiện đúng thiết kế” khi tất cả đều có runtime/E2E
+evidence:
 
-1. Main CC chạy CC harness từ startup.
-2. Mọi subagent có actor identity rõ và đúng một harness suốt lifecycle.
-3. Chỉ Main CC có scheduler/spawn/reroute/ADR authority.
-4. Mode state machine là source of truth cho Main CC permission.
-5. Bypass cần sandbox attestation thật và vẫn giữ circuit breaker.
-6. WorkSpec projection áp vào child config, tool catalog và executor gate.
-7. Subagent không thể dùng tool/MCP/model/scope ngoài WorkSpec.
-8. Mọi LLM call đi qua 9router fail-closed.
-9. Provider provenance/digest là evidence thật, không placeholder.
-10. Task verified chỉ từ `VerificationRecord.passed=true`.
-11. StopHook block final answer khi TaskGraph còn unverified.
-12. `/agents`, `/permissions`, `/tasks`, `/goal`, `/model`, `/remember`,
-    `/mcp` không còn placeholder cho behavior đã claim.
-13. `cccx exec --json` emit đúng `cccx.exec_event.v1`.
-14. MCP defaults init đúng hoặc warning rõ khi binary thiếu.
-15. Project Memory/ADR/plugin isolation đúng storage và authority boundary.
-16. Target/build artifacts không được git track.
+1. Main CC chạy CC harness ngay từ startup.
+2. Mọi instance có typed ActorIdentity và đúng một harness suốt lifecycle.
+3. Chỉ MainCc có spawn/scheduler/reroute/ADR authority.
+4. Sáu mode dùng một state machine; Shift+Tab chỉ cycle bốn mode an toàn.
+5. Bypass cần sandbox attestation thật và không tắt circuit breaker.
+6. Main permission pipeline có static priority, cumulative counter và Auto
+   classifier qua 9router.
+7. WorkSpec/Artifact schema đúng design và validation fail-closed.
+8. Parent capability intersection lấy từ runtime thật.
+9. Child tool catalog, MCP catalog, executor và OS sandbox đều bị projection.
+10. Canonical path/symlink/multi-target/stale-read gates đều hoạt động.
+11. Cross-harness chỉ truyền WorkSpec/Artifact, không raw context default.
+12. Verification command/evidence là thật; terminal prose không verify task.
+13. TaskGraph/state writes atomic, single-writer và không lost update.
+14. StopHook block mọi unverified task.
+15. Permission queue central, digest-safe và command/TUI điều khiển thật.
+16. Checkpoint/resume/cancel/interrupt giữ đúng logicalSessionId semantics.
+17. Write-worker lease enforce; read workers có thể parallel.
+18. Mọi LLM call qua 9router fail-closed.
+19. Retry/stream/provenance/model catalog đúng attempt và response thực tế.
+20. Project Memory/ADR/MCP/compaction durability đúng storage/authority.
+21. Native/extended plugin trust và harness isolation hoạt động.
+22. TUI status/agents/commands/network/secure-input khớp design.
+23. Headless emit đủ `cccx.exec_event.v1`, terminal cuối, exit codes đúng.
+24. cccx-owned coverage ≥80% và runtime seams có negative tests.
+25. Target/generated artifacts không được git track.
 
-Nếu một mục chưa làm, ghi vào `docs/progress.md` là deferred/known gap. Không
-claim MVP complete.
+Nếu một mục chưa có runtime proof, ghi OPEN/PARTIAL trong progress; không dùng
+contract test hoặc comment để claim complete.
 
-## Spec decisions cần owner xác nhận nếu gặp trong lúc implement
+## Stop conditions cần hỏi owner
 
-1. Bypass attestation backend trên Windows: nếu không detect được VM/container
-   isolation đáng tin, mặc định nên disable Bypass. Nếu owner muốn dùng Bypass
-   trên máy dev thường, phải sửa architecture vì hiện tại design yêu cầu
-   attestation thật.
-2. 9router effective route metadata: nếu 9router không trả header/body cho
-   effective route, provenance phải ghi `unknown`. Không được giả mạo bằng
-   requested route. Nếu owner muốn treat requested=effective khi thiếu metadata,
-   cần ghi rõ trong architecture.
-3. Project Memory storage: architecture/design ưu tiên CCCX_HOME/project-hash.
-   Nếu owner muốn project-local `.cccx/memory` vì tiện backup git, cần sửa
-   design và privacy assumption.
-4. GoalEvaluator model riêng: design cho phép deferred prose evaluator, nhưng
-   verification command/evidence là bắt buộc trước. Nếu muốn model-only
-   evaluator, cần sửa hard constraint “verified only via VerificationRecord”.
+1. Windows backend không thể cấp sandbox isolation attestation đáng tin:
+   mặc định disable Bypass; không hạ tiêu chuẩn bằng confirm dialog.
+2. 9router không trả effective route/provider metadata:
+   ghi `unknown`; không copy requested route. Chỉ đổi nếu owner sửa spec.
+3. Codex upstream API không cho proactive tool catalog filtering:
+   dừng ở Phase 4, trình bày boundary/refactor options; không chỉ giữ reactive
+   gate rồi claim complete.
+4. Native plugin trust API không thể mở rộng an toàn:
+   giữ cccx extended plugin disabled/fail-closed và hỏi owner, không tự load.
+5. Thiếu disk cho full/coverage lane:
+   báo exact free space và target sizes trước khi đề xuất cleanup.
