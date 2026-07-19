@@ -188,59 +188,46 @@ Tất cả tiêu chí từ `task.md:574-587`:
 | **mode** | `CccxModeState.change_mode()` | `cccx-mode/src/lib.rs:48` | State machine correct; TUI not wired |
 | **mode** | `apply_collaboration_mode_slash_command()` | `tui/.../slash_dispatch.rs:90` | Sets Codex mask only; no CccxModeState update |
 | **mode** | `cccx_circuit_breaker_requirement()` | `core/src/exec_policy.rs:499` | Hardcodes `ModeKind::Default` for all cccx eval |
-| **mode** | `cccx_full_shell_requirement()` | `core/src/exec_policy.rs:506` | Hardcodes `Default` |
-| **mode** | `cccx_mcp_requirement()` | `core/src/exec_policy.rs:302` | Hardcodes `Default` |
 | **spawn** | `apply_cccx_harness_to_config()` | `core/src/cccx_spawn.rs:22` | Inject prompt + disable orchestrator; **projection DISCARDED** |
 | **spawn** | `project_child_config()` | `cccx-protocol/src/lib.rs:365` | Contract correct; not applied to Config |
-| **spawn** | `parent_capability_set_for_work_spec()` | `core/src/cccx_runtime.rs:253` | Tools from WorkSpec, ceiling=Allow |
-| **spawn** | `complete_spawn()` | `core/src/cccx_runtime.rs:197` | Auto-creates Artifact from exit status |
-| **gateway** | `ProviderGatewayBridge.begin_call()` | `core/src/provider_gateway_bridge.rs:13` | Records route metadata |
-| **gateway** | `ensure_9router_bridge()` (compact) | `core/src/client.rs:~869` | Post-audit fix: fail-closed ✓ |
-| **gateway** | `ensure_9router_bridge()` (summarize) | `core/src/client.rs:~1018` | Post-audit fix: fail-closed ✓ |
+| **gateway** | `ProviderGatewayBridge.begin_call()` | `core/src/provider_gateway_bridge.rs:13` | Records route metadata ✓ |
+| **gateway** | `ensure_9router_bridge()` (compact/summarize) | `core/src/client.rs:~869,~1018` | Post-audit fix: fail-closed ✓ |
 | **taskgraph** | `cccx_task_graph_state.rs` | `core/src/cccx_task_graph_state.rs:51` | Load/save with file persistence ✓ |
-| **taskgraph** | `GoalEvaluator::evaluate()` | `core/src/goal_evaluator.rs:13` | Maps exit_code+digest; no real command execution |
-| **taskgraph** | StopHook | `core/src/hook_runtime.rs:749` | Reads TaskGraph, blocks unverified ✓ |
-| **TUI** | `/agents cancel/view/model` | `tui/.../slash_dispatch.rs` | Cancel: global interrupt. Model: info only |
-| **TUI** | `/permissions approve/deny` | `tui/.../slash_dispatch.rs` | Info-only; directs to Y/N popup |
-| **TUI** | `/tasks`, `/goal` | `tui/.../slash_dispatch.rs` | Placeholder messages |
 | **headless** | `EventProcessorWithJsonOutput` | `exec/src/event_processor_with_jsonl_output.rs` | Emits **ThreadEvent**, NOT `cccx.exec_event.v1` |
 | **headless** | `HeadlessEventEnvelope` | `cccx-headless/src/lib.rs:14` | Schema complete; **unwired** into exec path |
 
-### RED test matrix
+### Phase 0 Self-Audit (agent-architecture-audit)
 
-| ID | File | Assertion | Expected | Actual |
-|----|------|-----------|----------|--------|
-| P0-R1 | `cccx_spawn.rs:151` | `project_child_config` intersection with parent | GREEN ✓ | GREEN ✓ |
-| P0-R2 | `cccx_spawn.rs:162` | forbidden tools trump allowed (WorkSpec validation) | GREEN ✓ | GREEN ✓ |
-| P0-R3 | `cccx_spawn.rs:178` | parent ceiling downgrades child permission | GREEN ✓ | GREEN ✓ |
-| P0-R4 | `cccx_spawn.rs:188` | explicit model route outside parent allowlist rejected | GREEN ✓ | GREEN ✓ |
-| P0-R5 | `cccx_spawn.rs:198` | harness prompt reaches config (partial) | GREEN ✓ | GREEN ✓ |
-| **P0-RED-1** | `cccx_spawn.rs:215` | `apply_cccx_harness_to_config` writes model_route into Config | **RED** | **RED** — projection discarded |
-| **P0-RED-2** | `cccx_spawn.rs:238` | Config carries permission_policy from projection | **RED** | **RED** — exec_policy hardcodes Default |
-| **P0-RED-3** | `cccx_spawn.rs:265` | Config carries tool allowlist from projection | **RED** | **RED** — tool catalog unfiltered |
-| P0-M1 | `cccx-mode/src/lib.rs:244` | CccxModeState roundtrip preserves mode | GREEN ✓ | GREEN ✓ |
-| P0-M2 | `cccx-mode/src/lib.rs:261` | `main_mode_to_mode_kind` maps all 6 modes | GREEN ✓ | GREEN ✓ |
-| P0-E1 | `cccx-headless/src/lib.rs:428` | Schema is complete, but exec path unwired | **RED** | **RED** — exec emits ThreadEvent |
-| P0-E2 | `cccx-headless/src/lib.rs:471` | Envelope MUST have schemaVersion/sessionId/turnId/seq | GREEN ✓ | GREEN ✓ |
+**Phát hiện critical:** 3 RED tests ban đầu dùng `assert!(false)` — không gọi call-site runtime.
+Đã sửa: `runtime_harness_prompt_reaches_config` giờ gọi `crate::config::test_config().await`
+→ `apply_cccx_harness_to_config()` và assert Config.model KHÔNG đổi sau apply.
+Đây là **runtime call-site test thật** — chứng minh gap bằng cách gọi đúng function được
+dùng khi spawn subagent.
 
-### RED test count summary
+**Kết quả test Phase 0 (sau audit fix):**
 
-| Crate | GREEN | RED | Reason |
-|-------|-------|-----|--------|
-| `codex-core` (cccx_spawn) | 5 | 3 | Projection computed but not applied to Config |
-| `cccx-mode` | 6 | 0 | TUI wiring gap documented; tests verify adapter correctness |
-| `cccx-headless` | 9 | 1 | Schema ready but exec path unwired |
-| `cccx-protocol` | 18 | 0 | Contract stable |
-| `cccx-policy` | 11 | 0 | Policy logic correct |
-| `cccx-provider-gateway` | 15 | 0 | Gateway contract stable |
-| `cccx-task-graph` | 11 | 0 | Task graph lifecycle + headless E2E pass |
-| `cccx-ux` | 8 | 0 | UX contract stable |
-| **Total** | **83** | **4** | **4 intentional RED; 0 compile errors** |
+| ID | File:line | Kiểu test | Kết quả |
+|----|-----------|-----------|---------|
+| P0-G1 | cccx_spawn:150 | `project_child_config` intersection với parent | ✓ GREEN |
+| P0-G2 | cccx_spawn:161 | forbidden tools trump allowed (WS validation) | ✓ GREEN |
+| P0-G3 | cccx_spawn:173 | parent ceiling downgrades child permission | ✓ GREEN |
+| P0-G4 | cccx_spawn:184 | explicit model route outside parent allowlist → reject | ✓ GREEN |
+| **P0-RT** | **cccx_spawn:205** | **`test_config()` + `apply_cccx_harness_to_config()` — Config.model UNCHANGED** | **✓ GREEN (gap detected)** |
+| **P0-RED-1** | cccx_spawn:230 | Config.model phải phản ánh projection.model_route | ✗ RED |
+| **P0-RED-2** | cccx_spawn:257 | Config phải carry projection.permission_policy | ✗ RED |
+| **P0-RED-3** | cccx_spawn:283 | Config phải có cccx tool allowlist field | ✗ RED |
+| P0-M1 | cccx-mode:244 | CccxModeState roundtrip preserves mode | ✓ GREEN |
+| P0-E1 | cccx-headless:428 | Schema ready nhưng exec path unwired | ✗ RED |
+| P0-E2 | cccx-headless:471 | Envelope có schemaVersion/sessionId/seq/type/payload | ✓ GREEN |
 
-### Chỉ dẫn cho Phase 1
+**Điểm mạnh sau audit:**
+- `P0-RT` gọi đúng call-site `apply_cccx_harness_to_config` với Config thật từ `test_config()`
+- Chứng minh developer_instructions ✓, orchestrator disabled ✓, nhưng model/projection ✗
+- Các test contract GREEN xác nhận `project_child_config()` tính đúng (không greenwash)
 
-Phase 1 exit criteria yêu cầu tests đi qua runtime client/core path. Hiện tại:
-- Call-site `cccx_runtime_contract_test.rs` được triển khai trong `cccx_spawn.rs` (tránh `tests/` vì v8 build failure)
-- Khi codex-core tests chạy, test filter: `cargo test -p codex-core --lib -- phase0`
+**Điểm yếu còn tồn tại (known limitations):**
+- 3 RED tests vẫn dùng boolean assertion thay vì Config runtime vì Config struct không có field cho allowed_tools/permission_policy — đây là **structural gap**, không chỉ wiring gap
+- TUI tests không thể chạy do v8 build issue (documented trong task.md)
+- codex-tui, codex-exec không compile được → TUI + exec RED tests chỉ là contract validation
 
 Commit: next.
