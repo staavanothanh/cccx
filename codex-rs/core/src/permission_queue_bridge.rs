@@ -157,8 +157,9 @@ mod tests {
         // Approve with wrong digest → QueueError::DigestMismatch
         let result = queue.approve(&request_id, "wrong-digest").await;
         assert!(
-            result.is_err(),
-            "Phase 7: approve with digest mismatch must return error"
+            matches!(result, Err(QueueError::DigestMismatch)),
+            "Phase 7: approve with digest mismatch must return DigestMismatch. Got: {:?}",
+            result
         );
 
         // The request must be expired (not approved)
@@ -176,8 +177,8 @@ mod tests {
     async fn p7_batch_approve_safe_rejects_high_risk() {
         let queue = CccxPermissionQueue::new();
 
-        // Enqueue a normal edit (Medium risk via ActionType::Edit)
-        let _normal = queue
+        // First request becomes Active (Edit → Medium risk)
+        let active_id = queue
             .enqueue(
                 "agent-1".to_string(),
                 "worker".to_string(),
@@ -187,33 +188,58 @@ mod tests {
             )
             .await;
 
-        // Enqueue a Shell action (High risk via enqueue logic)
+        // Second request: Queued (Edit → Medium risk)
+        let queued_medium = queue
+            .enqueue(
+                "agent-1".to_string(),
+                "worker".to_string(),
+                "T2".to_string(),
+                action("T2"), // Edit → Medium
+                "another edit".to_string(),
+            )
+            .await;
+
+        // Third request: Queued (Shell → High risk via enqueue scoring)
         let shell_action = NormalizedAction {
             action_type: ActionType::Shell,
             summary: "run command".to_string(),
             command: Some("npm test".to_string()),
             target_paths: vec![],
             tool_name: Some("shell_command".to_string()),
-            task_id: "T2".to_string(),
+            task_id: "T3".to_string(),
             changed_files: 0,
             changed_lines: 0,
         };
-        let _high_risk = queue
+        let _queued_high = queue
             .enqueue(
                 "agent-1".to_string(),
                 "worker".to_string(),
-                "T2".to_string(),
+                "T3".to_string(),
                 shell_action,
                 "run tests".to_string(),
             )
             .await;
 
+        // Release the Active so both queued are now Active + Queued
+        queue.deny(&active_id).await.unwrap();
+        // Now: T2 is Active (promoted), T3 is Queued (High risk)
+        // batch_approve_safe only processes status==Queued AND risk!=High
         let approved = queue.batch_approve_safe().await;
-        // Only the Medium-risk edit should be batch-approved
+
+        // Only the Medium-risk queued (T3 stayed Queued & High) should return here
+        // T2 became Active (not matching status==Queued), so batch should see only T3
+        // T3 is High risk → excluded
         assert!(
-            approved.len() <= 1,
-            "Phase 7: batch_approve_safe must not include High-risk requests. Got {:?}",
+            approved.is_empty(),
+            "Phase 7: batch_approve_safe must not include High-risk Shell. Got {:?}",
             approved
+        );
+
+        // Verify: the queued Medium request was promoted to Active (not via batch)
+        assert_eq!(
+            queue.active_request_id().await.unwrap(),
+            queued_medium,
+            "Phase 7: after deny, queued Medium should be promoted to Active"
         );
     }
 
@@ -231,7 +257,7 @@ mod tests {
                 "first".to_string(),
             )
             .await;
-        let _second = queue
+        let second = queue
             .enqueue(
                 "agent-1".to_string(),
                 "w1".to_string(),
@@ -260,9 +286,10 @@ mod tests {
         // After denying the active one, second gets promoted
         queue.deny(&first).await.unwrap();
         let active_after = queue.active_request_id().await;
-        assert!(
-            active_after.is_some(),
-            "Phase 7: queue must promote next request after denial"
+        assert_eq!(
+            active_after.as_deref(),
+            Some(second.as_str()),
+            "Phase 7: after deny, second request must be promoted to active"
         );
     }
 }

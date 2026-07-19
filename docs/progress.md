@@ -663,4 +663,19 @@ not batch-approved, single active prompt invariant.
 | approve với digest mismatch → reject | ✓ P7-T1 |
 | High-risk không thể batch approve | ✓ P7-T2 |
 
+### Phase 7 Self-Audit (agent-architecture-audit + gateguard)
+
+**Phát hiện 3 gap:**
+
+| # | Severity | Finding | Fix |
+|---|----------|---------|-----|
+| 1 | HIGH | P7-T1 `assert!(result.is_err())` không check variant — `UnknownRequest` hoặc `NotActive` cũng pass | `matches!(result, Err(QueueError::DigestMismatch))` |
+| 2 | HIGH | P7-T2 `assert!(approved.len() <= 1)` → false positive: cả Active + Queued đều bị skip với lý do khác nhau, approved rỗng | Rewrote test: 3 enqueue, deny Active, verify batch_approve_safe excludes High-risk Shell |
+| 3 | LOW | P7-T3 `assert!(active_after.is_some())` không check request nào được promote | `assert_eq!(active_after, Some(second))` |
+
+**Diagnostic Q6 (gateguard):** Permission queue digest validation là CODE GATE trong
+`PermissionRequestQueue::approve()` line 734 — `request.digest != observed_digest`.
+Batch approve safety là code gate line 833 — `req.risk != PermissionRisk::High`.
+Không phải prompt. ✓
+
 Commit: next.
