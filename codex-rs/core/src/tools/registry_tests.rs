@@ -75,6 +75,48 @@ impl LifecycleTestHandler {
 
 impl CoreToolRuntime for LifecycleTestHandler {}
 
+struct CccxPostToolUseCounterTestHandler {
+    tool_name: codex_tools::ToolName,
+}
+
+impl ToolExecutor<ToolInvocation> for CccxPostToolUseCounterTestHandler {
+    fn tool_name(&self) -> codex_tools::ToolName {
+        self.tool_name.clone()
+    }
+
+    fn spec(&self) -> codex_tools::ToolSpec {
+        test_spec(&self.tool_name)
+    }
+
+    fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async {
+            Ok(
+                Box::new(crate::tools::context::FunctionToolOutput::from_text(
+                    "ok".to_string(),
+                    Some(true),
+                )) as Box<dyn crate::tools::context::ToolOutput>,
+            )
+        })
+    }
+}
+
+impl CoreToolRuntime for CccxPostToolUseCounterTestHandler {
+    fn post_tool_use_payload(
+        &self,
+        _invocation: &ToolInvocation,
+        _result: &dyn crate::tools::context::ToolOutput,
+    ) -> Option<PostToolUsePayload> {
+        Some(PostToolUsePayload {
+            tool_name: HookToolName::apply_patch(),
+            tool_use_id: "stable-post-tool-use-id".to_string(),
+            tool_input: serde_json::json!({
+                "command": "*** Begin Patch\n*** Update File: src/main.rs\n-old\n+new\n+added\n*** End Patch",
+            }),
+            tool_response: serde_json::json!("Success. Updated files."),
+        })
+    }
+}
+
 fn test_spec(tool_name: &codex_tools::ToolName) -> codex_tools::ToolSpec {
     codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
         name: tool_name.name.clone(),
@@ -448,6 +490,67 @@ async fn dispatch_notifies_tool_lifecycle_contributors() -> anyhow::Result<()> {
         .drain(..)
         .collect::<Vec<_>>();
     assert_eq!(expected, actual);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn cccx_post_tool_use_counter_does_not_commit_for_unsuccessful_tool() -> anyhow::Result<()> {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let tool_name = codex_tools::ToolName::plain("cccx_unsuccessful_counter_test");
+    let handler = Arc::new(LifecycleTestHandler {
+        tool_name: tool_name.clone(),
+        result: LifecycleTestResult::Ok { success: false },
+    });
+    let registry = ToolRegistry::with_handler_for_test(handler);
+
+    registry
+        .dispatch_any(test_invocation(
+            session,
+            Arc::clone(&turn),
+            "call-1",
+            tool_name,
+        ))
+        .await?;
+
+    assert_eq!(turn.cccx_post_tool_use_changed_lines_for_test().await, 0);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn cccx_post_tool_use_counter_commits_after_success_without_double_counting()
+-> anyhow::Result<()> {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let tool_name = codex_tools::ToolName::plain("cccx_apply_patch_counter_test");
+    let handler = Arc::new(CccxPostToolUseCounterTestHandler {
+        tool_name: tool_name.clone(),
+    });
+    let registry = ToolRegistry::with_handler_for_test(handler);
+
+    registry
+        .dispatch_any(test_invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "call-1",
+            tool_name.clone(),
+        ))
+        .await?;
+    assert_eq!(turn.cccx_post_tool_use_changed_lines_for_test().await, 3);
+
+    registry
+        .dispatch_any(test_invocation(
+            session,
+            Arc::clone(&turn),
+            "call-2",
+            tool_name,
+        ))
+        .await?;
+    assert_eq!(turn.cccx_post_tool_use_changed_lines_for_test().await, 3);
 
     Ok(())
 }

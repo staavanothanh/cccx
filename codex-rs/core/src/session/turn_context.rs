@@ -41,6 +41,37 @@ impl TurnSkillsContext {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct CccxPostToolUseCounters {
+    state: Mutex<CccxPostToolUseCounterState>,
+}
+
+#[derive(Debug, Default)]
+struct CccxPostToolUseCounterState {
+    committed_tool_use_ids: HashSet<String>,
+    changed_lines: usize,
+}
+
+impl CccxPostToolUseCounters {
+    pub(crate) async fn commit_changed_lines_once(
+        &self,
+        tool_use_id: String,
+        changed_lines: usize,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        if !state.committed_tool_use_ids.insert(tool_use_id) {
+            return false;
+        }
+        state.changed_lines = state.changed_lines.saturating_add(changed_lines);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn changed_lines_for_test(&self) -> usize {
+        self.state.lock().await.changed_lines
+    }
+}
+
 pub(crate) type ShellSnapshotTask = Shared<BoxFuture<'static, Option<Arc<ShellSnapshotFile>>>>;
 
 #[derive(Clone)]
@@ -156,6 +187,7 @@ pub struct TurnContext {
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_skills: TurnSkillsContext,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
+    pub(crate) cccx_post_tool_use_counters: Arc<CccxPostToolUseCounters>,
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
@@ -197,6 +229,23 @@ impl TurnContext {
 
     pub(crate) fn cccx_main_mode(&self) -> CccxMainMode {
         self.cccx_main_mode.clone()
+    }
+
+    pub(crate) async fn commit_cccx_post_tool_use_changed_lines_once(
+        &self,
+        tool_use_id: String,
+        changed_lines: usize,
+    ) -> bool {
+        self.cccx_post_tool_use_counters
+            .commit_changed_lines_once(tool_use_id, changed_lines)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn cccx_post_tool_use_changed_lines_for_test(&self) -> usize {
+        self.cccx_post_tool_use_counters
+            .changed_lines_for_test()
+            .await
     }
 
     pub(crate) fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
@@ -333,6 +382,7 @@ impl TurnContext {
             extension_data: Arc::clone(&self.extension_data),
             turn_skills: self.turn_skills.clone(),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
+            cccx_post_tool_use_counters: Arc::clone(&self.cccx_post_tool_use_counters),
             terminal_error: Arc::clone(&self.terminal_error),
             server_model_warning_emitted: AtomicBool::new(
                 self.server_model_warning_emitted.load(Ordering::Relaxed),
@@ -616,6 +666,7 @@ impl Session {
             extension_data,
             turn_skills: TurnSkillsContext::new(skills_snapshot),
             turn_timing_state: Arc::new(TurnTimingState::default()),
+            cccx_post_tool_use_counters: Arc::new(CccxPostToolUseCounters::default()),
             terminal_error: Arc::new(Mutex::new(None)),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),

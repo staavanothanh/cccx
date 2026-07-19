@@ -599,21 +599,32 @@ impl ToolRegistry {
         } else {
             None
         };
-        let post_tool_use_outcome = if let Some(post_tool_use_payload) = post_tool_use_payload {
-            Some(
-                run_post_tool_use_hooks(
-                    &invocation.session,
-                    &invocation.turn,
-                    post_tool_use_payload.tool_use_id,
-                    post_tool_use_payload.tool_name.name().to_string(),
-                    post_tool_use_payload.tool_name.matcher_aliases().to_vec(),
-                    post_tool_use_payload.tool_input,
-                    post_tool_use_payload.tool_response,
-                )
-                .await,
+        let (
+            post_tool_use_outcome,
+            cccx_post_tool_use_changed_lines,
+            cccx_post_tool_use_counter_id,
+        ) = if let Some(post_tool_use_payload) = post_tool_use_payload {
+            let cccx_changed_lines =
+                cccx_changed_lines_from_post_tool_use_payload(&post_tool_use_payload);
+            let cccx_counter_id = post_tool_use_payload.tool_use_id.clone();
+            (
+                Some(
+                    run_post_tool_use_hooks(
+                        &invocation.session,
+                        &invocation.turn,
+                        post_tool_use_payload.tool_use_id,
+                        post_tool_use_payload.tool_name.name().to_string(),
+                        post_tool_use_payload.tool_name.matcher_aliases().to_vec(),
+                        post_tool_use_payload.tool_input,
+                        post_tool_use_payload.tool_response,
+                    )
+                    .await,
+                ),
+                cccx_changed_lines,
+                Some(cccx_counter_id),
             )
         } else {
-            None
+            (None, 0, None)
         };
         if let Some(outcome) = &post_tool_use_outcome {
             record_additional_contexts(
@@ -673,6 +684,15 @@ impl ToolRegistry {
                         });
                     }
                 }
+                if cccx_post_tool_use_changed_lines > 0 {
+                    invocation
+                        .turn
+                        .commit_cccx_post_tool_use_changed_lines_once(
+                            cccx_post_tool_use_counter_id.unwrap_or_else(|| result.call_id.clone()),
+                            cccx_post_tool_use_changed_lines,
+                        )
+                        .await;
+                }
                 dispatch_trace.record_completed(
                     &invocation,
                     &result.call_id,
@@ -687,6 +707,24 @@ impl ToolRegistry {
             }
         }
     }
+}
+
+fn cccx_changed_lines_from_post_tool_use_payload(payload: &PostToolUsePayload) -> usize {
+    if payload.tool_name.name() != "apply_patch" {
+        return 0;
+    }
+
+    let Some(command) = payload.tool_input.get("command").and_then(Value::as_str) else {
+        return 0;
+    };
+
+    command
+        .lines()
+        .filter(|line| {
+            (line.starts_with('+') && !line.starts_with("+++"))
+                || (line.starts_with('-') && !line.starts_with("---"))
+        })
+        .count()
 }
 
 async fn notify_tool_finish_if_unclaimed(

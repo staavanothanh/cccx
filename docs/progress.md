@@ -1643,3 +1643,84 @@ Results:
 - App-server/core RPC still returns thread-settings update acceptance before
   asynchronous core `ErrorEvent`; a future attestation phase should define the
   positive ack/reconciliation contract, not rely on optimistic UI state.
+
+---
+
+## Phase 3E — PostToolUse cumulative changed-lines counter (2026-07-20)
+
+Scope:
+
+- `codex-rs/core/src/session/turn_context.rs`
+- `codex-rs/core/src/session/review.rs`
+- `codex-rs/core/src/tools/registry.rs`
+- `codex-rs/core/src/tools/registry_tests.rs`
+
+Skills/roles used:
+
+- `gateguard`
+- `agent-harness-construction`
+- `error-handling`
+- `ai-regression-testing`
+- ECC role references: `tdd-guide`, `security-reviewer`, `code-reviewer`
+
+### Implemented
+
+1. Added turn-scoped `CccxPostToolUseCounters` to `TurnContext`.
+2. Counter state records committed `tool_use_id`s and cumulative changed lines.
+3. `TurnContext::with_model()` shares the same counter state, so model-route
+   variants inside the same turn do not reset cumulative tool accounting.
+4. Tool registry now derives changed-line count from successful
+   `apply_patch` PostToolUse payloads.
+5. Counter commit happens only after:
+   - the tool handler succeeded;
+   - PostToolUse payload exists;
+   - PostToolUse did not block the result;
+   - changed-line count is positive.
+6. Commit-once key uses `PostToolUsePayload.tool_use_id`, not the outer call id,
+   so repeated/duplicate hook processing does not double-count.
+
+### RED/GREEN evidence
+
+Initial RED:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo test -p codex-core cccx_post_tool_use_counter_commits_after_success_without_double_counting --lib
+```
+
+Result:
+
+- Failed to compile because `TurnContext` did not have
+  `cccx_post_tool_use_changed_lines_for_test()` and no runtime counter existed.
+
+Final GREEN:
+
+```powershell
+cargo test -p codex-core cccx_post_tool_use_counter --lib
+```
+
+Result:
+
+- `cccx_post_tool_use_counter_commits_after_success_without_double_counting`: passed.
+- `cccx_post_tool_use_counter_does_not_commit_for_unsuccessful_tool`: passed.
+- 2 passed, 0 failed.
+
+Formatting:
+
+```powershell
+cargo fmt --all
+```
+
+Result:
+
+- Completed. Rustfmt emitted the existing stable-toolchain warning for
+  `imports_granularity = Item`.
+
+### Remaining Phase 3 gaps
+
+- Bypass backend-created sandbox/isolation attestation remains unimplemented.
+- Auto classifier through 9router remains unimplemented.
+- The counter is now runtime-owned and PostToolUse-gated, but projected
+  threshold enforcement against future edits still needs a follow-up slice once
+  pre-edit projected diff and post-edit committed diff semantics are unified.
