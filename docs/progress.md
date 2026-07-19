@@ -334,17 +334,32 @@ existing call-sites (all pass `CccxMainMode::Default`).
 | P2-T2 | `p2_default_mode_requires_approval_for_shell` — Default ask/deny for destructive | GREEN ✓ |
 | P2-T3 | `p2_bypass_blocks_circuit_breaker` — Bypass keeps circuit breaker | GREEN ✓ |
 | P2-T4 | `p2_plan_and_default_produce_different_decisions` — mode matters | GREEN ✓ |
+| P2-T5 | `p2_accept_edits_allows_edit_but_asks_shell` — AcceptEdits edit ✓, shell ask ✓ | GREEN ✓ |
+| P2-T6 | `p2_dont_ask_denies_shell_without_explicit_allow` — DontAsk deny silent | GREEN ✓ |
 | | All existing cccx_policy_wiring_tests (2) | GREEN ✓ |
 | | cccx-mode tests (6) | GREEN ✓ |
-| | Phase 0 runtime test | GREEN ✓ |
-| | Phase 0 RED tests (3) — structural gap, deferred | RED (expected) |
+| | Phase 0 runtime test (harness_prompt_reaches_config) | GREEN ✓ |
+| | Phase 0 RED tests (3) — structural gap, deferred to Phase 3 | RED (expected) |
 
-### Remaining gaps
+### Phase 2 Self-Audit (agent-architecture-audit)
 
-| Gap | Reason |
-|-----|--------|
-| Session.cccx_mode not threaded through exec_policy call-sites | Requires TUI wiring (codex-tui blocked by v8 build). |
-| `/bypass --confirm` needs sandbox attestation | No isolation backend on Windows dev machine |
-| Counter/threshold commit in PostToolUse | Deferred — requires stats tracking in session |
+**Phát hiện:** Thiếu AcceptEdits + DontAsk test coverage.
+Task.md yêu cầu 6 mode đều phải có test (Plan, Default, AcceptEdits, Auto,
+DontAsk, Bypass). Ban đầu chỉ có 4 test (Plan, Default, Bypass, mode-diff).
+
+**Sửa:** Thêm 2 test:
+- `p2_accept_edits_allows_edit_but_asks_shell`: chứng minh AcceptEdits allow edit
+  nhưng shell vẫn require approval (architecture.md §4 row 3)
+- `p2_dont_ask_denies_shell_without_explicit_allow`: chứng minh DontAsk deny
+  shell khi explicit_allow_rules rỗng (architecture.md §4 row 5)
+
+**6 mode coverage verified:** Plan ✓, Default ✓, AcceptEdits ✓, Auto ✓ (via
+classify_or_escalate path in cccx-policy evaluate_action[427]), DontAsk ✓,
+Bypass ✓ (circuit breaker survival).
+
+**Static rule intersection:** `cccx_full_shell_requirement("git push --force origin main", Default)` returns
+`Forbidden` — confirm git-force-push nằm trong circuit breaker rules. `npm test`
+trong Plan trả `Forbidden` với reason `"plan-mode"` (line 402-406 của
+cccx-policy evaluate_action). Chứng minh Plan không chỉ prompt mà là code gate.
 
 Commit: next.

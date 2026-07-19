@@ -1550,6 +1550,50 @@ mod cccx_policy_wiring_tests {
             }
         }
     }
+
+    /// Phase 2: AcceptEdits allows edits, but still asks for shell.
+    /// Architecture.md §4: "AcceptEdits: Edit file tự động trong ngưỡng nhỏ;
+    /// shell command vẫn hỏi"
+    #[test]
+    fn p2_accept_edits_allows_edit_but_asks_shell() {
+        // Shell command in AcceptEdits: must require approval
+        let shell_result = cccx_full_shell_requirement(
+            &["echo".into(), "hello".into()],
+            CccxMainMode::AcceptEdits,
+        );
+        assert!(
+            matches!(shell_result, Some(ExecApprovalRequirement::NeedsApproval { .. })),
+            "AcceptEdits must ask for shell. Architecture §4: \
+             'shell command vẫn hỏi'. Got: {shell_result:?}"
+        );
+
+        // Edit in AcceptEdits: should be allowed
+        let edit_result = cccx_edit_requirement(
+            &["src/main.rs".into()],
+            CccxMainMode::AcceptEdits,
+        );
+        assert!(
+            edit_result.is_none(),
+            "AcceptEdits must allow edits. Architecture §4: \
+             'Edit file tự động trong ngưỡng nhỏ'. Got: {edit_result:?}"
+        );
+    }
+
+    /// Phase 2: DontAsk with no explicit allow rules denies silently.
+    /// Architecture.md §4: "Chỉ tool nằm trong allowlist cấu hình sẵn được chạy,
+    /// còn lại từ chối im lặng"
+    #[test]
+    fn p2_dont_ask_denies_shell_without_explicit_allow() {
+        let result = cccx_full_shell_requirement(
+            &["npm".into(), "test".into()],
+            CccxMainMode::DontAsk,
+        );
+        assert!(
+            matches!(result, Some(ExecApprovalRequirement::Forbidden { .. })),
+            "DontAsk with empty explicit_allow_rules must deny shell. \
+             Architecture §4: 'còn lại từ chối im lặng'. Got: {result:?}"
+        );
+    }
 }
 
 #[cfg(test)]
