@@ -112,4 +112,56 @@ mod tests {
         assert!(context.contains("line-0"));
         assert!(!context.contains(&format!("line-{MAX_LINES}")));
     }
+
+    // ── Phase 9 tests ──
+
+    /// Phase 9: Project Memory survives "restart" — write with one instance,
+    /// load with fresh instance (simulates session restart).
+    /// task.md: "`/remember` survives restart and loads into Main CC context."
+    #[tokio::test]
+    async fn p9_project_memory_survives_restart() {
+        let dir = TempDir::new().unwrap();
+
+        // Session 1: remember two facts
+        let memory1 = ProjectMemory::new(dir.path());
+        memory1.remember("Use 9router-only routing.").await.unwrap();
+        memory1.remember("Do not use direct provider keys.").await.unwrap();
+        drop(memory1);
+
+        // Session 2 (fresh ProjectMemory for same project): load context
+        let memory2 = ProjectMemory::new(dir.path());
+        let context = memory2.load_context().await.unwrap();
+
+        assert!(
+            context.contains("Use 9router-only routing."),
+            "Phase 9: memory must survive restart"
+        );
+        assert!(
+            context.contains("Do not use direct provider keys."),
+            "Phase 9: all remembered facts must persist"
+        );
+    }
+
+    /// Phase 9: verify memory file is created under .cccx/memory/
+    /// when remember() is called. Proves storage location contract.
+    #[tokio::test]
+    async fn p9_project_memory_creates_file_under_cccx_memory_dir() {
+        let dir = TempDir::new().unwrap();
+        let memory = ProjectMemory::new(dir.path());
+        memory.remember("phase-9-test").await.unwrap();
+
+        let expected_file = dir.path()
+            .join(".cccx")
+            .join("memory")
+            .join(MEMORY_FILE);
+        assert!(
+            expected_file.exists(),
+            "Phase 9: memory file must exist under .cccx/memory/ after remember"
+        );
+        let content = tokio::fs::read_to_string(&expected_file).await.unwrap();
+        assert!(
+            content.contains("phase-9-test"),
+            "Phase 9: content must be in file"
+        );
+    }
 }

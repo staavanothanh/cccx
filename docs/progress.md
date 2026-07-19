@@ -727,4 +727,40 @@ task.md Phase 8 exit criteria requires **runtime-level checkpoint context** test
 
 **Kết luận:** checkpoint API có 3 validate gate thật (P8-T2 age, P8-T3 matching head, P8-T4 missing commit) + 1 persistence round-trip (P8-T1). TUI `/agents view/cancel/resume` không test được do v8 build issue.
 
+Commit: `1099b08f`.
+
+---
+
+## Phase 9 — Project Memory persistence RED tests (2026-07-19)
+
+### Context
+
+MCP defaults (5 tests) and plugin isolation (8 tests) were completed earlier.
+ProjectMemory already has save/load/truncate. MCP auto-merge wired into config startup.
+
+task.md Phase 9 exit criteria: "/remember survives restart and loads into Main CC context."
+
+### RED tests added
+
+| ID | Test | Proves |
+|----|------|--------|
+| P9-T1 | `p9_project_memory_survives_restart` | Write 2 facts in session 1 → fresh instance in session 2 → both facts present |
+| P9-T2 | `p9_project_memory_creates_file_under_cccx_memory_dir` | File created at `.cccx/memory/MEMORY.md` after `remember()`, content verifiable |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| codex-core project_memory | 5 (3 prior + 2 P9) | ✓ |
+| cccx-protocol (plugin) | 24 | ✓ |
+| codex-core + codex-tui | compile | ✓ |
+
+### Exit criteria check
+
+| Criteria | Status |
+|----------|--------|
+| /remember survives restart and loads into Main CC context | ✓ P9-T1 |
+| MCP defaults auto-merge at startup | ✓ prior (5 mcp_auto_init tests) |
+| Plugin install không tự mở tool/MCP cho CX | ✓ prior (8 plugin tests) |
+
 Commit: next.
