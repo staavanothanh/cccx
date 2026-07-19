@@ -200,6 +200,40 @@ async fn excludes_tools_hidden_from_model_exposure() {
 }
 
 #[tokio::test]
+async fn cccx_child_mcp_projection_filters_runtime_tools() {
+    let mut config = test_config().await;
+    config
+        .cccx_child_allowed_mcp_tools
+        .insert("allowed_server".to_string());
+    let allowed_tool = make_mcp_tool(
+        "allowed_server",
+        "read_graph",
+        "mcp__allowed_server",
+        "read_graph",
+        /*connector_id*/ None,
+        /*connector_name*/ None,
+    );
+    let denied_tool = make_mcp_tool(
+        "denied_server",
+        "read_secret",
+        "mcp__denied_server",
+        "read_secret",
+        /*connector_id*/ None,
+        /*connector_name*/ None,
+    );
+    let mcp_tools = vec![allowed_tool.clone(), denied_tool];
+
+    let runtimes = build_mcp_tool_runtimes(
+        &mcp_tools, /*connectors*/ None, &config, /*search_tool_enabled*/ false,
+    );
+
+    assert_eq!(
+        runtimes_by_name(&runtimes),
+        expected_runtimes(&[allowed_tool], ToolExposure::Direct)
+    );
+}
+
+#[tokio::test]
 async fn applies_per_tool_app_policy_across_the_exposure_build() {
     let codex_home = tempdir().expect("tempdir should succeed");
     std::fs::write(

@@ -309,6 +309,50 @@ async fn tools_without_handlers_do_not_support_parallel() -> anyhow::Result<()> 
 }
 
 #[tokio::test]
+async fn cccx_child_tool_projection_filters_registry_and_model_visible_specs() -> anyhow::Result<()>
+{
+    let (_, mut turn) = make_session_and_context().await;
+    Arc::make_mut(&mut turn.config)
+        .cccx_child_allowed_tools
+        .insert("update_plan".to_string());
+    let turn = Arc::new(turn);
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = ToolRouter::from_context(
+        step_context.as_ref(),
+        ToolRouterParams {
+            tool_suggest_candidates: None,
+            tool_runtimes: Vec::new(),
+            extension_tool_executors: Vec::new(),
+            dynamic_tools: turn.dynamic_tools.as_slice(),
+        },
+        &Default::default(),
+    );
+
+    let registered = router.registered_tool_names_for_test();
+    assert!(
+        registered.contains(&ToolName::plain("update_plan")),
+        "allowlisted tool should stay registered: {registered:?}"
+    );
+    assert!(
+        !registered.contains(&ToolName::plain("shell_command")),
+        "non-allowlisted shell tool must not be dispatchable: {registered:?}"
+    );
+    assert!(
+        !registered.contains(&ToolName::plain("tool_search")),
+        "tool_search must not bypass the child allowlist: {registered:?}"
+    );
+
+    let model_visible = router
+        .model_visible_specs()
+        .into_iter()
+        .map(|spec| spec.name().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(model_visible, vec!["update_plan".to_string()]);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn specs_filter_deferred_dynamic_tools() -> anyhow::Result<()> {
     let (_, turn) = make_session_and_context().await;
     let turn = Arc::new(turn);

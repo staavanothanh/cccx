@@ -2205,3 +2205,78 @@ Remaining Phase 4 work:
   model-visible catalog filtering, dynamic `tool_search` filtering, MCP
   stable-id/schema-digest checks, multi-target path extraction, and OS sandbox
   narrowing still need separate Phase 4 slices.
+
+## Phase 4B — Child projection filters tool catalog and MCP runtime exposure
+
+Status: complete.
+
+Scope:
+
+- `codex-rs/core/src/tools/spec_plan.rs`
+- `codex-rs/core/src/tools/router_tests.rs`
+- `codex-rs/core/src/mcp_tool_exposure.rs`
+- `codex-rs/core/src/mcp_tool_exposure_test.rs`
+
+Skills / workflow used:
+
+- `agent-harness-construction`
+- `path-types`
+- `mcp-server-patterns`
+- `gateguard`
+- `code-breaking-changes`
+- MCP-first discovery through `codebase-memory-mcp`; direct file reads were
+  used after MCP/`rg` narrowed the relevant router and MCP exposure files.
+
+Implemented:
+
+1. Added a child tool projection gate to the tool planner.
+2. Applied that gate before `tool_search` is built, so deferred discovery
+   cannot index tools outside `cccx_child_allowed_tools`.
+3. Applied the gate again after code-mode executor insertion, so wrapper tools
+   and `tool_search` itself remain unavailable unless explicitly allowlisted.
+4. Filtered hosted specs with the same `cccx_child_allowed_tools` allowlist.
+5. Added MCP runtime filtering from `cccx_child_allowed_mcp_tools`, matching
+   server name, callable namespace/name, canonical model-visible name, or raw
+   MCP tool name.
+6. Added router-level test coverage proving both registry dispatch and
+   model-visible specs are reduced.
+7. Added MCP exposure test coverage proving unallowlisted MCP servers/tools do
+   not become runtime tools.
+
+RED/GREEN evidence:
+
+Initial RED:
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_child_tool_projection_filters_registry_and_model_visible_specs --lib
+```
+
+Result:
+
+- Failed to compile because the test attempted to mutate `TurnContext.config`
+  directly, but it is stored in an `Arc<Config>`.
+- Fixed the fixture with `Arc::make_mut(&mut turn.config)` before wrapping the
+  turn context.
+
+Final GREEN:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 fmt --all
+cargo +1.95.0 test -p codex-core cccx_child_tool_projection_filters_registry_and_model_visible_specs --lib
+cargo +1.95.0 test -p codex-core cccx_child_mcp_projection_filters_runtime_tools --lib
+```
+
+Results:
+
+- `cccx_child_tool_projection_filters_registry_and_model_visible_specs`: passed.
+- `cccx_child_mcp_projection_filters_runtime_tools`: passed.
+- Formatting completed. Rustfmt emitted the existing stable-toolchain warning
+  for `imports_granularity = Item`.
+
+Remaining Phase 4 work:
+
+- MCP stable-id/schema-digest enforcement before call.
+- Path escape and multi-target argument extraction checks.
+- OS sandbox writable-root narrowing from `cccx_child_writable_scope`.

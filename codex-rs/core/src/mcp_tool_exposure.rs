@@ -31,6 +31,9 @@ pub(crate) fn build_mcp_tool_runtimes(
             config,
         ));
     }
+    if !config.cccx_child_allowed_mcp_tools.is_empty() {
+        exposed_tools.retain(|tool| cccx_mcp_tool_allowed(config, tool));
+    }
 
     let exposure = if search_tool_enabled {
         ToolExposure::Deferred
@@ -53,6 +56,20 @@ pub(crate) fn build_mcp_tool_runtimes(
             }
         })
         .collect()
+}
+
+fn cccx_mcp_tool_allowed(config: &Config, tool: &McpToolInfo) -> bool {
+    let allowed = &config.cccx_child_allowed_mcp_tools;
+    if allowed.is_empty() {
+        return true;
+    }
+
+    let canonical = tool.canonical_tool_name();
+    allowed.contains(&tool.server_name)
+        || allowed.contains(&tool.callable_namespace)
+        || allowed.contains(&tool.callable_name)
+        || allowed.contains(&canonical.to_string())
+        || allowed.contains(tool.tool.name.as_ref())
 }
 
 fn filter_non_codex_apps_mcp_tools_only(mcp_tools: &[McpToolInfo]) -> Vec<McpToolInfo> {
