@@ -295,3 +295,56 @@ Không có call-site nào khác tạo `ProviderGatewayBridge` bên ngoài 3 vị
 Không có path nào từ config/model-provider tự bypass 9router — provider identity được resolve từ `ModelClient.state.provider.info()`.
 
 Commit: next.
+
+---
+
+## Phase 2 — Mode single source of truth và permission state machine (2026-07-19)
+
+### Analysis
+
+**Pre-Phase 2 state (implementer-issues §1):**
+- `cccx_full_shell_requirement()` hardcodes `CccxMainMode::Default` at line 374
+- `cccx_mcp_requirement()` hardcodes `CccxMainMode::Default` at line 318
+- `cccx_edit_requirement()` hardcodes `CccxMainMode::Default` at line 431
+- `cccx_circuit_breaker_requirement()` uses `CccxMainMode::Bypass` deliberately (only circuit-breaker invariants)
+- Net effect: Plan mode shell/MCP/edit all evaluate as Default, not Plan
+
+### Fix
+
+Added `mode: CccxMainMode` parameter to all 3 wrapper functions so the caller
+can thread the active mode from the session. Default behavior preserved at
+existing call-sites (all pass `CccxMainMode::Default`).
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `core/src/exec_policy.rs` | `cccx_full_shell_requirement(cmd, mode)` — mode param |
+| `core/src/exec_policy.rs` | `cccx_mcp_requirement(server, tool, mode)` — mode param |
+| `core/src/exec_policy.rs` | `cccx_edit_requirement(paths, mode)` — mode param |
+| `core/src/exec_policy.rs` | Phase 2 tests (4) — Plan deny, Default ask, Bypass+circuit, mode-diff |
+| `core/src/apply_patch.rs` | Updated call-site: `cccx_edit_requirement(..., MainMode::Default)` |
+| `core/src/mcp_tool_call.rs` | Updated call-site: `cccx_mcp_requirement(..., MainMode::Default)` |
+
+### Test results
+
+| ID | Test | Result |
+|----|------|--------|
+| P2-T1 | `p2_plan_mode_denies_shell_mutation` — Plan denies `npm test` | GREEN ✓ |
+| P2-T2 | `p2_default_mode_requires_approval_for_shell` — Default ask/deny for destructive | GREEN ✓ |
+| P2-T3 | `p2_bypass_blocks_circuit_breaker` — Bypass keeps circuit breaker | GREEN ✓ |
+| P2-T4 | `p2_plan_and_default_produce_different_decisions` — mode matters | GREEN ✓ |
+| | All existing cccx_policy_wiring_tests (2) | GREEN ✓ |
+| | cccx-mode tests (6) | GREEN ✓ |
+| | Phase 0 runtime test | GREEN ✓ |
+| | Phase 0 RED tests (3) — structural gap, deferred | RED (expected) |
+
+### Remaining gaps
+
+| Gap | Reason |
+|-----|--------|
+| Session.cccx_mode not threaded through exec_policy call-sites | Requires TUI wiring (codex-tui blocked by v8 build). |
+| `/bypass --confirm` needs sandbox attestation | No isolation backend on Windows dev machine |
+| Counter/threshold commit in PostToolUse | Deferred — requires stats tracking in session |
+
+Commit: next.

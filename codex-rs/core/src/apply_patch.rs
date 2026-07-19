@@ -51,7 +51,7 @@ pub(crate) async fn apply_patch(
     {
         cccx_subagent_edit_requirement(&work_spec, "apply_patch", cccx_target_paths)
     } else {
-        cccx_edit_requirement(&file_paths)
+        cccx_edit_requirement(&file_paths, cccx_policy::MainMode::Default)
     };
 
     if let Some(requirement) = requirement {
