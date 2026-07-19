@@ -315,7 +315,7 @@ pub(crate) fn cccx_mcp_requirement(
         changed_lines: 0,
     };
     let session = CccxPolicySession {
-        mode: CccxMainMode::Default,
+        mode,
         thresholds: CccxModeThresholds {
             max_changed_files: usize::MAX,
             max_changed_lines: usize::MAX,
@@ -485,9 +485,19 @@ impl ExecPolicyManager {
         self.policy.load_full()
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_exec_approval_requirement_for_command(
         &self,
         req: ExecApprovalRequest<'_>,
+    ) -> ExecApprovalRequirement {
+        self.create_exec_approval_requirement_for_command_in_mode(req, CccxMainMode::Default)
+            .await
+    }
+
+    pub(crate) async fn create_exec_approval_requirement_for_command_in_mode(
+        &self,
+        req: ExecApprovalRequest<'_>,
+        cccx_mode: CccxMainMode,
     ) -> ExecApprovalRequirement {
         let ExecApprovalRequest {
             command,
@@ -503,7 +513,7 @@ impl ExecPolicyManager {
         // Run full cccx policy (escalate + allowlist).
         // The mode is threaded from the session's active cccx mode state.
         // When no session is available, fall back to Default.
-        if let Some(requirement) = cccx_full_shell_requirement(command, CccxMainMode::Default) {
+        if let Some(requirement) = cccx_full_shell_requirement(command, cccx_mode) {
             // Forbidden (Plan-mode, DontAsk+escalate): hard-deny immediately.
             // NeedsApproval (escalate in Default/AcceptEdits): bubble
             // up so user gets a meaningful prompt from cccx policy.
@@ -1592,6 +1602,24 @@ mod cccx_policy_wiring_tests {
             matches!(result, Some(ExecApprovalRequirement::Forbidden { .. })),
             "DontAsk with empty explicit_allow_rules must deny shell. \
              Architecture §4: 'còn lại từ chối im lặng'. Got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn p3_mcp_requirement_uses_live_mode_parameter() {
+        let plan_result =
+            cccx_mcp_requirement("codebase-memory-mcp", "manage_adr", CccxMainMode::Plan);
+        let bypass_result =
+            cccx_mcp_requirement("codebase-memory-mcp", "manage_adr", CccxMainMode::Bypass);
+
+        assert!(
+            matches!(plan_result, Some(ExecApprovalRequirement::Forbidden { ref reason })
+                if reason == "plan-read-only"),
+            "Plan mode must deny side-effect MCP calls before approval flow. Got: {plan_result:?}"
+        );
+        assert!(
+            bypass_result.is_none(),
+            "Bypass mode should skip non-circuit MCP approval requirements. Got: {bypass_result:?}"
         );
     }
 }

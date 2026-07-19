@@ -5432,6 +5432,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         /*network*/ None,
         resolved_turn_environments,
         session_configuration.cwd().clone(),
+        cccx_policy::MainMode::Plan,
         "turn_id".to_string(),
         skills_snapshot,
     );
@@ -5466,6 +5467,17 @@ async fn cccx_root_turn_context_carries_main_cc_identity() {
         cccx_protocol::ActorIdentity::MainCc
     );
     assert_eq!(turn_context.cccx_harness(), cccx_protocol::HarnessKind::Cc);
+    assert_eq!(turn_context.cccx_main_mode(), cccx_policy::MainMode::Plan);
+}
+
+#[tokio::test]
+async fn cccx_new_turn_snapshots_live_session_mode() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    session.cccx_mode = cccx_mode::CccxModeState::new(cccx_policy::MainMode::Auto);
+
+    let turn_context = session.new_default_turn().await;
+
+    assert_eq!(turn_context.cccx_main_mode(), cccx_policy::MainMode::Auto);
 }
 
 #[tokio::test]
@@ -7586,6 +7598,7 @@ where
         /*network*/ None,
         resolved_turn_environments,
         session_configuration.cwd().clone(),
+        cccx_policy::MainMode::Plan,
         "turn_id".to_string(),
         skills_snapshot,
     ));

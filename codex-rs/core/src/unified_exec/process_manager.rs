@@ -1169,7 +1169,7 @@ impl UnifiedExecProcessManager {
                 .session
                 .services
                 .exec_policy
-                .create_exec_approval_requirement_for_command(ExecApprovalRequest {
+                .create_exec_approval_requirement_for_command_in_mode(ExecApprovalRequest {
                     command: &request.command,
                     approval_policy: context.turn.approval_policy.value(),
                     permission_profile: context.turn.permission_profile(),
@@ -1180,7 +1180,7 @@ impl UnifiedExecProcessManager {
                         request.sandbox_permissions
                     },
                     prefix_rule: request.prefix_rule.clone(),
-                })
+                }, context.turn.cccx_main_mode())
                 .await
         };
         let req = UnifiedExecToolRequest {

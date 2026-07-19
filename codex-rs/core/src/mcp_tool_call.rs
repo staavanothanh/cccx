@@ -252,7 +252,7 @@ pub(crate) async fn handle_mcp_tool_call(
     {
         cccx_subagent_mcp_requirement(&work_spec, &server, &tool_name)
     } else {
-        cccx_mcp_requirement(&server, &tool_name, cccx_policy::MainMode::Default)
+        cccx_mcp_requirement(&server, &tool_name, turn_context.cccx_main_mode())
     };
     if let Some(requirement) = cccx_requirement {
         match requirement {

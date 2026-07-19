@@ -168,7 +168,7 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
     let exec_approval_requirement = session
         .services
         .exec_policy
-        .create_exec_approval_requirement_for_command(ExecApprovalRequest {
+        .create_exec_approval_requirement_for_command_in_mode(ExecApprovalRequest {
             command: &exec_params.command,
             approval_policy: turn.approval_policy.value(),
             permission_profile: turn.permission_profile(),
@@ -179,7 +179,7 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
                 effective_additional_permissions.sandbox_permissions
             },
             prefix_rule,
-        })
+        }, turn.cccx_main_mode())
         .await;
 
     let req = ShellRequest {

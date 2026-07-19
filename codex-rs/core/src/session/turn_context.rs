@@ -2,6 +2,7 @@ use super::*;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
 use cccx_protocol::{ActorIdentity, HarnessKind};
+use cccx_policy::MainMode as CccxMainMode;
 use codex_core_skills::HostSkillsSnapshot;
 use codex_file_system::FileSystemSandboxContext;
 use codex_model_provider::SharedModelProvider;
@@ -138,6 +139,7 @@ pub struct TurnContext {
     pub(crate) developer_instructions: Option<String>,
     pub(crate) cccx_actor_identity: ActorIdentity,
     pub(crate) cccx_harness: HarnessKind,
+    pub(crate) cccx_main_mode: CccxMainMode,
     pub(crate) mode: ModeKind,
     pub(crate) collaboration_mode_developer_instructions: Option<String>,
     pub(crate) multi_agent_version: MultiAgentVersion,
@@ -191,6 +193,10 @@ impl TurnContext {
 
     pub(crate) fn cccx_harness(&self) -> HarnessKind {
         self.cccx_harness
+    }
+
+    pub(crate) fn cccx_main_mode(&self) -> CccxMainMode {
+        self.cccx_main_mode.clone()
     }
 
     pub(crate) fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
@@ -308,6 +314,7 @@ impl TurnContext {
             developer_instructions: self.developer_instructions.clone(),
             cccx_actor_identity: self.cccx_actor_identity,
             cccx_harness: self.cccx_harness,
+            cccx_main_mode: self.cccx_main_mode.clone(),
             mode: self.mode,
             collaboration_mode_developer_instructions: self
                 .collaboration_mode_developer_instructions
@@ -516,6 +523,7 @@ impl Session {
         network: Option<NetworkProxy>,
         environments: TurnEnvironmentSnapshot,
         cwd: AbsolutePathBuf,
+        cccx_main_mode: CccxMainMode,
         sub_id: String,
         skills_snapshot: HostSkillsSnapshot,
     ) -> TurnContext {
@@ -588,6 +596,7 @@ impl Session {
             developer_instructions: session_configuration.developer_instructions.clone(),
             cccx_actor_identity: session_configuration.cccx_actor_identity,
             cccx_harness: session_configuration.cccx_harness,
+            cccx_main_mode,
             mode: collaboration_mode.mode,
             collaboration_mode_developer_instructions: collaboration_mode
                 .settings
@@ -803,6 +812,7 @@ impl Session {
                 }),
             turn_environments,
             cwd,
+            self.cccx_mode.current.clone(),
             sub_id,
             skills_snapshot,
         );

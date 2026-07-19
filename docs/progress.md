@@ -1350,3 +1350,81 @@ Results:
   - TaskGraph scheduler lifecycle;
   - StopHook verification gates;
   - permission queue controls.
+
+---
+
+## Phase 3A — Main permission paths consume live mode snapshot (2026-07-19)
+
+Scope:
+
+- `core/src/session/turn_context.rs`
+- `core/src/session/review.rs`
+- `core/src/session/tests.rs`
+- `core/src/exec_policy.rs`
+- `core/src/apply_patch.rs`
+- `core/src/mcp_tool_call.rs`
+- `core/src/tools/handlers/shell.rs`
+- `core/src/unified_exec/process_manager.rs`
+
+### Implemented
+
+1. `TurnContext` now carries a per-turn cccx mode snapshot:
+   - `cccx_main_mode`
+   - accessor `cccx_main_mode()`.
+2. `Session::new_turn_context_from_configuration()` snapshots
+   `Session.cccx_mode.current` into each new turn.
+3. Root turn context now carries:
+   - `ActorIdentity::MainCc`;
+   - `HarnessKind::Cc`;
+   - `MainMode::Plan` by default.
+4. Main edit path now calls:
+   - `cccx_edit_requirement(..., turn_context.cccx_main_mode())`.
+5. Main MCP path now calls:
+   - `cccx_mcp_requirement(..., turn_context.cccx_main_mode())`.
+6. Shell and unified-exec production paths now call:
+   - `create_exec_approval_requirement_for_command_in_mode(..., turn.cccx_main_mode())`.
+7. `cccx_mcp_requirement()` now uses its `mode` parameter instead of hardcoding
+   `MainMode::Default`.
+8. The old `create_exec_approval_requirement_for_command()` wrapper remains only
+   for legacy unit tests and explicitly falls back to `MainMode::Default`.
+
+### Tests
+
+```powershell
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo test -p cccx-mode
+cargo test -p cccx-policy
+cargo test -p codex-core cccx_new_turn_snapshots_live_session_mode --lib
+cargo test -p codex-core p3_mcp_requirement_uses_live_mode_parameter --lib
+cargo test -p codex-core cccx_policy_wiring_tests --lib
+cargo test -p codex-core cccx_root_turn_context_carries_main_cc_identity --lib
+cargo test -p codex-core cccx_mode --lib
+cargo test -p codex-core cccx_permission --lib
+```
+
+Results:
+
+- `cccx-mode`: 6 passed.
+- `cccx-policy`: 11 passed.
+- `cccx_new_turn_snapshots_live_session_mode`: 1 passed.
+- `p3_mcp_requirement_uses_live_mode_parameter`: 1 passed.
+- `cccx_policy_wiring_tests`: 9 passed.
+- `cccx_root_turn_context_carries_main_cc_identity`: 1 passed.
+- `codex-core cccx_mode --lib`: 0 tests matched.
+- `codex-core cccx_permission --lib`: 0 tests matched.
+
+Known warning still present from earlier phases:
+
+- `permission_queue_bridge` methods are dead from production perspective. This
+  remains a Phase 6/permission-queue wiring gap.
+
+### Remaining gaps for Phase 3B+
+
+- TUI slash commands and Shift+Tab still need to send typed mode-change ops to
+  core/persisted state; this slice only ensures new turns and tool executors can
+  consume the live mode once core state changes.
+- Bypass still lacks backend-created sandbox/isolation attestation.
+- Cumulative counters and commit-once PostToolUse records are not implemented.
+- Auto classifier through 9router is not implemented.
+- `codex-core cccx_mode` and `cccx_permission` filters currently match no tests;
+  future tests should use those names or task validation should be updated.

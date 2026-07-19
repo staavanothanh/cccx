@@ -132,6 +132,7 @@ pub(super) async fn spawn_review_thread(
         developer_instructions: None,
         cccx_actor_identity: parent_turn_context.cccx_actor_identity(),
         cccx_harness: parent_turn_context.cccx_harness(),
+        cccx_main_mode: parent_turn_context.cccx_main_mode(),
         mode: parent_turn_context.mode,
         collaboration_mode_developer_instructions: parent_turn_context
             .collaboration_mode_developer_instructions
