@@ -998,6 +998,76 @@ Commits: next.
 
 ---
 
+## Phase 0R — Re-baseline sau audit plan mới (2026-07-19)
+
+Context:
+
+- Plan/audit checkpoint đã commit ở `abe35ba210`:
+  `docs: replace remediation plan with verified runtime gaps`.
+- Codebase re-index bằng `codebase-memory-mcp` mode `moderate`:
+  89,028 nodes / 498,544 edges, artifact `.codebase-memory/graph.db.zst`.
+- Phase này không sửa production code. Mục tiêu là khóa lại runtime truth trước
+  khi implement các phase sau trong `docs/task.md`.
+
+### MCP call-site inventory
+
+| Symbol / requirement | Inbound production evidence | Verdict |
+|---|---|---|
+| `ActorIdentity::can_spawn()` | `trace_path` inbound: no callers | OPEN: scheduler authority vẫn chưa dùng typed guard. |
+| `CccxModeState::change_mode()` | inbound chỉ có test `shift_tab_cycle_excludes_dont_ask_and_bypass` | OPEN: TUI/core permission chưa dùng mode state làm source of truth. |
+| `CccxModeState::attest_mode()` | TUI `/bypass` gọi, nhưng tạo `CccxModeState::default()` local rồi set collaboration mask | FAIL/PARTIAL: không persist core state, không có sandbox backend attestation. |
+| `evaluate_action()` | inbound chỉ từ tests trong `cccx-policy` | OPEN: main shell/edit/MCP path chưa gọi policy bằng live session mode. |
+| `evaluate_subagent()` | runtime wrapper `cccx_subagent_policy_requirement()` gọi | PARTIAL: reactive subagent gate có, proactive tool catalog projection vẫn thiếu. |
+| `save_checkpoint()` / `load_checkpoint()` | inbound chỉ từ checkpoint tests | OPEN: checkpoint chưa wire vào PostToolUse/SubagentStop/resume runtime. |
+| `validate_checkpoint()` | no inbound callers | OPEN: resume drift/age gate chưa chạy ở production path. |
+| `ProjectMemory::load_context()` | inbound chỉ từ project-memory tests | OPEN: memory chưa được nạp vào Main startup/compaction runtime. |
+| `GatewayProvenance::record_retry()` | inbound chỉ từ provenance tests | OPEN: retry chain chưa persist từ live 9router stream. |
+| `GatewayProvenance::record_stream_termination()` | inbound chỉ từ provenance tests; bridge wrapper cũng chỉ test gọi | OPEN: stream terminal status chưa nối vào live attempt artifact. |
+| `CccxPluginManifest::validate()` | inbound chỉ từ plugin tests | OPEN: extended plugin manifest chưa có production loader caller. |
+| `HeadlessEvent` | schema exists; exec has partial mapping from prior work | PARTIAL: AgentUpdate/TaskUpdate/PermissionRequest model-route enrichment vẫn chưa đủ design. |
+
+### Targeted baseline tests
+
+Environment:
+
+```powershell
+Set-Location D:\Learning_Programing\cccx\codex-rs
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+```
+
+V8 junction prepared for `v8 = 149.2.0`:
+
+- `D:\cargo-targets\cccx\debug\gn_root` is a Junction to Cargo registry source.
+- `BUILD.gn` and `src` both exist.
+
+| Command | Result | Meaning |
+|---|---|---|
+| `cargo test -p codex-core runtime_harness_prompt_reaches_config --lib` | PASS: 1 passed | Child harness prompt reaches Config. |
+| `cargo test -p codex-core runtime_projection_model_route_now_reaches_config_non_async --lib` | PASS: 1 passed | Explicit model route reaches `Config.model`. |
+| `cargo test -p codex-core runtime_projection_permission_policy_must_reach_config --lib` | RED: expected fail | `Config` does not carry `projection.permission_policy`; permission gates do not read it. |
+| `cargo test -p codex-core runtime_projection_tool_allowlist_must_reach_config --lib` | RED: expected fail | `Config` has no cccx tool allowlist field; child model catalog cannot be proactively filtered. |
+
+Warnings observed during targeted tests:
+
+- `core/src/exec_policy.rs:305`: unused `mode` in one cccx policy wrapper.
+- `permission_queue_bridge` methods are dead code from production perspective.
+- `cccx_spawn.rs`: unused imports `ForkPolicy`, `WorkScope`.
+- `cccx_runtime.rs:693`: unnecessary `mut`.
+
+### Phase 0R conclusion
+
+The baseline confirms the audit direction in `docs/task.md`:
+
+1. Contract crates are mostly present.
+2. Runtime enforcement is still incomplete at the Main CC, mode, projection,
+   checkpoint, memory, plugin, gateway-provenance and headless-event boundaries.
+3. The next implementation phase should start with typed runtime identity and
+   Main CC bootstrap, then mode/projection wiring. Fixing projection alone before
+   actor/mode source-of-truth would keep the same split-brain failure mode.
+
+---
+
 ## Phase 13 — Cross-crate E2E proving suite (2026-07-19)
 
 ### Context
