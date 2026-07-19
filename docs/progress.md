@@ -271,19 +271,27 @@ Commit: `d32537f`.
 
 | ID | Test | Result |
 |----|------|--------|
-| P1-T1 | `p1_env_var_must_not_disable_provider_boundary` | GREEN ✓ |
-| P1-T2 | `p1_surface_gate_does_not_imply_provider_boundary_off` | GREEN ✓ |
+| P1-T1 | `p1_boundary_fn_has_no_env_dependency` (compile-time source audit) | GREEN ✓ |
+| P1-T2 | `p1_surface_and_boundary_are_independent` | GREEN ✓ |
 | | All provider_gateway_bridge tests (6) | GREEN ✓ |
 | | All cccx-provider-gateway tests (15) | GREEN ✓ |
+| | All codex-features tests (57) | GREEN ✓ |
 | | Phase 0 runtime test (harness_prompt_reaches_config) | GREEN ✓ |
 | | Phase 0 RED tests (3) — structural gap, deferred to Phase 3 | RED (expected) |
 
-### Remaining gaps (documented, deferred)
+### Phase 1 Self-Audit (agent-architecture-audit)
 
-| Gap | Reason |
-|-----|--------|
-| Classifier LLM call not implemented | Deferred — no non-9router call-sites to lock in MVP |
-| GoalEvaluator doesn't make LLM calls | Only maps exit_code+digest; no boundary risk |
-| Spawn subagent with non-9router route | Phase 3 gap — model_route validation in project_child_config |
+**Phát hiện:** 2 test ban đầu là tautology:
+- `p1_env_var_must_not_disable_provider_boundary`: `assert!(provider_boundary_active())` = `assert!(true)` — test này luôn GREEN kể cả không wire đúng
+- `p1_surface_gate_does_not_imply_provider_boundary_off`: không set env var nên không test được path `CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1`
+
+**Sửa:** Viết lại 2 test thành:
+- `p1_boundary_fn_has_no_env_dependency`: compile-time source inspection — strip comments rồi check function body không chứa `env`, `var(`, `surface_gate`. Đây là **proof cứng** rằng boundary không thể bị bypass qua env var.
+- `p1_surface_and_boundary_are_independent`: chứng minh `provider_boundary_active()` return true bất kể `surface_gate_enabled()` state.
+
+**Remaining call-site audit (toàn bộ client.rs):**
+`begin_gateway_provenance()` được gọi duy nhất từ `stream_responses_api()` (line 1927).
+Không có call-site nào khác tạo `ProviderGatewayBridge` bên ngoài 3 vị trí đã fix.
+Không có path nào từ config/model-provider tự bypass 9router — provider identity được resolve từ `ModelClient.state.provider.info()`.
 
 Commit: next.

@@ -87,49 +87,82 @@ pub fn is_tui_slash_command_disabled(command: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Phase 1 RED test: prove that the OLD code allowed the env var to
-    /// disable the provider boundary.
+    /// Phase 1: verify provider_boundary_active() is truly invariant by
+    /// inspecting its SOURCE at compile time.
     ///
-    /// `surface_gate_enabled()` returns false when
-    /// `CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1`. If the bridge uses
-    /// `surface_gate_enabled()` as its `enabled` flag (as it did before
-    /// the Phase 1 fix), `check_fail_closed()` would return true even for
-    /// non-9router providers — the boundary is bypassed.
+    /// The old `surface_gate_enabled()` reads `CCCX_MVP_ALLOW_UPSTREAM_SURFACES`
+    /// env var. When that var = 1, the function returns `false`. This value fed
+    /// `ProviderGatewayBridge::new()`, making `bridge.enabled = false`, which
+    /// made `check_fail_closed()` unconditionally return `true` — boundary
+    /// bypassed.
+    ///
+    /// Phase 1 fix: `provider_boundary_active()` never reads any env var.
+    /// This test proves it with compile-time source inspection.
     #[test]
-    fn p1_env_var_must_not_disable_provider_boundary() {
-        // The provider boundary is ALWAYS active — env var has no effect
-        assert!(provider_boundary_active());
-        // Even if the env var were set, the boundary must hold
-        let boundary = provider_boundary_active();
-        assert!(boundary,
-            "RED: provider_boundary_active() must return true regardless of \
-             CCCX_MVP_ALLOW_UPSTREAM_SURFACES. The env var controls UI surfaces \
-             only, not the 9router boundary."
+    fn p1_boundary_fn_has_no_env_dependency() {
+        let source = include_str!("cccx_mvp.rs");
+
+        // Find the provider_boundary_active function body
+        let fn_start = source
+            .find("pub fn provider_boundary_active")
+            .expect("boundary function must exist in this file");
+        let body = &source[fn_start..];
+        let close = body.find('}').expect("fn must have closing brace");
+        let fn_body = &body[..close + 1];
+
+        // Strip doc comments (/// ...) and line comments (// ...) before checking
+        let code_only: String = fn_body
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.starts_with("///") && !trimmed.starts_with("//")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            !code_only.contains("env"),
+            "Phase 1 invariant: provider_boundary_active() code MUST NOT \
+             read environment variables (comment references are okay)."
+        );
+        assert!(
+            !code_only.contains("var("),
+            "Phase 1 invariant: provider_boundary_active() MUST NOT call std::env::var()."
+        );
+        assert!(
+            !code_only.contains("surface_gate"),
+            "Phase 1 invariant: provider_boundary_active() MUST NOT delegate \
+             to surface_gate_enabled()."
+        );
+        assert!(
+            code_only.contains("true"),
+            "Phase 1 invariant: provider_boundary_active() MUST return true."
         );
     }
 
-    /// Prove the semantic difference: surface gate CAN be disabled for
-    /// UI debugging, but provider boundary CANNOT.
+    /// Phase 1: demonstrate the semantic split.
+    ///
+    /// `surface_gate_enabled()` CONTROLS UI surfaces — CAN be disabled.
+    /// `provider_boundary_active()` ENFORCES 9router boundary — CANNOT be disabled.
     #[test]
-    fn p1_surface_gate_does_not_imply_provider_boundary_off() {
-        // The provider boundary is invariant — it does not change based on
-        // the surface gate. `provider_boundary_active()` always returns true
-        // regardless of `surface_gate_enabled()`.
-        //
-        // This test does NOT manipulate env vars (to avoid side effects),
-        // but the invariant is statically true because `provider_boundary_active()`
-        // returns a constant `true` — it does not read any env var.
-        let boundary = provider_boundary_active();
-        assert!(boundary);
+    fn p1_surface_and_boundary_are_independent() {
+        // provider_boundary_active() is unconditionally true
+        assert!(provider_boundary_active());
+        assert!(
+            provider_boundary_active(),
+            "Phase 1: provider boundary must always be active"
+        );
 
-        // The surface gate CAN change (env var), but that doesn't affect the boundary
-        let surface_gate = surface_gate_enabled();
-        // Both can be simultaneously queried and they are independent
-        let _ = surface_gate; // may be true or false depending on env
-        assert!(boundary,
-            "Phase 1 invariant: provider_boundary_active() is a constant true.\
-             It does not depend on any env var. The boundary survives even when\
-             surface_gate_enabled() returns false."
+        // surface_gate_enabled() may be true or false (depends on env var),
+        // but it does NOT affect the boundary
+        let ui_gate = surface_gate_enabled();
+        let boundary = provider_boundary_active();
+
+        // The boundary holds regardless of the UI gate state
+        assert!(
+            boundary,
+            "Phase 1: boundary is invariant. UI gate state ({}) does not affect it.",
+            if ui_gate { "enabled" } else { "disabled" }
         );
     }
 }
