@@ -2413,3 +2413,13 @@ cargo +1.95.0 test -p codex-core cccx_runtime --lib
 ```
 
 Result: 18 passed, 0 failed. Existing warnings only.
+
+## 2026-07-20 — Phase 5B: atomic Task Graph replacement
+
+- Replaced direct Task Graph file writes with a same-directory temporary file
+  followed by rename. A process crash before rename therefore leaves the last
+  valid `task-graph.json` in place rather than a partially written JSON file.
+- Targeted validation: `cargo +1.95.0 test -p codex-core
+  cccx_task_graph_state --lib` — 3 passed.
+- Remaining Phase 5 scope: pinned verification runner, state writer lease/CAS,
+  mode/attempt store unification, and `/goal` wiring.

@@ -6,6 +6,8 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use cccx_mode::CccxModeState;
 use cccx_task_graph::TaskGraph;
@@ -14,6 +16,7 @@ use tokio::fs;
 
 const CCCX_STATE_DIR: &str = ".cccx/state";
 const TASK_GRAPH_FILE: &str = "task-graph.json";
+static STATE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
 pub enum TaskGraphStateError {
@@ -85,9 +88,28 @@ pub async fn save_task_graph(
             source,
         })?;
     let bytes = serde_json::to_vec_pretty(task_graph).map_err(TaskGraphStateError::Serialize)?;
-    fs::write(&path, bytes)
+    atomic_replace(&path, &bytes).await
+}
+
+async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), TaskGraphStateError> {
+    let sequence = STATE_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        path.file_name().and_then(|name| name.to_str()).unwrap_or("state"),
+        sequence
+    ));
+    fs::write(&temporary, bytes)
         .await
-        .map_err(|source| TaskGraphStateError::Write { path, source })
+        .map_err(|source| TaskGraphStateError::Write {
+            path: temporary.clone(),
+            source,
+        })?;
+    fs::rename(&temporary, path)
+        .await
+        .map_err(|source| TaskGraphStateError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 pub fn stop_guard(task_graph: &TaskGraph) -> Result<(), TaskGraphStateError> {
