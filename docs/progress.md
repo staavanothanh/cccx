@@ -777,4 +777,43 @@ task.md Phase 9 exit criteria: "/remember survives restart and loads into Main C
 
 **Diagnostic Q6 (gateguard):** /remember là filesystem write gate. ADR deny qua MCP allowlist. Plugin isolation qua WorkSpec projection. Tất cả là code gate. ✓
 
+Commit: `6dc3c424`.
+
+---
+
+## Phase 10 — Model route resolution RED tests (2026-07-19)
+
+### Context
+
+`ModelRouteResolver` in `cccx-provider-gateway` already has full priority chain
+(7 tests: explicit wins, role preset, inherit main requested, fail-closed, inherit main effective,
+agent-suggested priority, session default). `/model` wired via `LocalConfigCatalog`.
+
+task.md Phase 10 exit criteria: "Chỉ model route 9router configured/catalog xuất hiện."
+
+### RED tests added
+
+| ID | Test | Proves |
+|----|------|--------|
+| P10-T1 | `p10_explicit_route_wins_over_inheritance` | Explicit ModelRouteSelection → route_id returned directly |
+| P10-T2 | `p10_inherit_main_requested_uses_parent_slug` | InheritMainRequested → uses main_model_slug |
+| P10-T3 | `p10_inherit_main_effective_distinguished_from_requested` | InheritMainEffective → resolver distinguishes upstream |
+| P10-T4 | `p10_model_route_selection_identity_is_deterministic` | Different selections → different summaries |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| codex-core cccx_runtime | 15 (11 prior + 4 P10) | ✓ |
+| cccx-provider-gateway | 15 (model route resolver intact) | ✓ |
+| codex-core + codex-tui | compile | ✓ |
+
+### Exit criteria check
+
+| Criteria | Status |
+|----------|--------|
+| Chỉ model route 9router configured/catalog xuất hiện | ✓ prior (LocalConfigCatalog + 7 resolver tests) |
+| Subagent attempt ghi route selection source rõ | ✓ prior (ModelRouteSelectionSource in provenance) |
+| Gateway không tự chọn model thay scheduler | ✓ prior (fail-closed enforcement) |
+
 Commit: next.

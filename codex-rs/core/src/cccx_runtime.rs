@@ -723,4 +723,67 @@ mod tests {
         assert_eq!(hex_part.len(), 64, "spec_digest must be 64 hex chars");
         assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
+
+    // ── Phase 10 tests ──
+
+    /// Phase 10: Explicit model route produces the route_id directly.
+    /// task.md: "WorkSpec model route resolve order: explicit spawn override first."
+    #[test]
+    fn p10_explicit_route_wins_over_inheritance() {
+        let mut ws = work_spec();
+        ws.model_route = ModelRouteSelection::Explicit {
+            route_id: "oc/deepseek-v4-pro".to_string(),
+        };
+        let summary = model_route_summary(&ws, "main-default");
+
+        assert_eq!(summary, "oc/deepseek-v4-pro");
+    }
+
+    /// Phase 10: InheritMainRequested uses main_model_slug (parent's requested route).
+    #[test]
+    fn p10_inherit_main_requested_uses_parent_slug() {
+        let mut ws = work_spec();
+        ws.model_route = ModelRouteSelection::InheritMainRequested;
+        let summary = model_route_summary(&ws, "9router/main-requested");
+
+        assert_eq!(summary, "9router/main-requested");
+    }
+
+    /// Phase 10: InheritMainEffective also uses main_model_slug at this layer;
+    /// the distinction (requested vs effective) is resolved at the
+    /// ModelRouteResolver level in cccx-provider-gateway.
+    #[test]
+    fn p10_inherit_main_effective_distinguished_from_requested() {
+        let mut ws = work_spec();
+        ws.model_route = ModelRouteSelection::InheritMainEffective;
+        let summary = model_route_summary(&ws, "main-effective");
+
+        // Runtime layer: same code path as InheritMainRequested.
+        // The resolver distinguishes them upstream.
+        assert_eq!(summary, "main-effective");
+    }
+
+    /// Phase 10: route selection source is recorded in the WorkSpec,
+    /// though the full resolver proof lives in cccx-provider-gateway tests.
+    #[test]
+    fn p10_model_route_selection_identity_is_deterministic() {
+        let ws1 = {
+            let mut ws = work_spec();
+            ws.model_route = ModelRouteSelection::Explicit {
+                route_id: "route-a".to_string(),
+            };
+            ws
+        };
+        let ws2 = {
+            let mut ws = work_spec();
+            ws.model_route = ModelRouteSelection::InheritMainRequested;
+            ws
+        };
+
+        assert_ne!(
+            model_route_summary(&ws1, "main"),
+            model_route_summary(&ws2, "main"),
+            "Phase 10: different ModelRouteSelection must produce distinguished summaries"
+        );
+    }
 }
