@@ -1366,6 +1366,50 @@ async fn collab_mode_shift_tab_cycles_only_when_idle() {
 }
 
 #[tokio::test]
+async fn cccx_shift_tab_cycles_safe_modes_and_emits_typed_core_updates() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    let plan_mask = collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Plan)
+        .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+
+    for expected in [
+        ModeKind::Default,
+        ModeKind::AcceptEdits,
+        ModeKind::Auto,
+        ModeKind::Plan,
+        ModeKind::Default,
+    ] {
+        chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+        assert_eq!(chat.active_collaboration_mode_kind(), expected);
+        assert_eq!(next_thread_collaboration_mode_update(&mut rx), expected);
+        assert_ne!(chat.active_collaboration_mode_kind(), ModeKind::DontAsk);
+        assert_ne!(chat.active_collaboration_mode_kind(), ModeKind::Bypass);
+    }
+}
+
+fn next_thread_collaboration_mode_update(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> ModeKind {
+    loop {
+        let event = rx.try_recv().expect("expected typed thread settings event");
+        match event {
+            AppEvent::SubmitThreadOp {
+                op:
+                    Op::OverrideTurnContext {
+                        collaboration_mode: Some(CollaborationMode { mode, .. }),
+                        ..
+                    },
+                ..
+            } => return mode,
+            AppEvent::InsertHistoryCell(_) => continue,
+            other => panic!("expected collaboration mode update event, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
 async fn mode_switch_surfaces_model_change_notification_when_effective_model_changes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
     chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);

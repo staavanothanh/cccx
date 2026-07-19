@@ -1512,3 +1512,65 @@ Operational note:
 - Auto mode classifier through 9router remains unimplemented.
 - Permission queue bridge still has dead production methods; this remains part
   of the later permission-queue wiring work.
+
+---
+
+## Phase 3C — Shift+Tab typed mode-update regression (2026-07-20)
+
+Scope:
+
+- `codex-rs/tui/src/chatwidget/tests/plan_mode.rs`
+
+Skills/roles used:
+
+- `gateguard`
+- `agent-harness-construction`
+- `error-handling`
+- `ai-regression-testing`
+- ECC role references: `tdd-guide`, `security-reviewer`, `code-reviewer`
+
+### Implemented
+
+1. Added a TUI-level regression test proving Shift+Tab mode cycling emits typed
+   core thread-settings updates, not just a local UI mask.
+2. The test starts from Plan mode and verifies the safe cycle:
+   `Plan → Default → AcceptEdits → Auto → Plan → Default`.
+3. The test asserts the active TUI mode never enters `DontAsk` or `Bypass` via
+   Shift+Tab.
+4. The emitted event is checked as:
+   `AppEvent::SubmitThreadOp { op: Op::OverrideTurnContext { collaboration_mode: Some(...) } }`.
+
+### RED/GREEN evidence
+
+Initial RED:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo test -p codex-tui cccx_shift_tab_cycles_safe_modes_and_emits_typed_core_updates --lib
+```
+
+Result:
+
+- Failed because the first test version assumed the widget started outside the
+  safe cycle and expected `Plan`; actual first transition from the default
+  startup state was `AcceptEdits`. The test was corrected to explicitly start
+  from `Plan`, matching the design sequence.
+
+Final GREEN:
+
+```powershell
+cargo test -p codex-tui cccx_shift_tab_cycles_safe_modes_and_emits_typed_core_updates --lib
+```
+
+Result:
+
+- `cccx_shift_tab_cycles_safe_modes_and_emits_typed_core_updates`: 1 passed.
+
+### Remaining Phase 3 gaps
+
+- Bypass still needs backend-created sandbox/isolation attestation.
+- Auto classifier through 9router remains unimplemented.
+- Cumulative counters and commit-once PostToolUse records remain unimplemented.
+- TUI rollback/reconciliation after a rejected core mode update, especially
+  `/bypass`, still needs a dedicated pass.
