@@ -1401,7 +1401,10 @@ async fn cccx_bypass_slash_command_requests_core_without_optimistic_local_mode()
     chat.dispatch_command(SlashCommand::Bypass);
 
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
-    assert_eq!(next_thread_collaboration_mode_update(&mut rx), ModeKind::Bypass);
+    assert_eq!(
+        next_thread_collaboration_mode_update(&mut rx),
+        ModeKind::Bypass
+    );
 }
 
 fn next_thread_collaboration_mode_update(

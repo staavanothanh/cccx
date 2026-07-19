@@ -683,10 +683,7 @@ impl ChatWidget {
         self.submit_collaboration_mode_settings_update();
     }
 
-    pub(crate) fn request_collaboration_mode_from_user_action(
-        &self,
-        mask: CollaborationModeMask,
-    ) {
+    pub(crate) fn request_collaboration_mode_from_user_action(&self, mask: CollaborationModeMask) {
         if !self.collaboration_modes_enabled() {
             return;
         }
