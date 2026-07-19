@@ -2506,6 +2506,26 @@ This is only the first Phase 6 slice. Permission request identity still needs
 logical worker/task/attempt metadata, and Phase 6 must still wire targeted
 cancel, checkpoint/resume, worker leases, and `/agents` commands.
 
+## 2026-07-20 — Phase 6B: interrupted-worker checkpoint (partial)
+
+- `CccxRuntimeRegistry::complete_spawn()` now writes a `SubagentCheckpoint`
+  before completing an unsuccessful worker lifecycle. The record preserves the
+  logical/attempt identity, task, base commit, terminal step and pending
+  objective, giving the future resume path real persisted state.
+- A focused runtime test verifies that an interrupted worker creates a
+  checkpoint with the expected task, attempt, base commit and disconnect
+  summary.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 check -p codex-core
+cargo +1.95.0 test -p codex-core interrupted_spawn_persists_a_resumable_checkpoint --lib
+```
+
+This does not yet implement resume or targeted cancellation; it establishes
+the persisted failure boundary those operations must consume.
+
 ## 2026-07-20 — Phase 5D: Task Graph writer lease
 
 - Added `update_task_graph()`, a project-local writer-lease transaction for

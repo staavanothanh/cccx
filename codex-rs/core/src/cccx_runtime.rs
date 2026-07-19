@@ -19,6 +19,7 @@ use codex_protocol::ThreadId;
 
 use crate::artifact_collector::ArtifactCollector;
 use crate::cccx_task_graph_state;
+use crate::checkpoint::SubagentCheckpoint;
 use crate::goal_evaluator::GoalEvaluator;
 use crate::verification_runner::run_verification;
 
@@ -233,6 +234,22 @@ impl CccxRuntimeRegistry {
         let Some(runtime) = self.by_thread.remove(&child_thread_id.to_string()) else {
             return Ok(false);
         };
+        if !success {
+            let checkpoint = SubagentCheckpoint {
+                logical_session_id: child_thread_id.to_string(),
+                worker_incarnation_id: child_thread_id.to_string(),
+                task_id: runtime.work_spec.task_id.clone(),
+                attempt_id: child_thread_id.to_string(),
+                last_completed_step: status_summary.clone(),
+                partial_diff: String::new(),
+                pending_steps: vec![runtime.work_spec.objective.clone()],
+                checkpointed_at: chrono::Utc::now().to_rfc3339(),
+                base_commit: runtime.work_spec.base_revision.git_head.clone(),
+            };
+            crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
+                .await
+                .map_err(|error| format!("failed to persist interrupted worker checkpoint: {error}"))?;
+        }
         let graph = cccx_task_graph_state::load_task_graph(&runtime.project_root)
             .await
             .map_err(|error| error.to_string())?
@@ -576,6 +593,38 @@ mod tests {
         assert!(task.correction_required.as_deref().is_some_and(|reason| reason.contains("exit code 7")));
         assert_eq!(task.attempts[0].verification_records.len(), 1);
         assert!(!task.attempts[0].verification_records[0].passed);
+    }
+
+    #[tokio::test]
+    async fn interrupted_spawn_persists_a_resumable_checkpoint() {
+        let project = tempfile::TempDir::new().unwrap();
+        let mut work_spec = work_spec();
+        work_spec.base_revision.git_head = Some("base-commit".to_string());
+        let child_thread_id = ThreadId::new();
+        let runtime = CccxSpawnRuntime {
+            project_root: project.path().to_path_buf(),
+            work_spec,
+            display_name: "interrupted-worker".to_string(),
+            model_route_summary: "9router/test".to_string(),
+        };
+        let mut registry = CccxRuntimeRegistry::default();
+        registry.register_spawn(child_thread_id, runtime).await.unwrap();
+        assert!(registry
+            .complete_spawn(child_thread_id, "provider disconnected".to_string(), false)
+            .await
+            .unwrap());
+
+        let checkpoint = crate::checkpoint::load_checkpoint(
+            project.path(),
+            &child_thread_id.to_string(),
+        )
+        .await
+        .unwrap()
+        .expect("interrupted worker must leave a checkpoint");
+        assert_eq!(checkpoint.task_id, "T1");
+        assert_eq!(checkpoint.attempt_id, child_thread_id.to_string());
+        assert_eq!(checkpoint.base_commit.as_deref(), Some("base-commit"));
+        assert_eq!(checkpoint.last_completed_step, "provider disconnected");
     }
 
     // ── Phase 3 tests ──
