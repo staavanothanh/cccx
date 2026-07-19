@@ -213,7 +213,6 @@ impl CccxRuntimeRegistry {
         status_summary: String,
         success: bool,
     ) -> Result<bool, String> {
-        use sha2::{Digest, Sha256};
         let Some(runtime) = self.by_thread.remove(&child_thread_id.to_string()) else {
             return Ok(false);
         };
@@ -246,11 +245,11 @@ impl CccxRuntimeRegistry {
             ),
         );
 
-        // Phase 5 fix: evidence_digest is SHA256 of status_summary, not raw text.
-        // Phase 6 comment reworded: GoalEvaluator receives real digest — tasks are
-        // verified through exit_code + SHA256 evidence, not raw prose.
-        let log_digest = format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
-        state.complete(artifact, Some(0), Some(&log_digest))?;
+        // A terminal worker status is an Artifact, not independent verification
+        // evidence. Leave the task awaiting verification until the harness runs
+        // the pinned VerificationSpec and records its real exit code and log
+        // digest through `record_verification`.
+        state.complete(artifact, None, None)?;
         cccx_task_graph_state::save_task_graph(&runtime.project_root, state.task_graph())
             .await
             .map_err(|error| error.to_string())?;

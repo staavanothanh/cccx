@@ -2394,3 +2394,22 @@ cargo +1.95.0 test -p codex-core cccx_stale_read_gate --lib
 
 The only observed output was the pre-existing dead-code warning in
 `permission_queue_bridge.rs` and the stable-rustfmt nightly-option warning.
+
+---
+
+## 2026-07-20 — Phase 5A: terminal completion is not verification
+
+- Removed the fabricated `Some(0)` exit code and digest derived from a child
+  terminal-status string in `CccxRuntimeRegistry::complete_spawn()`.
+- A successful worker completion now writes only an Artifact and leaves the
+  task blocked/awaiting a separately recorded `VerificationRecord`.
+- This restores the StopGuard invariant: a terminal status or prose such as
+  "tests pass" cannot make a task verified.
+
+Validation:
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_runtime --lib
+```
+
+Result: 18 passed, 0 failed. Existing warnings only.
