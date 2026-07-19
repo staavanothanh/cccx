@@ -1982,3 +1982,66 @@ Result:
   classifier-eligible actions after deterministic gates.
 - PostToolUse-blocked hook path is protected by commit ordering in registry,
   but still lacks a dedicated hook-config integration regression test.
+
+## Phase 3I — PostToolUse blocked-hook counter regression
+
+Date: 2026-07-20
+
+Scope:
+
+- `codex-rs/core/src/tools/registry_tests.rs`
+
+Skills / workflow used:
+
+- `gateguard`
+- `agent-harness-construction`
+- `error-handling`
+- `ai-regression-testing`
+- MCP-first discovery through `codebase-memory-mcp`, with `rg` fallback for
+  literal test/config searches.
+
+Implemented:
+
+1. Added a dedicated regression test for the PostToolUse blocked-hook path:
+   `cccx_post_tool_use_counter_does_not_commit_when_post_hook_blocks`.
+2. The test installs a real `PostToolUse` hook fixture through `hooks.json`.
+3. The test mirrors the existing hook trust contract by:
+   - discovering the hook through `codex_hooks::list_hooks`;
+   - writing the discovered hook hash into the test config layer stack;
+   - creating `Hooks` from the trusted config stack.
+4. The hook exits with code `2`, which is the existing hook-engine contract for
+   a blocking hook result.
+5. The test verifies both required outcomes:
+   - the tool result is rejected with the hook feedback message;
+   - `cccx_post_tool_use_changed_lines` remains `0`, proving blocked
+     PostToolUse results do not commit changed-line counters.
+
+Debug finding:
+
+- An earlier hook fixture attempted to write a marker file through shell
+  redirection and exited as code `1`, which the hook parser treated as a failed
+  hook, not a blocking hook. The final fixture uses the minimal supported
+  contract: emit stderr feedback and exit with code `2`.
+
+Validation:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 test -p codex-core cccx_post_tool_use_counter_does_not_commit_when_post_hook_blocks --lib
+cargo +1.95.0 test -p codex-core cccx_post_tool_use_counter --lib
+cargo +1.95.0 fmt --all
+```
+
+Results:
+
+- Targeted blocked-hook regression: 1 passed.
+- Full `cccx_post_tool_use_counter_*` group: 3 passed.
+- Formatting completed. Rustfmt emitted the existing stable-toolchain warning
+  for `imports_granularity = Item`.
+
+Remaining note:
+
+- This closes the previously listed Phase 3 PostToolUse-blocked hook regression
+  gap. The broader Phase 3 parity questions for edit/MCP/network Auto
+  classifier call-sites remain separate.

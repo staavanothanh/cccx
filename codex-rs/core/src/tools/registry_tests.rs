@@ -117,6 +117,75 @@ impl CoreToolRuntime for CccxPostToolUseCounterTestHandler {
     }
 }
 
+fn install_blocking_post_tool_use_hook_for_counter_test(
+    config: &crate::config::Config,
+) -> anyhow::Result<String> {
+    std::fs::create_dir_all(&config.codex_home)?;
+    let command = {
+        #[cfg(windows)]
+        {
+            "echo blocked cccx counter regression 1>&2 & exit /b 2".to_string()
+        }
+        #[cfg(not(windows))]
+        {
+            "printf '%s\\n' 'blocked cccx counter regression' >&2; exit 2".to_string()
+        }
+    };
+    let hooks = serde_json::json!({
+        "hooks": {
+            "PostToolUse": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": command,
+                    "statusMessage": "blocking cccx counter regression"
+                }]
+            }]
+        }
+    });
+    std::fs::write(config.codex_home.join("hooks.json"), hooks.to_string())?;
+    Ok(command)
+}
+
+fn trusted_config_layer_stack_for_counter_test(
+    config_layer_stack: &codex_config::ConfigLayerStack,
+    codex_home: &codex_utils_absolute_path::AbsolutePathBuf,
+    hooks: Vec<codex_hooks::HookListEntry>,
+) -> codex_config::ConfigLayerStack {
+    let mut user_config = config_layer_stack
+        .get_active_user_layer()
+        .map(|layer| layer.config.clone())
+        .unwrap_or_else(|| codex_config::TomlValue::Table(Default::default()));
+    let user_table = user_config
+        .as_table_mut()
+        .expect("user config should be a table");
+    let hooks_table = user_table
+        .entry("hooks")
+        .or_insert_with(|| codex_config::TomlValue::Table(Default::default()))
+        .as_table_mut()
+        .expect("hooks config should be a table");
+    let state_table = hooks_table
+        .entry("state")
+        .or_insert_with(|| codex_config::TomlValue::Table(Default::default()))
+        .as_table_mut()
+        .expect("hook state config should be a table");
+    for hook in hooks {
+        let mut hook_state = codex_config::TomlValue::Table(Default::default());
+        let hook_state_table = hook_state
+            .as_table_mut()
+            .expect("hook state should be a table");
+        hook_state_table.insert(
+            "trusted_hash".to_string(),
+            codex_config::TomlValue::String(hook.current_hash),
+        );
+        state_table.insert(hook.key, hook_state);
+    }
+
+    config_layer_stack.with_user_config(
+        &codex_home.join(codex_config::CONFIG_TOML_FILE),
+        user_config,
+    )
+}
+
 fn test_spec(tool_name: &codex_tools::ToolName) -> codex_tools::ToolSpec {
     codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
         name: tool_name.name.clone(),
@@ -551,6 +620,90 @@ async fn cccx_post_tool_use_counter_commits_after_success_without_double_countin
         ))
         .await?;
     assert_eq!(turn.cccx_post_tool_use_changed_lines_for_test().await, 3);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn cccx_post_tool_use_counter_does_not_commit_when_post_hook_blocks() -> anyhow::Result<()> {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let config = session.get_config().await;
+    let blocking_command = install_blocking_post_tool_use_hook_for_counter_test(config.as_ref())?;
+    let discovery_config = codex_hooks::HooksConfig {
+        feature_enabled: true,
+        config_layer_stack: Some(config.config_layer_stack.clone()),
+        ..codex_hooks::HooksConfig::default()
+    };
+    let listed_hooks = codex_hooks::list_hooks(discovery_config.clone());
+    assert!(
+        listed_hooks.hooks.iter().any(|hook| hook.event_name
+            == codex_protocol::protocol::HookEventName::PostToolUse
+            && hook.command.as_deref() == Some(blocking_command.as_str())),
+        "blocking PostToolUse hook should be discoverable. hooks={:?} warnings={:?}",
+        listed_hooks.hooks,
+        listed_hooks.warnings
+    );
+    let trusted_config_layer_stack = trusted_config_layer_stack_for_counter_test(
+        &config.config_layer_stack,
+        &config.codex_home,
+        listed_hooks.hooks.clone(),
+    );
+    let hook_config = codex_hooks::HooksConfig {
+        config_layer_stack: Some(trusted_config_layer_stack),
+        ..discovery_config
+    };
+    let trusted_hooks = codex_hooks::list_hooks(hook_config.clone());
+    assert!(
+        trusted_hooks.hooks.iter().any(|hook| hook.event_name
+            == codex_protocol::protocol::HookEventName::PostToolUse
+            && hook.command.as_deref() == Some(blocking_command.as_str())
+            && hook.enabled),
+        "trusted PostToolUse hook should be enabled. hooks={:?} warnings={:?}",
+        trusted_hooks.hooks,
+        trusted_hooks.warnings
+    );
+    session
+        .services
+        .hooks
+        .store(Arc::new(codex_hooks::Hooks::new(hook_config)));
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let tool_name = codex_tools::ToolName::plain("cccx_apply_patch_blocked_counter_test");
+    let handler = Arc::new(CccxPostToolUseCounterTestHandler {
+        tool_name: tool_name.clone(),
+    });
+    let registry = ToolRegistry::with_handler_for_test(handler);
+
+    let result = registry
+        .dispatch_any(test_invocation(
+            session,
+            Arc::clone(&turn),
+            "call-1",
+            tool_name,
+        ))
+        .await;
+    let err = match result {
+        Ok(_) => {
+            let changed_lines = turn.cccx_post_tool_use_changed_lines_for_test().await;
+            anyhow::bail!(
+                "blocking PostToolUse hook should reject the tool result. changed_lines={} hooks={:?}",
+                changed_lines,
+                trusted_hooks.hooks
+            )
+        }
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(err, FunctionCallError::RespondToModel(ref message)
+            if message == "blocked cccx counter regression"),
+        "blocked PostToolUse hook reason should be returned to the model. Got: {err:?}"
+    );
+    assert_eq!(
+        turn.cccx_post_tool_use_changed_lines_for_test().await,
+        0,
+        "blocked PostToolUse result must not commit changed-line counter"
+    );
 
     Ok(())
 }
