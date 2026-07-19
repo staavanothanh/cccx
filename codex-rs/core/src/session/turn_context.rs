@@ -70,6 +70,10 @@ impl CccxPostToolUseCounters {
     pub(crate) async fn changed_lines_for_test(&self) -> usize {
         self.state.lock().await.changed_lines
     }
+
+    pub(crate) async fn changed_lines(&self) -> usize {
+        self.state.lock().await.changed_lines
+    }
 }
 
 pub(crate) type ShellSnapshotTask = Shared<BoxFuture<'static, Option<Arc<ShellSnapshotFile>>>>;
@@ -239,6 +243,10 @@ impl TurnContext {
         self.cccx_post_tool_use_counters
             .commit_changed_lines_once(tool_use_id, changed_lines)
             .await
+    }
+
+    pub(crate) async fn cccx_post_tool_use_changed_lines(&self) -> usize {
+        self.cccx_post_tool_use_counters.changed_lines().await
     }
 
     #[cfg(test)]

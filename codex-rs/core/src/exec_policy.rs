@@ -419,9 +419,10 @@ fn cccx_full_shell_requirement(
 ///   Plan-mode edit, DontAsk with escalate match)
 /// - `Some(NeedsApproval)` when user approval is required
 /// - `None` when no cccx policy applies (allowlist match, or no rule matched)
-pub(crate) fn cccx_edit_requirement(
+pub(crate) fn cccx_edit_requirement_with_changed_lines(
     file_paths: &[String],
     mode: CccxMainMode,
+    changed_lines: usize,
 ) -> Option<ExecApprovalRequirement> {
     let paths_summary = file_paths.join(", ");
     let action = CccxNormalizedAction {
@@ -432,13 +433,13 @@ pub(crate) fn cccx_edit_requirement(
         tool_name: Some("apply_patch".to_string()),
         task_id: "codex-core-edit".to_string(),
         changed_files: file_paths.len(),
-        changed_lines: 0,
+        changed_lines,
     };
     let session = CccxPolicySession {
         mode,
         thresholds: CccxModeThresholds {
             max_changed_files: usize::MAX,
-            max_changed_lines: usize::MAX,
+            max_changed_lines: 20,
         },
         explicit_allow_rules: Vec::new(),
     };
@@ -1590,11 +1591,30 @@ mod cccx_policy_wiring_tests {
         );
 
         // Edit in AcceptEdits: should be allowed
-        let edit_result = cccx_edit_requirement(&["src/main.rs".into()], CccxMainMode::AcceptEdits);
+        let edit_result = cccx_edit_requirement_with_changed_lines(
+            &["src/main.rs".into()],
+            CccxMainMode::AcceptEdits,
+            0,
+        );
         assert!(
             edit_result.is_none(),
             "AcceptEdits must allow edits. Architecture §4: \
              'Edit file tự động trong ngưỡng nhỏ'. Got: {edit_result:?}"
+        );
+    }
+
+    #[test]
+    fn p3_accept_edits_reroutes_when_cumulative_changed_lines_exceed_threshold() {
+        let result = cccx_edit_requirement_with_changed_lines(
+            &["src/main.rs".into()],
+            CccxMainMode::AcceptEdits,
+            21,
+        );
+
+        assert!(
+            matches!(result, Some(ExecApprovalRequirement::NeedsApproval { ref reason, .. })
+                if reason.as_deref().is_some_and(|reason| reason.contains("mode-threshold-exceeded"))),
+            "AcceptEdits must reroute or ask when cumulative changed lines exceed the small-edit threshold. Got: {result:?}"
         );
     }
 

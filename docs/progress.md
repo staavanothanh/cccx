@@ -1724,3 +1724,75 @@ Result:
 - The counter is now runtime-owned and PostToolUse-gated, but projected
   threshold enforcement against future edits still needs a follow-up slice once
   pre-edit projected diff and post-edit committed diff semantics are unified.
+
+---
+
+## Phase 3F — Cumulative threshold enforcement for AcceptEdits patches (2026-07-20)
+
+Scope:
+
+- `codex-rs/core/src/apply_patch.rs`
+- `codex-rs/core/src/apply_patch_tests.rs`
+- `codex-rs/core/src/exec_policy.rs`
+- `codex-rs/core/src/session/turn_context.rs`
+
+Skills/roles used:
+
+- `gateguard`
+- `agent-harness-construction`
+- `error-handling`
+- `ai-regression-testing`
+- ECC role references: `tdd-guide`, `security-reviewer`, `code-reviewer`
+
+### Implemented
+
+1. `cccx_edit_requirement_with_changed_lines(...)` now evaluates edit policy
+   with an explicit changed-lines value instead of hardcoding `0`.
+2. Main edit threshold no longer uses `usize::MAX`; small-edit threshold is
+   active at 20 changed lines.
+3. `apply_patch()` now computes:
+   - committed changed lines from the Phase 3E PostToolUse counter;
+   - projected changed lines from the current `ApplyPatchAction`;
+   - cumulative value = committed + projected.
+4. AcceptEdits large patches now produce the existing cccx reroute/approval
+   reason `mode-threshold-exceeded — reroute to CX recommended` before runtime
+   patch execution.
+5. Projected threshold check does not mutate the counter. The counter still
+   only commits after successful, unblocked PostToolUse.
+
+### RED/GREEN evidence
+
+Initial RED:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo test -p codex-core p3_accept_edits_reroutes_when_cumulative_changed_lines_exceed_threshold --lib
+```
+
+Result:
+
+- Failed to compile because
+  `cccx_edit_requirement_with_changed_lines(...)` did not exist and edit policy
+  could not receive cumulative/projected changed-line data.
+
+Final GREEN:
+
+```powershell
+cargo test -p codex-core cccx_post_tool_use_counter --lib
+cargo test -p codex-core p3_accept_edits_reroutes_when_cumulative_changed_lines_exceed_threshold --lib
+cargo test -p codex-core apply_patch_accept_edits_uses_cumulative_threshold_before_runtime_delegate --lib
+```
+
+Results:
+
+- `cccx_post_tool_use_counter_*`: 2 passed.
+- `p3_accept_edits_reroutes_when_cumulative_changed_lines_exceed_threshold`: passed.
+- `apply_patch_accept_edits_uses_cumulative_threshold_before_runtime_delegate`: passed.
+
+### Remaining Phase 3 gaps
+
+- Bypass backend-created sandbox/isolation attestation remains unimplemented.
+- Auto classifier through 9router remains unimplemented.
+- PostToolUse-blocked hook path is protected by commit ordering in registry,
+  but does not yet have a dedicated hook-config integration regression test.

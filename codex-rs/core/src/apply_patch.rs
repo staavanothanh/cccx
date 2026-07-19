@@ -1,4 +1,4 @@
-use crate::exec_policy::cccx_edit_requirement;
+use crate::exec_policy::cccx_edit_requirement_with_changed_lines;
 use crate::exec_policy::cccx_subagent_edit_requirement;
 use crate::function_tool::FunctionCallError;
 use crate::safety::SafetyCheck;
@@ -42,6 +42,11 @@ pub(crate) async fn apply_patch(
     cccx_target_paths: Vec<String>,
 ) -> InternalApplyPatchInvocation {
     let file_paths: Vec<String> = action.changes().keys().map(|p| p.to_string()).collect();
+    let projected_changed_lines = changed_lines_in_action(&action);
+    let cumulative_changed_lines = turn_context
+        .cccx_post_tool_use_changed_lines()
+        .await
+        .saturating_add(projected_changed_lines);
 
     let requirement = if let Some(work_spec) = session
         .services
@@ -51,7 +56,11 @@ pub(crate) async fn apply_patch(
     {
         cccx_subagent_edit_requirement(&work_spec, "apply_patch", cccx_target_paths)
     } else {
-        cccx_edit_requirement(&file_paths, turn_context.cccx_main_mode())
+        cccx_edit_requirement_with_changed_lines(
+            &file_paths,
+            turn_context.cccx_main_mode(),
+            cumulative_changed_lines,
+        )
     };
 
     if let Some(requirement) = requirement {
@@ -114,6 +123,29 @@ pub(crate) async fn apply_patch(
         SafetyCheck::Reject { reason } => InternalApplyPatchInvocation::Output(Err(
             FunctionCallError::RespondToModel(format!("patch rejected: {reason}")),
         )),
+    }
+}
+
+fn changed_lines_in_action(action: &ApplyPatchAction) -> usize {
+    action
+        .changes()
+        .values()
+        .map(changed_lines_in_file_change)
+        .sum()
+}
+
+fn changed_lines_in_file_change(change: &ApplyPatchFileChange) -> usize {
+    match change {
+        ApplyPatchFileChange::Add { content, .. } | ApplyPatchFileChange::Delete { content } => {
+            content.lines().count()
+        }
+        ApplyPatchFileChange::Update { unified_diff, .. } => unified_diff
+            .lines()
+            .filter(|line| {
+                (line.starts_with('+') && !line.starts_with("+++"))
+                    || (line.starts_with('-') && !line.starts_with("---"))
+            })
+            .count(),
     }
 }
 
