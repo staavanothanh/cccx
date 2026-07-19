@@ -2454,3 +2454,26 @@ The runtime suite includes an end-to-end assertion that `complete_spawn()`
 executes a pinned `WorkSpec` verification command and persists its resulting
 record. Remaining Phase 5 scope is the unified single-writer state store,
 `/goal`, and bounded audit correction.
+
+## 2026-07-20 — Phase 5D: Task Graph writer lease
+
+- Added `update_task_graph()`, a project-local writer-lease transaction for
+  complete read-modify-write lifecycle updates. `register_spawn()` and
+  `complete_spawn()` now use it, preventing concurrent workers from losing
+  sibling Task/Attempt/Artifact changes through stale graph snapshots.
+- Temporary state files are explicitly `sync_all()`-ed before rename. Mode
+  state now uses the same atomic replacement path rather than a direct write.
+- Added a concurrent transaction test which creates two independent tasks at
+  once and proves both survive persistence. The existing interrupted-temp-file
+  recovery test remains green.
+
+Validation (all green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_task_graph_state --lib
+cargo +1.95.0 test -p codex-core cccx_runtime --lib
+```
+
+The only warnings are the pre-existing unused permission-queue methods.
+Remaining Phase 5 work: shared active-attempt/mode metadata, task-scoped
+`/goal`, and bounded audit correction.

@@ -4,10 +4,14 @@
 //! runtime hooks call into this module instead of reimplementing persistence or
 //! completion semantics.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use cccx_mode::CccxModeState;
 use cccx_task_graph::TaskGraph;
@@ -17,6 +21,8 @@ use tokio::fs;
 const CCCX_STATE_DIR: &str = ".cccx/state";
 const TASK_GRAPH_FILE: &str = "task-graph.json";
 static STATE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static PROJECT_WRITERS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
 
 #[derive(Debug, Error)]
 pub enum TaskGraphStateError {
@@ -46,6 +52,8 @@ pub enum TaskGraphStateError {
     InvalidGraph(String),
     #[error("task graph is not complete; unverified tasks: {0:?}")]
     StopBlocked(Vec<String>),
+    #[error("task graph mutation rejected: {0}")]
+    Mutation(String),
 }
 
 pub fn task_graph_path(project_root: &Path) -> PathBuf {
@@ -91,6 +99,35 @@ pub async fn save_task_graph(
     atomic_replace(&path, &bytes).await
 }
 
+/// Execute one complete TaskGraph read-modify-write transaction under the
+/// project-local writer lease. Callers must use this for lifecycle mutations;
+/// a standalone `load` followed by `save` can otherwise lose a sibling update.
+pub async fn update_task_graph<T, F>(
+    project_root: &Path,
+    initial: TaskGraph,
+    mutate: F,
+) -> Result<T, TaskGraphStateError>
+where
+    F: FnOnce(&mut TaskGraph) -> Result<T, TaskGraphStateError>,
+{
+    let writer = project_writer(project_root);
+    let _lease = writer.lock().await;
+    let mut graph = load_task_graph(project_root).await?.unwrap_or(initial);
+    let result = mutate(&mut graph)?;
+    save_task_graph(project_root, &graph).await?;
+    Ok(result)
+}
+
+fn project_writer(project_root: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    let key = project_root.to_path_buf();
+    let writers = PROJECT_WRITERS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut writers = writers.lock().expect("cccx project writer map poisoned");
+    writers
+        .entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
 async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), TaskGraphStateError> {
     let sequence = STATE_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = path.with_file_name(format!(
@@ -99,6 +136,20 @@ async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), TaskGraphStateE
         sequence
     ));
     fs::write(&temporary, bytes)
+        .await
+        .map_err(|source| TaskGraphStateError::Write {
+            path: temporary.clone(),
+            source,
+        })?;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&temporary)
+        .await
+        .map_err(|source| TaskGraphStateError::Write {
+            path: temporary.clone(),
+            source,
+        })?
+        .sync_all()
         .await
         .map_err(|source| TaskGraphStateError::Write {
             path: temporary.clone(),
@@ -170,9 +221,7 @@ pub async fn save_mode_state(
             source,
         })?;
     let bytes = serde_json::to_vec_pretty(mode).map_err(TaskGraphStateError::Serialize)?;
-    fs::write(&path, bytes)
-        .await
-        .map_err(|source| TaskGraphStateError::Write { path, source })
+    atomic_replace(&path, &bytes).await
 }
 
 #[cfg(test)]
@@ -254,5 +303,27 @@ mod tests {
             graph,
             "an interrupted temporary write must not corrupt the previously committed graph"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_transactions_do_not_lose_sibling_tasks() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let initial = TaskGraph::new("graph-1", "concurrent state");
+        let first = update_task_graph(temp_dir.path(), initial.clone(), |graph| {
+            graph
+                .add_task(TaskNode::new("T1", "first", verification_spec()))
+                .map_err(|error| TaskGraphStateError::Mutation(error.to_string()))
+        });
+        let second = update_task_graph(temp_dir.path(), initial, |graph| {
+            graph
+                .add_task(TaskNode::new("T2", "second", verification_spec()))
+                .map_err(|error| TaskGraphStateError::Mutation(error.to_string()))
+        });
+        let (first, second) = tokio::join!(first, second);
+        first.expect("first transaction");
+        second.expect("second transaction");
+        let graph = load_task_graph(temp_dir.path()).await.unwrap().unwrap();
+        assert!(graph.tasks.contains_key("T1"));
+        assert!(graph.tasks.contains_key("T2"));
     }
 }

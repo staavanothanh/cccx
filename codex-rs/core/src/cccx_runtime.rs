@@ -192,29 +192,28 @@ impl CccxRuntimeRegistry {
         child_thread_id: ThreadId,
         runtime: CccxSpawnRuntime,
     ) -> Result<(), String> {
-        let graph = cccx_task_graph_state::load_task_graph(&runtime.project_root)
-            .await
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| {
-                TaskGraph::new(
-                    "cccx-runtime",
-                    format!("cccx runtime graph for {}", runtime.project_root.display()),
+        let initial = TaskGraph::new(
+            "cccx-runtime",
+            format!("cccx runtime graph for {}", runtime.project_root.display()),
+        );
+        cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
+            let mut state = CccxRuntimeState::new(graph.clone());
+            // Create the TaskNode immediately on spawn, under the same writer
+            // lease that persists it, so concurrent spawns cannot lose a task.
+            state
+                .register_work_spec(
+                    runtime.work_spec.clone(),
+                    child_thread_id.to_string(),
+                    child_thread_id.to_string(),
+                    runtime.display_name.clone(),
+                    runtime.model_route_summary.clone(),
                 )
-            });
-        let mut state = CccxRuntimeState::new(graph);
-        // Phase 6 fix: create the TaskNode immediately on spawn (not on complete).
-        // Previously only track_existing_attempt was called, which never added nodes
-        // to the persisted task graph.
-        state.register_work_spec(
-            runtime.work_spec.clone(),
-            child_thread_id.to_string(),
-            child_thread_id.to_string(),
-            runtime.display_name.clone(),
-            runtime.model_route_summary.clone(),
-        )?;
-        cccx_task_graph_state::save_task_graph(&runtime.project_root, state.task_graph())
-            .await
-            .map_err(|error| error.to_string())?;
+                .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
+            *graph = state.task_graph.clone();
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
         self.by_thread.insert(child_thread_id.to_string(), runtime);
         Ok(())
     }
@@ -238,11 +237,6 @@ impl CccxRuntimeRegistry {
             .await
             .map_err(|error| error.to_string())?
             .unwrap_or_else(|| TaskGraph::new("cccx-runtime", "cccx runtime graph"));
-        let mut state = CccxRuntimeState::new(graph);
-        // The attempt was already registered in register_work_spec at spawn time.
-        // Re-track it here so complete() can find the work_spec by attempt_id.
-        state.track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
-
         let mut collector = ArtifactCollector::new(
             &runtime.work_spec.work_spec_id,
             &child_thread_id.to_string(),
@@ -263,50 +257,56 @@ impl CccxRuntimeRegistry {
             ),
         );
 
-        // A terminal worker status is an Artifact, not independent verification
-        // evidence. Leave the task awaiting verification until the harness runs
-        // the pinned VerificationSpec and records its real exit code and log
-        // digest through `record_verification`.
-        state.complete(artifact, None, None)?;
+        let mut verification_run = None;
+        let mut verification_error = None;
         if success {
             let task_id = runtime.work_spec.task_id.clone();
-            let verification_spec = state
-                .task_graph()
+            let verification_spec = graph
                 .tasks
                 .get(&task_id)
                 .ok_or_else(|| format!("unknown cccx task `{task_id}`"))?
                 .verification_spec
                 .clone();
             match run_verification(&runtime.project_root, &verification_spec).await {
-                Ok(Some(run)) => {
-                    use sha2::{Digest, Sha256};
-                    let artifact_digest = format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
-                    let task = state
-                        .task_graph()
-                        .tasks
-                        .get(&task_id)
-                        .ok_or_else(|| format!("unknown cccx task `{task_id}`"))?;
-                    let record = GoalEvaluator::evaluate_execution(
-                        task,
-                        &child_thread_id.to_string(),
-                        run.command,
-                        run.protected_input_digest,
-                        artifact_digest,
-                    );
-                    state.record_harness_verification(&task_id, &child_thread_id.to_string(), record)?;
-                }
+                Ok(Some(run)) => verification_run = Some(run),
                 Ok(None) => {}
-                Err(error) => {
-                    cccx_task_graph_state::save_task_graph(&runtime.project_root, state.task_graph())
-                        .await
-                        .map_err(|save_error| save_error.to_string())?;
-                    return Err(error.to_string());
-                }
+                Err(error) => verification_error = Some(error.to_string()),
             }
         }
-        cccx_task_graph_state::save_task_graph(&runtime.project_root, state.task_graph())
-            .await
+        let initial = TaskGraph::new("cccx-runtime", "cccx runtime graph");
+        cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
+            let mut state = CccxRuntimeState::new(graph.clone());
+            state.track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
+            // A terminal worker status is an Artifact, not independent verification evidence.
+            state
+                .complete(artifact, None, None)
+                .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
+            if let Some(run) = verification_run {
+                use sha2::{Digest, Sha256};
+                let task_id = runtime.work_spec.task_id.clone();
+                let artifact_digest = format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
+                let task = state.task_graph().tasks.get(&task_id).ok_or_else(|| {
+                    cccx_task_graph_state::TaskGraphStateError::Mutation(format!("unknown cccx task `{task_id}`"))
+                })?;
+                let record = GoalEvaluator::evaluate_execution(
+                    task,
+                    &child_thread_id.to_string(),
+                    run.command,
+                    run.protected_input_digest,
+                    artifact_digest,
+                );
+                state
+                    .record_harness_verification(&task_id, &child_thread_id.to_string(), record)
+                    .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
+            }
+            *graph = state.task_graph.clone();
+            Ok(())
+        })
+        .await
             .map_err(|error| error.to_string())?;
+        if let Some(error) = verification_error {
+            return Err(error);
+        }
         Ok(true)
     }
 }
