@@ -209,4 +209,97 @@ mod tests {
             CheckpointValidation::NeedsRevalidation { .. }
         ));
     }
+
+    // ── Phase 8 tests ──
+
+    /// Phase 8: checkpoint must carry all WorkSpec identity fields
+    /// so subagent lifecycle (spawn/cancel/resume) can reference them.
+    /// task.md: "SubagentStop ghi checkpoint với logicalSessionId/attemptId/baseCommit."
+    #[test]
+    fn p8_checkpoint_stores_workerspec_context() {
+        let ck = SubagentCheckpoint {
+            logical_session_id: "logical-sess-1".into(),
+            worker_incarnation_id: "inc-v2".into(),
+            task_id: "T-root".into(),
+            attempt_id: "attempt-3".into(),
+            last_completed_step: "cargo test passes".into(),
+            partial_diff: "diff".into(),
+            pending_steps: vec!["commit".into()],
+            checkpointed_at: chrono::Utc::now().to_rfc3339(),
+            base_commit: Some("abc1234".to_string()),
+        };
+
+        assert_eq!(ck.logical_session_id, "logical-sess-1");
+        assert_eq!(ck.worker_incarnation_id, "inc-v2");
+        assert_eq!(ck.task_id, "T-root");
+        assert_eq!(ck.attempt_id, "attempt-3");
+        assert_eq!(ck.base_commit.as_deref(), Some("abc1234"));
+    }
+
+    /// Phase 8: stale checkpoint due to age is rejected.
+    /// task.md: "resume loads checkpoint, validates git HEAD drift" — age enforcement too.
+    #[test]
+    fn p8_checkpoint_stale_due_to_age() {
+        let ck = SubagentCheckpoint {
+            logical_session_id: "sess".into(),
+            worker_incarnation_id: "inc".into(),
+            task_id: "T1".into(),
+            attempt_id: "att-1".into(),
+            last_completed_step: "done".into(),
+            partial_diff: "diff".into(),
+            pending_steps: vec![],
+            checkpointed_at: "2026-01-01T00:00:00Z".into(), // months stale
+            base_commit: Some("same-head".to_string()),
+        };
+
+        // Even with matching base_commit, a 6+ month old checkpoint is stale
+        assert!(matches!(
+            validate_checkpoint(&ck, "same-head", 30),
+            CheckpointValidation::Stale { .. }
+        ));
+    }
+
+    /// Phase 8: matching base_commit + recent age → valid.
+    /// task.md: "resume loads checkpoint, validates git HEAD drift."
+    #[test]
+    fn p8_checkpoint_matching_head_validates() {
+        let ck = SubagentCheckpoint {
+            logical_session_id: "sess".into(),
+            worker_incarnation_id: "inc".into(),
+            task_id: "T1".into(),
+            attempt_id: "att-1".into(),
+            last_completed_step: "tests passing".into(),
+            partial_diff: "diff".into(),
+            pending_steps: vec!["review".into()],
+            checkpointed_at: chrono::Utc::now().to_rfc3339(), // just now
+            base_commit: Some("head-abc".to_string()),
+        };
+
+        assert!(matches!(
+            validate_checkpoint(&ck, "head-abc", 60),
+            CheckpointValidation::Valid
+        ));
+    }
+
+    /// Phase 8: checkpoint without base_commit (old format) requires
+    /// explicit revalidation — cannot auto-resume.
+    #[test]
+    fn p8_checkpoint_missing_base_commit_requires_explicit_revalidation() {
+        let ck = SubagentCheckpoint {
+            logical_session_id: "sess".into(),
+            worker_incarnation_id: "inc".into(),
+            task_id: "T1".into(),
+            attempt_id: "att-1".into(),
+            last_completed_step: "done".into(),
+            partial_diff: "diff".into(),
+            pending_steps: vec![],
+            checkpointed_at: chrono::Utc::now().to_rfc3339(),
+            base_commit: None, // old format
+        };
+
+        assert!(matches!(
+            validate_checkpoint(&ck, "any-head", 60),
+            CheckpointValidation::NeedsRevalidation { .. }
+        ));
+    }
 }

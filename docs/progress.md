@@ -678,4 +678,43 @@ not batch-approved, single active prompt invariant.
 Batch approve safety là code gate line 833 — `req.risk != PermissionRisk::High`.
 Không phải prompt. ✓
 
+Commit: `2a146402`.
+
+---
+
+## Phase 8 — Subagent control, checkpoint RED tests (2026-07-19)
+
+### Context
+
+Checkpoint API (`save_checkpoint`, `load_checkpoint`, `delete_checkpoint`, `validate_checkpoint`)
+was completed earlier with 3 unit tests (round-trip, empty step, git drift). TUI-level `/agents`
+tests are blocked by v8 build issue.
+
+task.md Phase 8 exit criteria requires **runtime-level checkpoint context** tests.
+
+### RED tests added
+
+| ID | Test | Proves |
+|----|------|--------|
+| P8-T1 | `p8_checkpoint_stores_workerspec_context` | Checkpoint carries logicalSessionId, attemptId, taskId, baseCommit |
+| P8-T2 | `p8_checkpoint_stale_due_to_age` | 6-month-old checkpoint → Stale regardless of matching head |
+| P8-T3 | `p8_checkpoint_matching_head_validates` | Recent checkpoint, matching base_commit → Valid |
+| P8-T4 | `p8_checkpoint_missing_base_commit_requires_explicit_revalidation` | Old-format checkpoint (no base_commit) → NeedsRevalidation, cannot auto-resume |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| codex-core checkpoint | 7 (3 prior + 4 P8) | ✓ |
+| codex-core + codex-tui | compile | ✓ |
+
+### Exit criteria check
+
+| Criteria | Status |
+|----------|--------|
+| SubagentStop ghi checkpoint với logicalSessionId/attemptId/baseCommit | ✓ P8-T1 |
+| Resume dùng checkpoint thật và drift check | ✓ P8-T2, P8-T3, P8-T4 |
+| `/agents cancel <id>` không cancel toàn bộ stream | ⚠️ TUI blocked (v8), msg corrected in prior audit |
+| User không thể chat trực tiếp với subagent trong attach view | ⚠️ TUI blocked (v8) |
+
 Commit: next.
