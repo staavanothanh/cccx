@@ -569,4 +569,138 @@ mod tests {
         provenance().verify_placeholders()
             .expect("test fixture provenance must not contain cccx-runtime");
     }
+
+    // ── Phase 6 tests ──
+
+    /// Phase 6: StopHook must block final answer when any task is unverified.
+    /// task.md Phase 6 exit criteria: "StopHook không thể bị pass nếu task graph còn unverified."
+    #[test]
+    fn p6_stop_guard_blocks_with_unverified_task() {
+        let mut graph = TaskGraph::new("g", "test");
+        graph
+            .add_task(TaskNode::new(
+                "T1",
+                "prove the task",
+                VerificationSpec {
+                    command: "cargo test".to_string(),
+                    protected_paths: BTreeSet::new(),
+                    spec_digest: "sha256:spec".to_string(),
+                },
+            ))
+            .unwrap();
+        let mut runtime = CccxRuntimeState::new(graph.clone());
+
+        // Spawn subagent, get attempt
+        runtime
+            .register_work_spec(
+                work_spec(),
+                "attempt-1".into(),
+                "thread-1".into(),
+                "worker".into(),
+                "route".into(),
+            )
+            .unwrap();
+
+        // Apply Artifact WITHOUT verification: pass None for exit_code and log_digest.
+        // When both are None, GoalEvaluator::evaluate() returns None, so
+        // record_verification() is never called → task stays unverified.
+        let mut collector = ArtifactCollector::new("ws-1", "attempt-1");
+        collector.record_runtime_log("tests pass", "3/3 ok");
+        let artifact = collector.finalize(
+            ArtifactStatus::Success,
+            "all tests passed".into(),
+            provenance(),
+        );
+        runtime
+            .complete(artifact, None, None)
+            .unwrap();
+
+        // stop_guard must block because no VerificationRecord.passed=true
+        assert!(
+            cccx_task_graph_state::stop_guard(runtime.task_graph()).is_err(),
+            "Phase 6: StopHook must block when task is unverified"
+        );
+        assert!(
+            !runtime.task_graph().can_stop(),
+            "Phase 6: can_stop must be false when tasks are not verified"
+        );
+    }
+
+    /// Phase 6: StopHook must ALLOW final answer when all tasks are verified.
+    /// task.md Phase 6 exit criteria: "StopHook allow final answer khi mọi task verified."
+    #[test]
+    fn p6_stop_guard_allows_when_all_tasks_verified() {
+        let mut graph = TaskGraph::new("g", "test");
+        graph
+            .add_task(TaskNode::new(
+                "T1",
+                "prove the task with evidence",
+                VerificationSpec {
+                    command: "cargo test".to_string(),
+                    protected_paths: BTreeSet::new(),
+                    spec_digest: "sha256:s".to_string(),
+                },
+            ))
+            .unwrap();
+        let mut runtime = CccxRuntimeState::new(graph);
+        runtime
+            .register_work_spec(
+                work_spec(),
+                "attempt-1".into(),
+                "thread-1".into(),
+                "worker".into(),
+                "route".into(),
+            )
+            .unwrap();
+
+        // Full cycle: Artifact → VerificationRecord(passed=true) → can_stop=true
+        let mut collector = ArtifactCollector::new("ws-1", "attempt-1");
+        collector.record_test_run("cargo test", 0, "checksum");
+        runtime
+            .complete(
+                collector.finalize(ArtifactStatus::Success, "ok".into(), provenance()),
+                Some(0),
+                Some("sha256:log"),
+            )
+            .unwrap();
+
+        // Verify: stop_guard allows and can_stop is true
+        cccx_task_graph_state::stop_guard(runtime.task_graph())
+            .expect("Phase 6: StopHook must allow when all tasks are verified");
+        assert!(
+            runtime.task_graph().can_stop(),
+            "Phase 6: can_stop must be true after verification"
+        );
+    }
+
+    /// Phase 6: GoalEvaluator requires command evidence AND exit_code=0.
+    /// task.md: "GoalEvaluator chỉ đánh giá evidence; không tự tạo evidence."
+    #[test]
+    fn p6_goal_evaluator_produces_verification_record_with_command_evidence() {
+        let task = TaskNode::new(
+            "T1",
+            "prove with command evidence",
+            VerificationSpec {
+                command: "cargo test -p cccx-task-graph".to_string(),
+                protected_paths: BTreeSet::new(),
+                spec_digest: "sha256:spec".to_string(),
+            },
+        );
+
+        // Pass: exit_code=0 + digest → verified
+        let record = GoalEvaluator::evaluate(&task, Some(0), Some("sha256:real"))
+            .expect("verification record");
+        assert!(record.passed);
+        assert_eq!(record.verifier, "goal-evaluator");
+
+        // Fail: exit_code!=0 → not verified (but record still produced)
+        let record = GoalEvaluator::evaluate(&task, Some(1), Some("sha256:log"))
+            .expect("verification record");
+        assert!(!record.passed);
+        assert!(!record.findings.is_empty());
+
+        // Missing evidence → no record at all (neither pass nor fail)
+        assert!(GoalEvaluator::evaluate(&task, Some(0), None).is_none());
+        assert!(GoalEvaluator::evaluate(&task, None, Some("sha256:log")).is_none());
+    }
 }

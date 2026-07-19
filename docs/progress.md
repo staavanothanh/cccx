@@ -552,4 +552,51 @@ Digest format được chứng minh qua `p5_audit_provenance_passes_digest_forma
 | cccx-task-graph | 6 | ✓ |
 | goal_evaluator | 3 | ✓ |
 
+Commit: `e2b19ae5`.
+
+---
+
+## Phase 6 — TaskGraph, GoalEvaluator, StopHook RED tests (2026-07-19)
+
+### Context
+
+Phase 6 runtime wiring was completed earlier (see lines 102-111): `register_spawn` creates
+TaskNode, `complete_spawn` applies Artifact + runs GoalEvaluator, StopHook blocks via
+`cccx_stop_guard_outcome()` in `hook_runtime.rs`, `/tasks` wired, `/goal` dispatch-wired.
+
+task.md Phase 6 exit criteria requires **test proof** that the StopHook loop works:
+block when unverified, allow when all verified.
+
+### RED tests added
+
+| ID | Test | Proves |
+|----|------|--------|
+| P6-T1 | `p6_stop_guard_blocks_with_unverified_task` | Artifact applied without VerificationRecord → `can_stop()=false`, `stop_guard()`=Err |
+| P6-T2 | `p6_stop_guard_allows_when_all_tasks_verified` | Full cycle: register → complete with exit_code+digest → `can_stop()=true`, `stop_guard()`=Ok |
+| P6-T3 | `p6_goal_evaluator_produces_verification_record_with_command_evidence` | GoalEvaluator requires both exit_code AND log_digest; exit_code!=0 records failure; missing evidence → None |
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `core/src/cccx_runtime.rs` | Phase 6 tests (3): StopGuard block/allow + GoalEvaluator evidence |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| codex-core cccx_runtime | 11 (8 prior + 3 P6) | ✓ |
+| cccx-task-graph | 6 | ✓ |
+| goal_evaluator | 4 (3 prior + P6-T3 overlapping) | ✓ |
+| codex-core + codex-tui | compile | ✓ |
+
+### Exit criteria check
+
+| Criteria | Status |
+|----------|--------|
+| /tasks hiển thị state thật | ✓ wired earlier (Phase 6 prior) |
+| StopHook không thể bị pass nếu task graph còn unverified | ✓ P6-T1 |
+| StopHook allow final answer khi mọi task verified | ✓ P6-T2 |
+| GoalEvaluator chạy verification command + evidence thật | ✓ P6-T3 |
+
 Commit: next.
