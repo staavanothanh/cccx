@@ -3,6 +3,12 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use cccx_headless::AnswerPayload;
+use cccx_headless::ErrorPayload;
+use cccx_headless::HeadlessEvent;
+use cccx_headless::HeadlessEventEnvelope;
+use cccx_headless::TerminalPayload;
+use cccx_headless::TerminalStatus;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandExecutionStatus;
@@ -64,6 +70,11 @@ pub struct EventProcessorWithJsonOutput {
     last_critical_error: Option<ThreadErrorEvent>,
     final_message: Option<String>,
     emit_final_message_on_shutdown: bool,
+    // cccx-headless fields (Phase 11)
+    cccx_seq: AtomicU64,
+    cccx_session_id: Option<String>,
+    cccx_turn_id: Option<String>,
+    cccx_exit_code: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +100,10 @@ impl EventProcessorWithJsonOutput {
             last_critical_error: None,
             final_message: None,
             emit_final_message_on_shutdown: false,
+            cccx_seq: AtomicU64::new(0),
+            cccx_session_id: None,
+            cccx_turn_id: None,
+            cccx_exit_code: 0,
         }
     }
 
@@ -101,11 +116,100 @@ impl EventProcessorWithJsonOutput {
     }
 
     #[allow(clippy::print_stdout)]
-    fn emit(&self, event: ThreadEvent) {
-        let line = serde_json::to_string(&event).unwrap_or_else(|err| {
+    fn emit(&self, thread_event: ThreadEvent) {
+        if let Some(envelope) = self.map_thread_event_to_envelope(thread_event) {
+            let line = serde_json::to_string(&envelope).unwrap_or_else(|err| {
+                json!({
+                    "schemaVersion": cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION,
+                    "type": "error",
+                    "payload": {
+                        "message": format!("failed to serialize headless event: {err}"),
+                        "recoverable": false,
+                    },
+                })
+                .to_string()
+            });
+            debug_assert!(cccx_headless::assert_stdout_lines_are_json(&line).is_ok());
+            println!("{line}");
+        }
+    }
+
+    fn map_thread_event_to_envelope(&self, event: ThreadEvent) -> Option<HeadlessEventEnvelope> {
+        let headless_event = match event {
+            ThreadEvent::ItemCompleted(ref item) => {
+                match &item.item.details {
+                    ThreadItemDetails::AgentMessage(msg) => {
+                        Some(HeadlessEvent::Answer(AnswerPayload {
+                            text: msg.text.clone(),
+                        }))
+                    }
+                    ThreadItemDetails::Error(err) => {
+                        Some(HeadlessEvent::Error(ErrorPayload {
+                            message: err.message.clone(),
+                            recoverable: true,
+                        }))
+                    }
+                    _ => None,
+                }
+            }
+            ThreadEvent::Error(ref err) => Some(HeadlessEvent::Error(ErrorPayload {
+                message: err.message.clone(),
+                recoverable: false,
+            })),
+            // ThreadStarted, TurnStarted, TurnCompleted, TurnFailed,
+            // ItemStarted, ItemUpdated, and non-mapped ItemCompleted types
+            // are execution details; not mapped in headless contract.
+            _ => None,
+        };
+
+        headless_event.map(|event| HeadlessEventEnvelope {
+            schema_version: cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION.to_string(),
+            seq: self.cccx_seq.fetch_add(1, Ordering::SeqCst) + 1,
+            session_id: self
+                .cccx_session_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            turn_id: self
+                .cccx_turn_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            event,
+        })
+    }
+
+    /// Emit a cccx-headless Terminal event on shutdown.
+    /// Called from print_final_output after the exec loop completes.
+    #[allow(clippy::print_stdout)]
+    fn emit_terminal_event(&self) {
+        let status = match self.cccx_exit_code {
+            0 => TerminalStatus::Success,
+            3 => TerminalStatus::Cancelled,
+            _ => TerminalStatus::Error,
+        };
+        let exit_code = Some(self.cccx_exit_code);
+
+        let envelope = HeadlessEventEnvelope {
+            schema_version: cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION.to_string(),
+            seq: self.cccx_seq.fetch_add(1, Ordering::SeqCst) + 1,
+            session_id: self
+                .cccx_session_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            turn_id: self
+                .cccx_turn_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            event: HeadlessEvent::Terminal(TerminalPayload { status, exit_code }),
+        };
+
+        let line = serde_json::to_string(&envelope).unwrap_or_else(|err| {
             json!({
+                "schemaVersion": cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION,
                 "type": "error",
-                "message": format!("failed to serialize exec json event: {err}"),
+                "payload": {
+                    "message": format!("failed to serialize terminal event: {err}"),
+                    "recoverable": false,
+                },
             })
             .to_string()
         });
@@ -432,6 +536,7 @@ impl EventProcessorWithJsonOutput {
                 warning.status
             }
             ServerNotification::Error(notification) => {
+                self.cccx_exit_code = 1;
                 let message = match notification.error.additional_details {
                     Some(details) if !details.is_empty() => {
                         format!("{} ({details})", notification.error.message)
@@ -511,6 +616,7 @@ impl EventProcessorWithJsonOutput {
                 events.extend(self.reconcile_unfinished_started_items(&notification.turn.items));
                 match notification.turn.status {
                     TurnStatus::Completed => {
+                        self.cccx_exit_code = 0;
                         if let Some(final_message) =
                             Self::final_message_from_turn_items(notification.turn.items.as_slice())
                         {
@@ -523,6 +629,7 @@ impl EventProcessorWithJsonOutput {
                         CodexStatus::InitiateShutdown
                     }
                     TurnStatus::Failed => {
+                        self.cccx_exit_code = 1;
                         self.final_message = None;
                         self.emit_final_message_on_shutdown = false;
                         let error = notification
@@ -544,6 +651,7 @@ impl EventProcessorWithJsonOutput {
                         CodexStatus::InitiateShutdown
                     }
                     TurnStatus::Interrupted => {
+                        self.cccx_exit_code = 3;
                         self.final_message = None;
                         self.emit_final_message_on_shutdown = false;
                         CodexStatus::InitiateShutdown
@@ -596,6 +704,9 @@ impl EventProcessor for EventProcessorWithJsonOutput {
         _: &str,
         session_configured: &SessionConfiguredEvent,
     ) {
+        let thread_id = session_configured.thread_id.to_string();
+        self.cccx_session_id = Some(thread_id.clone());
+        self.cccx_turn_id = Some(thread_id);
         self.emit(Self::thread_started_event(session_configured));
     }
 
@@ -616,6 +727,8 @@ impl EventProcessor for EventProcessorWithJsonOutput {
     }
 
     fn print_final_output(&mut self) {
+        // cccx-headless: Terminal event is always emitted as the final JSONL line.
+        self.emit_terminal_event();
         if self.emit_final_message_on_shutdown
             && let Some(path) = self.last_message_path.as_deref()
         {

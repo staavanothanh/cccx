@@ -40,7 +40,7 @@ Vì vậy TaskGraph/StopHook có wiring thật nhưng có thể nhận verificat
 - `/permissions approve|deny|inspect|batch-approve` chưa điều khiển queue; `/permissions` hiện mở popup đổi permission mode upstream tại [slash_dispatch.rs](D:/Learning_Programing/cccx/codex-rs/tui/src/chatwidget/slash_dispatch.rs:835).
 - `/agents cancel` interrupt toàn bộ stream; resume mở generic picker; model chỉ in message; view yêu cầu UUID và chuyển hẳn sang thread subagent thay vì attach read-only tại [slash_dispatch.rs](D:/Learning_Programing/cccx/codex-rs/tui/src/chatwidget/slash_dispatch.rs:791).
 - Checkpoint có API và unit test nhưng không có runtime call-site lưu/load/resume tại [checkpoint.rs](D:/Learning_Programing/cccx/codex-rs/core/src/checkpoint.rs:44).
-- `cccx.exec_event.v1` chưa wire vào `cccx exec --json`; exec vẫn emit upstream `ThreadEvent`.
+- `cccx.exec_event.v1` chưa wire vào `cccx exec --json`; exec vẫn emit upstream `ThreadEvent`. **ĐÃ SỬA Phase 11.**
 - `cccx-plugin.json` mới dừng ở protocol/tests, chưa có runtime loader và harness isolation.
 - Project Memory ghi vào project `.cccx/memory`, trái storage design `~/.cccx/projects/<hash>/memory`, và chưa được load vào startup/context tại [project_memory.rs](D:/Learning_Programing/cccx/codex-rs/core/src/project_memory.rs:13).
 - `/model` dùng catalog hardcode hai model thay vì config/catalog 9router thật tại [model_popups.rs](D:/Learning_Programing/cccx/codex-rs/tui/src/chatwidget/model_popups.rs:43).

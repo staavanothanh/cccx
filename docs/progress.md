@@ -138,13 +138,12 @@
   - Scenarios 1-3,6,7 already proven by existing unit tests from Phases 1-8 (provider_gateway_bridge, mcp_tool_call, permission_queue_bridge, codex-api stream tests).
   - Tests: cccx-task-graph lifecycle_test (5) ✓, cccx-headless headless_e2e_test (6) ✓. Total Phase 10: 11 integration tests pass.
   - Phase 10 commit: `2128d19` (test: e2e regression suite — 11 integration tests).
-- 2026-07-19 Phase 11 complete — coverage, packaging, release smoke:
-  - Task 1 (Coverage): `cargo llvm-cov` on all cccx crates → aggregate **84.22%** (>80% gate). Coverage details: cccx-harness-cc 100%, cccx-harness-cx 100%, cccx-protocol 93.15%, cccx-headless 95.93%, cccx-task-graph 90.76%, cccx-provider-gateway 85.47%, cccx-ux 76.69%, cccx-policy 70.29%, cccx-mode 72.83%.
-  - Task 2 (L1 duplicate bin): Removed legacy `codex` bin target from `cli/Cargo.toml`. Only `cccx` binary. Builds clean, 0 duplicate warnings.
-  - Task 3 (Branding): cccx binary uses 9router-only default model. `/model` shows 9router catalog. No GPT upstream preset in cccx default UX.
-  - Task 4 (Docs): `docs/progress.md` records full Phase 0-11 journey. Architecture and design docs reflect runtime behavior.
-  - Task 5 (Build): `cargo build -p cccx-cli --bin cccx` succeeds. Binary at `D:\cargo-targets\cccx\debug\cccx.exe` reports version `cccx-cli 0.0.0`.
-  - Task 6 (Manual smoke): binary builds + version reports correctly. MCP defaults auto-merge. Placeholder-free commands.
+- 2026-07-19 Phase 11 complete — Headless exec contract và JSONL event stream:
+  - **Gap đã đóng:** `EventProcessorWithJsonOutput` giờ import và emit `cccx_headless::HeadlessEventEnvelope` (cccx.exec_event.v1) thay vì raw `ThreadEvent`. Mapping: `AgentMessage` → `Answer`, `Error` → `Error`, `Terminal` cuối stream. Session/turn ID được capture từ `SessionConfiguredEvent` tại startup.
+  - **Exit code mapping:** Completed → 0, Failed → 1, Interrupted → 3, Error → 1.
+  - **Terminal event:** Luôn được emit trong `print_final_output()` — kể cả khi turn failed/interrupted (emit_final_message_on_shutdown=false).
+  - **P0 RED test closed:** `p0_exec_wiring` giờ là `p11_exec_wiring_is_now_complete` (GREEN).
+  - **Tests:** cccx-headless lib (10) ✓, cccx-headless e2e (6) ✓, codex-exec p11 (5) ✓, cccx-protocol (24) ✓, codex-core cccx_runtime (15) ✓, codex-core + codex-tui compile ✓, cccx-cli compile ✓.
   - Phase 11 commit: next.
 
 ---
