@@ -1389,6 +1389,21 @@ async fn cccx_shift_tab_cycles_safe_modes_and_emits_typed_core_updates() {
     }
 }
 
+#[tokio::test]
+async fn cccx_bypass_slash_command_requests_core_without_optimistic_local_mode() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    let plan_mask = collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Plan)
+        .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+
+    chat.dispatch_command(SlashCommand::Bypass);
+
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    assert_eq!(next_thread_collaboration_mode_update(&mut rx), ModeKind::Bypass);
+}
+
 fn next_thread_collaboration_mode_update(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
 ) -> ModeKind {

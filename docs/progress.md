@@ -1574,3 +1574,72 @@ Result:
 - Cumulative counters and commit-once PostToolUse records remain unimplemented.
 - TUI rollback/reconciliation after a rejected core mode update, especially
   `/bypass`, still needs a dedicated pass.
+
+---
+
+## Phase 3D — `/bypass` request-only TUI behavior before attestation (2026-07-20)
+
+Scope:
+
+- `codex-rs/tui/src/chatwidget/settings.rs`
+- `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+- `codex-rs/tui/src/chatwidget/tests/plan_mode.rs`
+
+Skills/roles used:
+
+- `gateguard`
+- `agent-harness-construction`
+- `error-handling`
+- `ai-regression-testing`
+- ECC role references: `tdd-guide`, `security-reviewer`, `code-reviewer`
+
+### Implemented
+
+1. Split TUI collaboration-mode user action into two paths:
+   - normal safe/risk-accepted modes still call
+     `set_collaboration_mask_from_user_action()`, applying local UI state and
+     submitting the typed core update;
+   - `/bypass` now calls a request-only path that submits the typed core update
+     without changing the local active mode first.
+2. Added `request_collaboration_mode_from_user_action()` and
+   `submit_collaboration_mode_settings_update_for(...)` so TUI can request a
+   specific mode without deriving it from the optimistic local mask.
+3. `/bypass` now remains visually on the current mode until backend attestation
+   exists and core/runtime can accept the transition.
+
+### RED/GREEN evidence
+
+Initial RED:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo test -p codex-tui cccx_bypass_slash_command_requests_core_without_optimistic_local_mode --lib
+```
+
+Result:
+
+- Failed because `/bypass` immediately changed `active_collaboration_mode_kind`
+  from `Plan` to `Bypass`.
+
+Final GREEN:
+
+```powershell
+cargo test -p codex-tui cccx_bypass_slash_command_requests_core_without_optimistic_local_mode --lib
+cargo test -p codex-tui cccx_shift_tab_cycles_safe_modes_and_emits_typed_core_updates --lib
+```
+
+Results:
+
+- `cccx_bypass_slash_command_requests_core_without_optimistic_local_mode`: 1 passed.
+- `cccx_shift_tab_cycles_safe_modes_and_emits_typed_core_updates`: 1 passed.
+
+### Remaining Phase 3 gaps
+
+- Bypass backend-created sandbox/isolation attestation is still not implemented;
+  this phase only prevents misleading optimistic TUI state before attestation.
+- Auto classifier through 9router remains unimplemented.
+- Cumulative counters and commit-once PostToolUse records remain unimplemented.
+- App-server/core RPC still returns thread-settings update acceptance before
+  asynchronous core `ErrorEvent`; a future attestation phase should define the
+  positive ack/reconciliation contract, not rely on optimistic UI state.

@@ -366,11 +366,24 @@ impl ChatWidget {
                 );
             }
             SlashCommand::Bypass => {
-                self.apply_collaboration_mode_slash_command(
+                if !self.collaboration_modes_enabled() {
+                    self.add_info_message(
+                        "Collaboration modes are disabled.".to_string(),
+                        Some("Enable collaboration modes to use /bypass.".to_string()),
+                    );
+                    return;
+                }
+                if let Some(mask) = collaboration_modes::mask_for_kind(
+                    self.model_catalog.as_ref(),
                     ModeKind::Bypass,
-                    "bypass",
-                    "Bypass mode unavailable right now.",
-                );
+                ) {
+                    self.request_collaboration_mode_from_user_action(mask);
+                } else {
+                    self.add_info_message(
+                        "Bypass mode unavailable right now.".to_string(),
+                        /*hint*/ None,
+                    );
+                }
             }
             SlashCommand::Goal => {
                 if !self.config.features.enabled(Feature::Goals) {

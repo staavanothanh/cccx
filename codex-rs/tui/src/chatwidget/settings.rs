@@ -683,6 +683,18 @@ impl ChatWidget {
         self.submit_collaboration_mode_settings_update();
     }
 
+    pub(crate) fn request_collaboration_mode_from_user_action(
+        &self,
+        mask: CollaborationModeMask,
+    ) {
+        if !self.collaboration_modes_enabled() {
+            return;
+        }
+        self.submit_collaboration_mode_settings_update_for(
+            self.current_collaboration_mode.apply_mask(&mask),
+        );
+    }
+
     /// Update the active collaboration mask.
     ///
     /// When collaboration modes are enabled and a preset is selected,
@@ -708,6 +720,10 @@ impl ChatWidget {
     }
 
     fn submit_collaboration_mode_settings_update(&self) {
+        self.submit_collaboration_mode_settings_update_for(self.effective_collaboration_mode());
+    }
+
+    fn submit_collaboration_mode_settings_update_for(&self, collaboration_mode: CollaborationMode) {
         let Some(thread_id) = self.thread_id else {
             return;
         };
@@ -724,7 +740,7 @@ impl ChatWidget {
                 /*effort*/ None,
                 /*summary*/ None,
                 /*service_tier*/ None,
-                Some(self.effective_collaboration_mode()),
+                Some(collaboration_mode),
                 /*personality*/ None,
             ),
         });
