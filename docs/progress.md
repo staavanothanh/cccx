@@ -2562,6 +2562,26 @@ cargo +1.95.0 test -p codex-core denying_one_prompt_must_not_cancel_other_prompt
 Terminal worker cancellation remains a cross-crate contract slice because the
 current app-server only exposes resumable `turn/interrupt`.
 
+## 2026-07-20 — Phase 6E: terminal-cancel lifecycle foundation (partial)
+
+- Added `Cancelled` to artifact and task lifecycle state. A terminal
+  cancellation is no longer represented as an interrupted or blocked worker.
+- `CccxRuntimeRegistry::cancel_spawn()` removes the worker, records a
+  `Cancelled` artifact/task, and deliberately does not write a checkpoint.
+  The same attempt is therefore not resumable.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p cccx-protocol
+cargo +1.95.0 test -p cccx-task-graph
+cargo +1.95.0 test -p codex-core cancelled_spawn_is_terminal_and_never_writes_a_checkpoint --lib
+```
+
+The method is intentionally not yet called: Phase 6 still needs the distinct
+terminal-cancel transport contract across app-server and TUI; reusing
+`turn/interrupt` would incorrectly make cancellation resumable.
+
 ## 2026-07-20 — Phase 5D: Task Graph writer lease
 
 - Added `update_task_graph()`, a project-local writer-lease transaction for

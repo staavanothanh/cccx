@@ -64,6 +64,7 @@ pub enum ArtifactStatus {
     Success,
     Blocked,
     Interrupted,
+    Cancelled,
     Failed,
 }
 

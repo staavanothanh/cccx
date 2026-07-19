@@ -22,6 +22,7 @@ pub enum TaskStatus {
     InProgress,
     Blocked,
     Interrupted,
+    Cancelled,
     Failed,
     Verified,
 }
@@ -241,6 +242,7 @@ impl TaskGraph {
             ArtifactStatus::Success => TaskStatus::Blocked,
             ArtifactStatus::Blocked => TaskStatus::Blocked,
             ArtifactStatus::Interrupted => TaskStatus::Interrupted,
+            ArtifactStatus::Cancelled => TaskStatus::Cancelled,
             ArtifactStatus::Failed => TaskStatus::Failed,
         };
 

@@ -326,6 +326,46 @@ impl CccxRuntimeRegistry {
         }
         Ok(true)
     }
+
+    /// Persist a terminal user/CC cancellation. Unlike an interrupted worker,
+    /// this deliberately creates no checkpoint and therefore cannot be resumed
+    /// as the same attempt.
+    pub(crate) async fn cancel_spawn(
+        &mut self,
+        child_thread_id: ThreadId,
+        reason: String,
+    ) -> Result<bool, String> {
+        let Some(runtime) = self.by_thread.remove(&child_thread_id.to_string()) else {
+            return Ok(false);
+        };
+        let mut collector = ArtifactCollector::new(
+            &runtime.work_spec.work_spec_id,
+            &child_thread_id.to_string(),
+        );
+        collector.record_runtime_log("subagent cancelled", &reason);
+        let artifact = collector.finalize(
+            ArtifactStatus::Cancelled,
+            reason.clone(),
+            provenance_for_runtime(
+                &runtime.work_spec,
+                &runtime.model_route_summary,
+                &reason,
+            ),
+        );
+        let initial = TaskGraph::new("cccx-runtime", "cccx runtime graph");
+        cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
+            let mut state = CccxRuntimeState::new(graph.clone());
+            state.track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
+            state
+                .complete(artifact, None, None)
+                .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
+            *graph = state.task_graph.clone();
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(true)
+    }
 }
 
 pub(crate) fn model_route_summary(work_spec: &WorkSpec, main_model_slug: &str) -> String {
@@ -625,6 +665,33 @@ mod tests {
         assert_eq!(checkpoint.attempt_id, child_thread_id.to_string());
         assert_eq!(checkpoint.base_commit.as_deref(), Some("base-commit"));
         assert_eq!(checkpoint.last_completed_step, "provider disconnected");
+    }
+
+    #[tokio::test]
+    async fn cancelled_spawn_is_terminal_and_never_writes_a_checkpoint() {
+        let project = tempfile::TempDir::new().unwrap();
+        let child_thread_id = ThreadId::new();
+        let runtime = CccxSpawnRuntime {
+            project_root: project.path().to_path_buf(),
+            work_spec: work_spec(),
+            display_name: "cancelled-worker".to_string(),
+            model_route_summary: "9router/test".to_string(),
+        };
+        let mut registry = CccxRuntimeRegistry::default();
+        registry.register_spawn(child_thread_id, runtime).await.unwrap();
+        assert!(registry
+            .cancel_spawn(child_thread_id, "user cancelled".to_string())
+            .await
+            .unwrap());
+        assert!(crate::checkpoint::load_checkpoint(project.path(), &child_thread_id.to_string())
+            .await
+            .unwrap()
+            .is_none());
+        let graph = cccx_task_graph_state::load_task_graph(project.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(graph.tasks["T1"].status, cccx_task_graph::TaskStatus::Cancelled);
     }
 
     // ── Phase 3 tests ──
