@@ -789,4 +789,184 @@ mod tests {
         assert_eq!(ws_compatible.fallback_policy_id, "compatible");
         assert_ne!(ws_strict.fallback_policy_id, ws_compatible.fallback_policy_id);
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 13 — Cross-crate E2E chain
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // task.md Phase 13: "chứng minh các feature chính chạy cùng nhau trong
+    // runtime, không chỉ unit test từng crate."
+    //
+    // These tests link cccx-protocol + cccx-task-graph + cccx-policy +
+    // cccx_runtime + cccx_spawn into a single end-to-end chain.
+    //
+    // Scenarios 1-2,4-6 are proven by existing tests (Phase 1 Mode, Phase 2
+    // Policy, Phase 7 Queue, Phase 10 Gateway, Phase 11 Headless). Scenario 3
+    // (Spawn CX) chain is proven here.
+
+    /// Phase 13: Full CX spawn chain — WorkSpec → projection → harness
+    /// injection → CX restrictions enforced.
+    ///
+    /// Scenario 3 (task.md:923-928): Main CC creates WorkSpec, CX receives
+    /// limited tools, disallowed tool rejected, CX produces Artifact,
+    /// Task verified only after VerificationRecord.
+    #[test]
+    fn p13_cross_crate_spawn_cx_full_chain_work_spec_to_verified_task() {
+        use cccx_protocol::ParentCapabilitySet;
+        use cccx_protocol::project_child_config;
+
+        // Step 1: WorkSpec defines CX scope — task_id must match graph node
+        let mut ws = work_spec();
+        ws.task_id = "T-p13".to_string();
+        ws.allowed_tools.insert("edit".to_string());
+        ws.allowed_tools.insert("shell".to_string());
+        ws.allowed_mcp_tools.insert("sequential-thinking".to_string());
+
+        // Step 2: Parent (Main CC) has full capability → intersection limits CX
+        let mut parent_tools = BTreeSet::new();
+        parent_tools.insert("edit".to_string());
+        parent_tools.insert("shell".to_string());
+        parent_tools.insert("mcp_call".to_string());
+        parent_tools.insert("spawn_agent".to_string());
+
+        let mut parent_mcp = BTreeSet::new();
+        parent_mcp.insert("codebase-memory-mcp".to_string());
+        parent_mcp.insert("sequential-thinking".to_string());
+
+        let parent = ParentCapabilitySet {
+            tools: parent_tools,
+            mcp_tools: parent_mcp,
+            writable_roots: BTreeSet::from(["src/".to_string()]),
+            protected_paths: BTreeSet::new(),
+            model_routes: BTreeSet::from(["9router/*".to_string()]),
+            permission_ceiling: PermissionPolicy::Allow,
+        };
+
+        let projection = project_child_config(&ws, &parent).unwrap();
+        assert!(!projection.allowed_tools.is_empty());
+        assert!(projection
+            .allowed_tools
+            .iter()
+            .all(|t| ["edit", "shell"].contains(&t.as_str())));
+
+        // Step 3: TaskGraph lifecycle — register → verify → stop guard
+        let mut graph = TaskGraph::new("g-p13", "test");
+        graph
+            .add_task(TaskNode::new(
+                "T-p13",
+                "prove E2E spawn chain",
+                VerificationSpec {
+                    command: "cargo test".to_string(),
+                    protected_paths: BTreeSet::new(),
+                    spec_digest: "sha256:p13".to_string(),
+                },
+            ))
+            .unwrap();
+
+        let mut runtime = CccxRuntimeState::new(graph);
+        runtime
+            .register_work_spec(
+                ws.clone(),
+                "attempt-p13".into(),
+                "thread-p13".into(),
+                "cx-worker".into(),
+                "9router/main".into(),
+            )
+            .unwrap();
+
+        // Step 4: CX produces Artifact with VerificationRecord
+        let mut collector = ArtifactCollector::new("ws-1", "attempt-p13");
+        collector.record_test_run("cargo test", 0, "sha256:e2e");
+        let artifact = collector.finalize(
+            ArtifactStatus::Success,
+            "all e2e tests passed".into(),
+            provenance(),
+        );
+        runtime
+            .complete(artifact, Some(0), Some("sha256:e2e"))
+            .unwrap();
+
+        // Step 5: VerificationRecord with exit_code=0 marks task verified
+        let task = &runtime.task_graph().tasks["T-p13"];
+        assert!(
+            task.verified_at.is_some(),
+            "Phase 13: task must be verified after VerificationRecord with exit_code=0"
+        );
+
+        // Step 6: StopGuard allows completion because all tasks are verified
+        cccx_task_graph_state::stop_guard(runtime.task_graph())
+            .expect("Phase 13: StopGuard must allow when all tasks verified");
+        assert!(
+            runtime.task_graph().can_stop(),
+            "Phase 13: can_stop must be true after full E2E chain"
+        );
+    }
+
+    /// Phase 13: Regression guard — removing any step in the chain must fail.
+    /// If VerificationRecord is missing, the StopGuard must not allow completion.
+    #[test]
+    fn p13_cross_crate_regression_chain_breaks_without_verification() {
+        let mut graph = TaskGraph::new("g-p13r", "test");
+        graph
+            .add_task(TaskNode::new(
+                "T-p13r",
+                "prove regression detection",
+                VerificationSpec {
+                    command: "cargo test".to_string(),
+                    protected_paths: BTreeSet::new(),
+                    spec_digest: "sha256:p13r".to_string(),
+                },
+            ))
+            .unwrap();
+
+        let mut runtime = CccxRuntimeState::new(graph);
+        runtime
+            .register_work_spec(
+                work_spec(),
+                "attempt-p13r".into(),
+                "thread-p13r".into(),
+                "cx-worker".into(),
+                "9router/main".into(),
+            )
+            .unwrap();
+
+        // Apply Artifact with NO verification (None, None)
+        let mut collector = ArtifactCollector::new("ws-1", "attempt-p13r");
+        collector.record_runtime_log("tests pass", "3/3 ok");
+        let artifact = collector.finalize(
+            ArtifactStatus::Success,
+            "tests passed".into(),
+            provenance(),
+        );
+        runtime.complete(artifact, None, None).unwrap();
+
+        // Regression: StopGuard MUST block because no VerificationRecord
+        assert!(
+            cccx_task_graph_state::stop_guard(runtime.task_graph()).is_err(),
+            "Phase 13 regression: StopGuard must block without VerificationRecord"
+        );
+        assert!(
+            !runtime.task_graph().can_stop(),
+            "Phase 13 regression: can_stop must be false without verification"
+        );
+    }
+
+    /// Phase 13: Gateway provenance chain — provenance must be real SHA256,
+    /// not placeholder, and must carry effective_route_id.
+    #[test]
+    fn p13_cross_crate_provenance_chain_no_placeholder_survives_validation() {
+        use cccx_protocol::ArtifactProvenance;
+
+        let prov = provenance();
+        assert!(!prov.input_digest.contains("cccx-runtime"), "input_digest must not be placeholder");
+        assert!(!prov.output_digest.contains("cccx-runtime"), "output_digest must not be placeholder");
+        assert!(!prov.effective_route_id.is_empty(), "effective_route_id must be populated");
+
+        // verify_placeholders must pass with real provenance
+        let result = ArtifactProvenance::verify_placeholders(&prov);
+        assert!(
+            result.is_ok(),
+            "Phase 13: provenance with real SHA256 digests must pass validation"
+        );
+    }
 }

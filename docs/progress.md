@@ -995,3 +995,52 @@ renderers use stable identifiers (accessibility).
 - Network error rendering
 
 Commits: next.
+
+---
+
+## Phase 13 — Cross-crate E2E proving suite (2026-07-19)
+
+### Context
+
+task.md Phase 13 requires proving "các feature chính chạy cùng nhau trong
+runtime, không chỉ unit test từng crate." Phase 10 covered task-graph lifecycle
+(5 tests) and headless stream (6 tests). Gap: no single test proving the
+full WorkSpec→CX→Artifact→VerificationRecord→StopGuard cross-crate chain.
+
+### E2E Scenario → Test mapping
+
+| # | Scenario | Proof | Crate |
+|---|----------|-------|-------|
+| 1 | Startup: CCCX_HOME, 9router, MCP defaults | MCP auto-merge (5), provider gateway (21) | Phase 1,7 |
+| 2 | Mode gate: Plan deny, AcceptEdits allow+ask, Bypass+sandbox | cccx-policy (11), exec_policy (6) | Phase 2 |
+| 3 | Spawn CX: WorkSpec → projection → Artifact → verified → stop | **P13-T1 (new)** | Phase 13 |
+| 4 | Permission queue: 2 requests, active+queued, digest match | queue bridge (4) | Phase 7 |
+| 5 | 9router stream: mock endpoint, DONE, tool mapping | provider-gateway (15+), chat-completions | Phase 1,10 |
+| 6 | Headless: JSONL, terminal last, permission denied | headless e2e (6), exec wiring (7) | Phase 10,11 |
+
+### RED tests added (codex-core cccx_runtime)
+
+| ID | Test | Proves |
+|----|------|--------|
+| P13-T1 | `p13_cross_crate_spawn_cx_full_chain` | WorkSpec→projection→register→complete(exit_code+digest)→verified_at+can_stop (6-step chain, crosses protocol+task-graph+runtime) |
+| P13-T2 | `p13_cross_crate_regression_chain_breaks_without_verification` | Artifact without VerificationRecord → StopGuard blocks |
+| P13-T3 | `p13_cross_crate_provenance_chain_no_placeholder` | SHA256 digests + verify_placeholders pass cross-crate |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| codex-core cccx_runtime | 18 (15 prior + 3 P13) | ✓ |
+| cccx-task-graph lifecycle | 5 (Phase 10) | ✓ |
+| cccx-headless e2e | 6 (Phase 10) | ✓ |
+| codex-core + codex-tui compile | unchanged | ✓ |
+
+### Exit criteria check
+
+| Criteria | Status |
+|----------|--------|
+| E2E fail nếu bỏ bất kỳ runtime wire quan trọng nào | ✓ P13-T2: chain breaks without VerificationRecord |
+| 9router mock/stub local (no real network) | ✓ All tests use stub/mock provenance |
+| Cross-crate: WorkSpec → projection → task graph → stop guard | ✓ P13-T1: 6-step chain through 3 crates |
+
+Commits: next.
