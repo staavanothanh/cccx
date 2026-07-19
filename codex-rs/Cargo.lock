@@ -1714,6 +1714,7 @@ name = "cccx-mode"
 version = "0.0.0"
 dependencies = [
  "cccx-policy",
+ "codex-protocol",
  "serde",
  "thiserror 2.0.18",
 ]
@@ -4232,6 +4233,10 @@ dependencies = [
  "assert_matches",
  "base64 0.22.1",
  "cccx-cli",
+ "cccx-mode",
+ "cccx-policy",
+ "cccx-provider-gateway",
+ "cccx-task-graph",
  "cccx-ux",
  "chrono",
  "clap",
