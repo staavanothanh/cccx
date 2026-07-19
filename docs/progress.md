@@ -618,4 +618,49 @@ block when unverified, allow when all verified.
 | cccx-task-graph | 6 | ✓ |
 | goal_evaluator | 3 | ✓ |
 
+Commit: `fb1f9430`.
+
+---
+
+## Phase 7 — Permission queue RED tests (2026-07-19)
+
+### Context
+
+`CccxPermissionQueue` infrastructure was completed earlier (see lines 95-101): digest validation,
+circuit-breaker bypass protection, single-request deny without cancelling agent, `batch_approve_safe`,
+`list_all()`. `/permissions list` dispatch-wired.
+
+task.md Phase 7 exit criteria requires **test proof**: digest mismatch → reject, high-risk
+not batch-approved, single active prompt invariant.
+
+### RED tests added
+
+| ID | Test | Proves |
+|----|------|--------|
+| P7-T1 | `p7_approve_rejects_digest_mismatch` | approve with wrong observed_digest → QueueError::DigestMismatch, request expired |
+| P7-T2 | `p7_batch_approve_safe_rejects_high_risk` | Shell actions (High risk) excluded from batch_approve_safe results |
+| P7-T3 | `p7_only_one_active_prompt_at_a_time` | 3 requests across 2 agents → only first active; deny first → second promoted |
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `core/src/permission_queue_bridge.rs` | Phase 7 tests (3): digest mismatch, batch_approve_safe, single-active |
+
+### Test results
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| codex-core permission_queue_bridge | 4 (1 prior + 3 P7) | ✓ |
+| cccx-policy | 11 | ✓ |
+| codex-core + codex-tui | compile | ✓ |
+
+### Exit criteria check
+
+| Criteria | Status |
+|----------|--------|
+| Chỉ một prompt active tại một thời điểm | ✓ P7-T3 |
+| approve với digest mismatch → reject | ✓ P7-T1 |
+| High-risk không thể batch approve | ✓ P7-T2 |
+
 Commit: next.

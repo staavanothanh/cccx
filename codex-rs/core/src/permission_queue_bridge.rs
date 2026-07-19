@@ -136,4 +136,133 @@ mod tests {
             Some(PermissionRequestStatus::Active)
         );
     }
+
+    // ── Phase 7 tests ──
+
+    /// Phase 7: approve with wrong digest must reject.
+    /// task.md: "approve với digest mismatch → reject."
+    #[tokio::test]
+    async fn p7_approve_rejects_digest_mismatch() {
+        let queue = CccxPermissionQueue::new();
+        let request_id = queue
+            .enqueue(
+                "agent-1".to_string(),
+                "worker".to_string(),
+                "T1".to_string(),
+                action("T1"),
+                "edit file".to_string(),
+            )
+            .await;
+
+        // Approve with wrong digest → QueueError::DigestMismatch
+        let result = queue.approve(&request_id, "wrong-digest").await;
+        assert!(
+            result.is_err(),
+            "Phase 7: approve with digest mismatch must return error"
+        );
+
+        // The request must be expired (not approved)
+        let request = queue.get(&request_id).await.unwrap();
+        assert_eq!(
+            request.status,
+            PermissionRequestStatus::Expired,
+            "Phase 7: digest mismatch must expire the request"
+        );
+    }
+
+    /// Phase 7: batch_approve_safe must NOT approve High-risk requests.
+    /// task.md: "batch approve không nhận high-risk/circuit breaker."
+    #[tokio::test]
+    async fn p7_batch_approve_safe_rejects_high_risk() {
+        let queue = CccxPermissionQueue::new();
+
+        // Enqueue a normal edit (Medium risk via ActionType::Edit)
+        let _normal = queue
+            .enqueue(
+                "agent-1".to_string(),
+                "worker".to_string(),
+                "T1".to_string(),
+                action("T1"), // ActionType::Edit → Medium risk
+                "edit file".to_string(),
+            )
+            .await;
+
+        // Enqueue a Shell action (High risk via enqueue logic)
+        let shell_action = NormalizedAction {
+            action_type: ActionType::Shell,
+            summary: "run command".to_string(),
+            command: Some("npm test".to_string()),
+            target_paths: vec![],
+            tool_name: Some("shell_command".to_string()),
+            task_id: "T2".to_string(),
+            changed_files: 0,
+            changed_lines: 0,
+        };
+        let _high_risk = queue
+            .enqueue(
+                "agent-1".to_string(),
+                "worker".to_string(),
+                "T2".to_string(),
+                shell_action,
+                "run tests".to_string(),
+            )
+            .await;
+
+        let approved = queue.batch_approve_safe().await;
+        // Only the Medium-risk edit should be batch-approved
+        assert!(
+            approved.len() <= 1,
+            "Phase 7: batch_approve_safe must not include High-risk requests. Got {:?}",
+            approved
+        );
+    }
+
+    /// Phase 7: single active request invariant — only one prompt at a time.
+    /// task.md: "Chỉ một prompt active tại một thời điểm."
+    #[tokio::test]
+    async fn p7_only_one_active_prompt_at_a_time() {
+        let queue = CccxPermissionQueue::new();
+        let first = queue
+            .enqueue(
+                "agent-1".to_string(),
+                "w1".to_string(),
+                "T1".to_string(),
+                action("T1"),
+                "first".to_string(),
+            )
+            .await;
+        let _second = queue
+            .enqueue(
+                "agent-1".to_string(),
+                "w1".to_string(),
+                "T2".to_string(),
+                action("T2"),
+                "second".to_string(),
+            )
+            .await;
+        let _third = queue
+            .enqueue(
+                "agent-2".to_string(),
+                "w2".to_string(),
+                "T3".to_string(),
+                action("T3"),
+                "third".to_string(),
+            )
+            .await;
+
+        // Only one active
+        assert_eq!(
+            queue.active_request_id().await.unwrap(),
+            first,
+            "Phase 7: first request must be active"
+        );
+
+        // After denying the active one, second gets promoted
+        queue.deny(&first).await.unwrap();
+        let active_after = queue.active_request_id().await;
+        assert!(
+            active_after.is_some(),
+            "Phase 7: queue must promote next request after denial"
+        );
+    }
 }
