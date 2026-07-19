@@ -235,4 +235,23 @@ mod tests {
         assert_eq!(restored, graph);
         assert!(task_graph_path(temp_dir.path()).ends_with(".cccx/state/task-graph.json"));
     }
+
+    #[tokio::test]
+    async fn incomplete_temporary_write_leaves_previous_task_graph_readable() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let graph = TaskGraph::new("graph-1", "persist");
+        save_task_graph(temp_dir.path(), &graph).await.expect("save graph");
+        let path = task_graph_path(temp_dir.path());
+        let temporary = path.with_file_name(".task-graph.json.crash.tmp");
+        fs::write(&temporary, b"{ incomplete").await.expect("write interrupted temp");
+
+        assert_eq!(
+            load_task_graph(temp_dir.path())
+                .await
+                .expect("load graph")
+                .expect("existing graph"),
+            graph,
+            "an interrupted temporary write must not corrupt the previously committed graph"
+        );
+    }
 }
