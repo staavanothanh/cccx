@@ -992,7 +992,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                handle_server_request(&client, request, &mut error_seen).await;
+                let mut approval_denied = false;
+                handle_server_request(&client, request, &mut error_seen, &mut approval_denied).await;
+                if approval_denied {
+                    event_processor.on_approval_denied();
+                }
             }
             InProcessServerEvent::ServerNotification(mut notification) => {
                 if let ServerNotification::Error(payload) = &notification {
@@ -1656,6 +1660,7 @@ async fn handle_server_request(
     client: &InProcessAppServerClient,
     request: ServerRequest,
     error_seen: &mut bool,
+    approval_denied: &mut bool,
 ) {
     let method = server_request_method_name(&request);
     let handle_result = match request {
@@ -1677,6 +1682,7 @@ async fn handle_server_request(
             }
         }
         ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+            *approval_denied = true;
             reject_server_request(
                 client,
                 request_id,
@@ -1689,6 +1695,7 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::FileChangeRequestApproval { request_id, params } => {
+            *approval_denied = true;
             reject_server_request(
                 client,
                 request_id,
@@ -1752,6 +1759,7 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::ApplyPatchApproval { request_id, params } => {
+            *approval_denied = true;
             reject_server_request(
                 client,
                 request_id,
@@ -1764,6 +1772,7 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::ExecCommandApproval { request_id, params } => {
+            *approval_denied = true;
             reject_server_request(
                 client,
                 request_id,

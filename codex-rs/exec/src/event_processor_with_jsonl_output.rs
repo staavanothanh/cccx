@@ -726,6 +726,11 @@ impl EventProcessor for EventProcessorWithJsonOutput {
         collected.status
     }
 
+    /// Override: headless mode auto-denies approvals → exit_code=2.
+    fn on_approval_denied(&mut self) {
+        self.cccx_exit_code = 2;
+    }
+
     fn print_final_output(&mut self) {
         // cccx-headless: Terminal event is always emitted as the final JSONL line.
         self.emit_terminal_event();

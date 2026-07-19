@@ -332,3 +332,51 @@ fn p11_terminal_event_emitted_on_shutdown_even_when_message_suppressed() {
     EventProcessor::print_final_output(&mut processor);
     // No panic = terminal event emitted successfully
 }
+
+/// Phase 11 audit: on_approval_denied() sets exit_code=2.
+/// task.md line 813: "approval denied maps exit code 2."
+#[test]
+fn p11_audit_approval_denied_sets_exit_code_2() {
+    let mut processor = EventProcessorWithJsonOutput::new(None);
+    assert_eq!(processor.cccx_exit_code, 0);
+
+    // Direct call to on_approval_denied (called from handle_server_request in lib.rs)
+    EventProcessor::on_approval_denied(&mut processor);
+    assert_eq!(
+        processor.cccx_exit_code, 2,
+        "Phase 11: headless approval denial must produce exit_code=2 per task.md line 813"
+    );
+
+    // Verify it survives a terminal event emission
+    processor.cccx_session_id = Some("s".into());
+    processor.cccx_turn_id = Some("t".into());
+    EventProcessor::print_final_output(&mut processor);
+    assert_eq!(processor.cccx_exit_code, 2, "exit_code=2 persists through shutdown");
+}
+
+/// Phase 11 audit: AgentUpdate with model route is deferred.
+/// task.md line 815 requires agent-update includes model route.
+/// CollabToolCall from app-server has agents_states but no model_route.
+/// Model route IS tracked in WorkSpec at spawn time but not propagated
+/// through the ThreadEvent stream by the upstream app-server protocol.
+/// Fix requires cross-cutting change to spawn tracking + event enrichment.
+#[test]
+fn p11_audit_agent_update_model_route_is_deferred() {
+    // Document the structural limitation: AgentUpdate headless event exists
+    // in cccx-headless schema but is not yet wired because
+    // CollabToolCall/ThreadEvent lacks model_route from WorkSpec.
+    let _agent_update = cccx_headless::HeadlessEvent::AgentUpdate(
+        cccx_headless::AgentUpdatePayload {
+            logical_session_id: "ls-1".into(),
+            display_name: "cx-sub".into(),
+            role: "cx:implementer".into(),
+            status: "running".into(),
+            model_route: cccx_headless::ModelRoutePayload {
+                selection_source: "inherit_main_requested".into(),
+                requested_route_id: "9router/main".into(),
+                effective_route_id: "9router/main".into(),
+            },
+        },
+    );
+    // Schema is complete. Wiring deferred to post-Phase 11.
+}

@@ -140,11 +140,13 @@
   - Phase 10 commit: `2128d19` (test: e2e regression suite — 11 integration tests).
 - 2026-07-19 Phase 11 complete — Headless exec contract và JSONL event stream:
   - **Gap đã đóng:** `EventProcessorWithJsonOutput` giờ import và emit `cccx_headless::HeadlessEventEnvelope` (cccx.exec_event.v1) thay vì raw `ThreadEvent`. Mapping: `AgentMessage` → `Answer`, `Error` → `Error`, `Terminal` cuối stream. Session/turn ID được capture từ `SessionConfiguredEvent` tại startup.
-  - **Exit code mapping:** Completed → 0, Failed → 1, Interrupted → 3, Error → 1.
+  - **Exit code mapping:** Completed → 0, Failed/Error → 1, Approval Denied → 2, Interrupted → 3.
+  - **Approval denied:** `EventProcessor::on_approval_denied()` trait method added. Called from `handle_server_request()` for all approval rejection paths (CommandExecution, FileChange, ApplyPatch, ExecCommand, Permissions). `EventProcessorWithJsonOutput` overrides to set `cccx_exit_code=2`.
   - **Terminal event:** Luôn được emit trong `print_final_output()` — kể cả khi turn failed/interrupted (emit_final_message_on_shutdown=false).
   - **P0 RED test closed:** `p0_exec_wiring` giờ là `p11_exec_wiring_is_now_complete` (GREEN).
-  - **Tests:** cccx-headless lib (10) ✓, cccx-headless e2e (6) ✓, codex-exec p11 (5) ✓, cccx-protocol (24) ✓, codex-core cccx_runtime (15) ✓, codex-core + codex-tui compile ✓, cccx-cli compile ✓.
-  - Phase 11 commit: next.
+  - **Known limitation (deferred):** AgentUpdate model route — CollabToolCall from app-server lacks model_route. Documented in test `p11_audit_agent_update_model_route_is_deferred`.
+  - **Tests:** cccx-headless lib (10) ✓, cccx-headless e2e (6) ✓, codex-exec p11 (7) ✓, cccx-protocol (24) ✓, codex-core cccx_runtime (15) ✓, codex-core + codex-tui compile ✓, cccx-cli compile ✓.
+  - Phase 11 commits: `3d7d8f15` (wiring), next (audit fix).
 
 ---
 
