@@ -528,4 +528,256 @@ pr-18  a2-auth-audit  action:shell  scope:cargo test  risk:low\n\
 Actions: /permissions approve <id> · /permissions deny <id> · /permissions inspect <id>"
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 12 — UX completion contract verification
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // task.md Phase 12: "các command và UI cccx-specific trong design.md
+    // hoạt động hoặc được ẩn rõ nếu deferred; không để placeholder."
+    //
+    // TUI integration tests are blocked on Windows (v8 build issue).
+    // These contract tests prove the UX crate meets design.md §15 requirements
+    // at the parser + renderer level.
+
+    /// Phase 12: Every command from design.md §15.2 must parse without error.
+    /// Covers all command groups: Mode, Tasks, Agents, Memory, Permissions, Utils.
+    #[test]
+    fn p12_all_design_commands_parse_without_error() {
+        let commands = [
+            // Mode & Session — cccx-ux parsers (design.md:714-731)
+            "/plan",
+            "/default",
+            "/accept-edits",
+            "/auto",
+            "/dont-ask",
+            "/bypass --confirm",
+            "/theme monokai",
+            // Task & Goal (design.md:733-738)
+            "/tasks",
+            "/goal all tests pass",
+            "/review",
+            // Agent Control (design.md:740-748)
+            "/agents list",
+            "/agents view a1",
+            "/agents logs a1",
+            "/agents resume a1",
+            "/agents cancel a1",
+            "/agents model cx_auditor 9router/deepseek-v4",
+            "/cancel",
+            "/cancel --all",
+            "/cancel a1",
+            // Memory (design.md:750-753)
+            "/remember project uses 9router for all LLM calls",
+            "/remember",
+            // Permissions (design.md:755-760)
+            "/permissions",
+            "/permissions approve pr-1",
+            "/permissions deny pr-1",
+            "/permissions inspect pr-1",
+            "/permissions batch-approve pr-1 pr-2",
+            // Utilities — cccx-ux parsers (design.md:762-778)
+            "/mcp",
+            "/skills",
+            "/plugins",
+            "/goal fix the bug",
+            "/help",
+            "/help --shortcuts",
+            "/help /agents",
+            "/theme dark",
+        ];
+
+        for command in commands {
+            let result = parse_cccx_command(command);
+            assert!(
+                result.is_ok(),
+                "Phase 12: design.md command must parse without error: `{command}`"
+            );
+        }
+
+        // Commands handled by Codex native TUI (not cccx-ux parser):
+        // /model, /status, /clear, /keymap, /vim, /new, /rename, /archive,
+        // /delete, /exit, /quit, /compact, /stop, /diff, /copy, /raw,
+        // /side, /btw, /init, /pets, /personality, /hooks, /autoreview,
+        // /mention, /title, /resume
+        // These are handled upstream and either work or are gated by
+        // is_visible=false via surface_gate_enabled().
+    }
+
+    /// Phase 12: StatusLineView renderer produces stable identifiers.
+    /// Accessibility rule: no color-dependent information, stable text format.
+    #[test]
+    fn p12_status_line_contains_all_required_fields() {
+        let view = StatusLineView {
+            mode: "Plan".to_string(),
+            harness: "CC".to_string(),
+            model_route: "9router/deepseek-v4".to_string(),
+            verified_tasks: 2,
+            total_tasks: 5,
+            context_percent: 72,
+            active_permission_request_id: Some("pr-42".to_string()),
+            queued_permission_count: 1,
+        };
+
+        let rendered = render_status_line(&view);
+
+        // Every required field must appear in the status line
+        assert!(rendered.contains("[cccx]"), "missing brand prefix");
+        assert!(rendered.contains("mode:Plan"), "missing mode");
+        assert!(rendered.contains("harness:CC"), "missing harness");
+        assert!(rendered.contains("model:9router/deepseek-v4"), "missing model route");
+        assert!(rendered.contains("tasks:2/5"), "missing task progress");
+        assert!(rendered.contains("ctx:72%"), "missing context percentage");
+        assert!(rendered.contains("perm:pr-42"), "missing permission request id");
+        assert!(rendered.contains("1 queued"), "missing queued permission count");
+
+        // Accessibility: no ANSI color escape codes
+        assert!(
+            !rendered.contains("\x1b["),
+            "Phase 12 accessibility: status line must not contain ANSI escape codes"
+        );
+    }
+
+    /// Phase 12: All renderers use stable identifiers, not color alone.
+    /// Proves that permission queue, agent list, and status line outputs
+    /// are text-based with explicit labels — screen reader compatible.
+    #[test]
+    fn p12_renderers_produce_text_only_no_ansi_escape_codes() {
+        // Status line
+        let sl = render_status_line(&StatusLineView {
+            mode: "Auto".to_string(),
+            harness: "CC".to_string(),
+            model_route: "oc/deepseek-v4".to_string(),
+            verified_tasks: 0,
+            total_tasks: 1,
+            context_percent: 0,
+            active_permission_request_id: None,
+            queued_permission_count: 0,
+        });
+        assert!(!sl.contains("\x1b["), "status line must have no ANSI escapes");
+
+        // Agent list
+        let al = render_agent_list(&AgentListView {
+            active_count: 1,
+            resumable_count: 0,
+            rows: vec![AgentListRow {
+                display_name: "a1".to_string(),
+                role: "CX".to_string(),
+                objective: "test".to_string(),
+                status: "running".to_string(),
+                elapsed: "30s".to_string(),
+                scope: "src/".to_string(),
+                model_route: "inherit-main".to_string(),
+            }],
+        });
+        assert!(!al.contains("\x1b["), "agent list must have no ANSI escapes");
+
+        // Permission queue
+        let pq = render_permission_queue(&PermissionQueueView {
+            active: None,
+            queued: vec![],
+        });
+        assert!(!pq.contains("\x1b["), "permission queue must have no ANSI escapes");
+    }
+
+    /// Phase 12: Agent list rows carry stable identifiers (displayName, role,
+    /// objective) that do not depend on color or position alone.
+    #[test]
+    fn p12_agent_list_rows_carry_stable_identifiers() {
+        let view = AgentListView {
+            active_count: 2,
+            resumable_count: 1,
+            rows: vec![
+                AgentListRow {
+                    display_name: "a1-auth-fix".to_string(),
+                    role: "CX:implementer".to_string(),
+                    objective: "fix auth bug".to_string(),
+                    status: "running".to_string(),
+                    elapsed: "45s".to_string(),
+                    scope: "src/auth/*".to_string(),
+                    model_route: "9router/sonnet".to_string(),
+                },
+                AgentListRow {
+                    display_name: "a2-auth-audit".to_string(),
+                    role: "CX:auditor".to_string(),
+                    objective: "review auth.ts".to_string(),
+                    status: "resumable".to_string(),
+                    elapsed: "checkpoint".to_string(),
+                    scope: "src/auth/*".to_string(),
+                    model_route: "9router/claude".to_string(),
+                },
+            ],
+        };
+
+        let rendered = render_agent_list(&view);
+
+        // Each agent must have its stable identifier (displayName) present
+        assert!(rendered.contains("a1-auth-fix"), "missing agent 1 display name");
+        assert!(rendered.contains("a2-auth-audit"), "missing agent 2 display name");
+
+        // Roles must be present (not color-coded instead)
+        assert!(rendered.contains("CX:implementer"), "missing agent 1 role");
+        assert!(rendered.contains("CX:auditor"), "missing agent 2 role");
+
+        // Summary line must show count
+        assert!(rendered.contains("2 active"), "missing active agent count");
+        assert!(rendered.contains("1 resumable"), "missing resumable agent count");
+    }
+
+    /// Phase 12: Deferred and removed commands are documented.
+    /// Proves that commands listed as deferred/non-MVP in design.md are
+    /// either rejected with clear errors or not falsely claimed as implemented.
+    #[test]
+    fn p12_deferred_and_removed_commands_are_documented() {
+        // Commands explicitly removed (design.md:789-794)
+        assert!(matches!(
+            parse_cccx_command("/agent logs a1"),
+            Err(CommandParseError::UnknownCommand(command)) if command == "/agent"
+        ));
+        assert!(matches!(
+            parse_cccx_command("/multi-agents"),
+            Err(CommandParseError::UnknownCommand(_))
+        ));
+
+        // Commands deferred (design.md:780-787) — hidden via is_visible=false
+        // but code kept. They must either not exist or fail gracefully.
+        // cccx-ux parser does not include these, so they produce UnknownCommand.
+        for cmd in [
+            "/elevate-sandbox",
+            "/sandbox-add-read-dir",
+            "/fork",
+            "/app",
+            "/apps",
+            "/usage",
+            "/debug-config",
+            "/statusline",
+            "/rollout",
+            "/test-approval",
+            "/ps",
+            "/pets",
+            "/personality",
+            "/reroute",
+        ] {
+            assert!(
+                matches!(parse_cccx_command(cmd), Err(CommandParseError::UnknownCommand(_))),
+                "Phase 12: hidden/deferred command `{cmd}` must not be falsely registered as cccx command"
+            );
+        }
+
+        // Future commands (design.md:786-787)
+        for cmd in ["/import", "/ide"] {
+            assert!(
+                matches!(parse_cccx_command(cmd), Err(CommandParseError::UnknownCommand(_))),
+                "Phase 12: future command `{cmd}` must not be falsely registered as implemented"
+            );
+        }
+    }
+
+    // TUI integration tests (task.md Phase 12 items 1, 4, 5, 6):
+    // - startup banner: persona art, mode, model, folder
+    // - /theme, /pets: no-op safe implementation
+    // - network error: retry UX text
+    // - secure input: no history/transcript leak
+    // These require TUI test execution which is blocked on Windows
+    // by the v8 build dependency. Documented in task.md and implementer-issues.md.
 }
