@@ -88,6 +88,19 @@ pub struct ThreadConfigSnapshot {
     pub originator: String,
 }
 
+/// Sanitized read-only projection of a persisted CCCX worker attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CccxWorkerView {
+    pub logical_session_id: String,
+    pub worker_incarnation_id: String,
+    pub display_name: String,
+    pub role: String,
+    pub task_id: String,
+    pub objective: String,
+    pub status: String,
+    pub model_route_summary: String,
+}
+
 /// Explains why `CodexThread::try_start_turn_if_idle` rejected an automatic
 /// idle turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +203,35 @@ pub struct BackgroundTerminalInfo {
 /// Conduit for the bidirectional stream of messages that compose a thread
 /// (formerly called a conversation) in Codex.
 impl CodexThread {
+    /// List only CCCX-owned worker state persisted under this root project.
+    pub async fn list_cccx_workers(&self) -> Result<Vec<CccxWorkerView>, String> {
+        let config = self.config().await;
+        let graph = crate::cccx_task_graph_state::load_task_graph(&config.cwd)
+            .await
+            .map_err(|error| format!("failed to load CCCX task graph: {error}"))?;
+        let Some(graph) = graph else {
+            return Ok(Vec::new());
+        };
+        let mut workers = graph
+            .tasks
+            .values()
+            .flat_map(|task| {
+                task.attempts.iter().map(move |attempt| CccxWorkerView {
+                    logical_session_id: attempt.worker.logical_session_id.clone(),
+                    worker_incarnation_id: attempt.attempt_id.clone(),
+                    display_name: attempt.worker.display_name.clone(),
+                    role: attempt.worker.role.clone(),
+                    task_id: task.task_id.clone(),
+                    objective: task.objective.clone(),
+                    status: format!("{:?}", attempt.worker.status).to_lowercase(),
+                    model_route_summary: attempt.worker.model_route_summary.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        workers.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        Ok(workers)
+    }
+
     /// Resolve a stable CCCX worker identity to its current native incarnation.
     /// This is root-scoped: callers cannot select an arbitrary native thread.
     pub async fn cccx_worker_thread_id(

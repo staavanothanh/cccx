@@ -572,6 +572,25 @@ impl App {
                 );
                 Ok(true)
             }
+            AppCommand::ListCccxWorkers => {
+                let response = app_server.cccx_worker_list(thread_id).await?;
+                let text = if response.workers.is_empty() {
+                    "CCCX has no persisted workers for this project.".to_string()
+                } else {
+                    response.workers.into_iter().map(|worker| format!(
+                        "{} [{}] {} · task:{} · model:{} · logical:{} · incarnation:{}",
+                        worker.display_name,
+                        worker.status,
+                        worker.role,
+                        worker.task_id,
+                        worker.model_route_summary,
+                        worker.logical_session_id,
+                        worker.worker_incarnation_id,
+                    )).collect::<Vec<_>>().join("\n")
+                };
+                self.chat_widget.add_info_message(text, None);
+                Ok(true)
+            }
             AppCommand::ResolveCccxPermission {
                 request_id,
                 approve,

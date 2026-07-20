@@ -829,6 +829,16 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::CccxWorkerResumeResponse,
     },
+    CccxWorkerList => "cccx/worker/list" {
+        params: v2::CccxWorkerListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::CccxWorkerListResponse,
+    },
+    CccxWorkerRead => "cccx/worker/read" {
+        params: v2::CccxWorkerReadParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::CccxWorkerReadResponse,
+    },
     CccxPermissionResolve => "cccx/permission/resolve" {
         params: v2::CccxPermissionResolveParams,
         serialization: thread_id(params.thread_id),
@@ -1863,6 +1873,31 @@ mod tests {
                     "logicalSessionId": "logical-worker-7",
                     "revalidate": true,
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn cccx_worker_list_is_root_scoped_and_has_no_native_worker_target() {
+        let request = ClientRequest::CccxWorkerList {
+            request_id: request_id(),
+            params: v2::CccxWorkerListParams {
+                thread_id: "root-thread".to_string(),
+            },
+        };
+
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "root-thread".to_string(),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "method": "cccx/worker/list",
+                "id": 1,
+                "params": { "threadId": "root-thread" }
             })
         );
     }

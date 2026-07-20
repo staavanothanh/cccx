@@ -1281,6 +1281,12 @@ impl MessageProcessor {
             ClientRequest::CccxWorkerResume { params, .. } => {
                 self.turn_processor.cccx_worker_resume(params).await
             }
+            ClientRequest::CccxWorkerList { params, .. } => {
+                self.turn_processor.cccx_worker_list(params).await
+            }
+            ClientRequest::CccxWorkerRead { params, .. } => {
+                self.turn_processor.cccx_worker_read(params).await
+            }
             ClientRequest::CccxPermissionResolve { params, .. } => {
                 self.turn_processor.cccx_permission_resolve(params).await
             }

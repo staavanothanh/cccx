@@ -26,6 +26,7 @@ mod compact_token_budget;
 mod config_lock;
 pub use codex_thread::BackgroundTerminalInfo;
 pub use codex_thread::CodexThread;
+pub use codex_thread::CccxWorkerView;
 pub use codex_thread::CodexThreadSettingsOverrides;
 pub use codex_thread::ThreadConfigSnapshot;
 pub use codex_thread::TryStartTurnIfIdleError;

@@ -742,7 +742,8 @@ impl ChatWidget {
         let input = format!("/{} {}", cmd.command(), args);
         match parse_cccx_command(&input) {
             Ok(Some(CccxCommand::Agents(AgentsCommand::List))) => {
-                self.app_event_tx.send(AppEvent::OpenAgentPicker);
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(AppCommand::ListCccxWorkers));
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::View { agent_id }))) => {
                 // Switch active thread to the named subagent for live inspection.

@@ -256,6 +256,50 @@ pub struct CccxWorkerResumeResponse {
     pub worker_incarnation_id: String,
 }
 
+/// Sanitized worker state for CCCX agent-control surfaces.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerView {
+    pub logical_session_id: String,
+    pub worker_incarnation_id: String,
+    pub display_name: String,
+    pub role: String,
+    pub task_id: String,
+    pub objective: String,
+    pub status: String,
+    pub model_route_summary: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerListParams {
+    pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerListResponse {
+    pub workers: Vec<CccxWorkerView>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerReadParams {
+    pub thread_id: String,
+    pub worker_identifier: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerReadResponse {
+    pub worker: CccxWorkerView,
+}
+
 /// Resolve one root-owned CCCX permission request. The request id is opaque;
 /// server-side correlation chooses the native approval and worker thread.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

@@ -261,6 +261,60 @@ impl TurnRequestProcessor {
         }.into()))
     }
 
+    pub(crate) async fn cccx_worker_list(
+        &self,
+        params: CccxWorkerListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let workers = thread
+            .list_cccx_workers()
+            .await
+            .map_err(invalid_request)?
+            .into_iter()
+            .map(|worker| CccxWorkerView {
+                logical_session_id: worker.logical_session_id,
+                worker_incarnation_id: worker.worker_incarnation_id,
+                display_name: worker.display_name,
+                role: worker.role,
+                task_id: worker.task_id,
+                objective: worker.objective,
+                status: worker.status,
+                model_route_summary: worker.model_route_summary,
+            })
+            .collect();
+        Ok(Some(CccxWorkerListResponse { workers }.into()))
+    }
+
+    pub(crate) async fn cccx_worker_read(
+        &self,
+        params: CccxWorkerReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let worker_id = thread
+            .cccx_worker_thread_id(&params.worker_identifier)
+            .await
+            .map_err(invalid_request)?;
+        let worker = thread
+            .list_cccx_workers()
+            .await
+            .map_err(invalid_request)?
+            .into_iter()
+            .find(|worker| worker.worker_incarnation_id == worker_id.to_string())
+            .ok_or_else(|| invalid_request("CCCX worker disappeared while resolving view"))?;
+        Ok(Some(CccxWorkerReadResponse {
+            worker: CccxWorkerView {
+                logical_session_id: worker.logical_session_id,
+                worker_incarnation_id: worker.worker_incarnation_id,
+                display_name: worker.display_name,
+                role: worker.role,
+                task_id: worker.task_id,
+                objective: worker.objective,
+                status: worker.status,
+                model_route_summary: worker.model_route_summary,
+            },
+        }.into()))
+    }
+
     pub(crate) async fn cccx_permission_resolve(
         &self,
         params: CccxPermissionResolveParams,

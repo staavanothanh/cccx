@@ -32,6 +32,7 @@ pub(crate) enum AppCommand {
         logical_session_id: String,
         revalidate: bool,
     },
+    ListCccxWorkers,
     ResolveCccxPermission {
         request_id: String,
         approve: bool,
