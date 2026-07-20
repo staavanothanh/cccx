@@ -1903,6 +1903,34 @@ mod tests {
     }
 
     #[test]
+    fn cccx_worker_read_is_root_scoped_and_accepts_only_stable_identifier() {
+        let request = ClientRequest::CccxWorkerRead {
+            request_id: request_id(),
+            params: v2::CccxWorkerReadParams {
+                thread_id: "root-thread".to_string(),
+                worker_identifier: "a1-auth-fix".to_string(),
+            },
+        };
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "root-thread".to_string(),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "method": "cccx/worker/read",
+                "id": 1,
+                "params": {
+                    "threadId": "root-thread",
+                    "workerIdentifier": "a1-auth-fix"
+                }
+            })
+        );
+    }
+
+    #[test]
     fn cccx_permission_resolve_is_scoped_to_root_and_hides_native_targeting() {
         let request = ClientRequest::CccxPermissionResolve {
             request_id: request_id(),

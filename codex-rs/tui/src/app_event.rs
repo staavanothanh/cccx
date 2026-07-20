@@ -151,6 +151,9 @@ pub(crate) enum AppEvent {
     OpenAgentPicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Resolve a CCCX logical/display worker identifier under the active root
+    /// before attaching its existing transcript.
+    ViewCccxWorker(String),
 
     /// Fork the current thread into a transient side conversation.
     StartSide {

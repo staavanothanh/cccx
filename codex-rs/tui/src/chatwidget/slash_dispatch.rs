@@ -746,19 +746,7 @@ impl ChatWidget {
                     .send(AppEvent::CodexOp(AppCommand::ListCccxWorkers));
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::View { agent_id }))) => {
-                // Switch active thread to the named subagent for live inspection.
-                match codex_protocol::ThreadId::from_string(&agent_id) {
-                    Ok(thread_id) => {
-                        self.app_event_tx
-                            .send(AppEvent::SelectAgentThread(thread_id));
-                    }
-                    Err(_) => {
-                        self.add_info_message(
-                            format!("/agents view {agent_id} — agent_id must be a valid UUID."),
-                            None,
-                        );
-                    }
-                }
+                self.app_event_tx.send(AppEvent::ViewCccxWorker(agent_id));
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::Logs { agent_id }))) => {
                 self.add_info_message(

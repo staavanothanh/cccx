@@ -1988,6 +1988,26 @@ impl App {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await?;
             }
+            AppEvent::ViewCccxWorker(worker_identifier) => {
+                let Some(root_thread_id) = self.active_thread_id else {
+                    self.chat_widget.add_error_message("No active CCCX root thread.".to_string());
+                    return Ok(AppRunControl::Continue);
+                };
+                let response = app_server
+                    .cccx_worker_read(root_thread_id, worker_identifier.clone())
+                    .await?;
+                let worker_thread_id = match ThreadId::from_string(&response.worker.worker_incarnation_id) {
+                    Ok(worker_thread_id) => worker_thread_id,
+                    Err(error) => {
+                        self.chat_widget.add_error_message(format!(
+                            "Invalid CCCX worker incarnation returned by server: {error}"
+                        ));
+                        return Ok(AppRunControl::Continue);
+                    }
+                };
+                self.select_agent_thread_and_discard_side(tui, app_server, worker_thread_id)
+                    .await?;
+            }
             AppEvent::StartSide {
                 parent_thread_id,
                 user_message,

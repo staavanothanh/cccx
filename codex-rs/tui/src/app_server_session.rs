@@ -32,6 +32,8 @@ use codex_app_server_protocol::CccxWorkerCancelParams;
 use codex_app_server_protocol::CccxWorkerCancelResponse;
 use codex_app_server_protocol::CccxWorkerListParams;
 use codex_app_server_protocol::CccxWorkerListResponse;
+use codex_app_server_protocol::CccxWorkerReadParams;
+use codex_app_server_protocol::CccxWorkerReadResponse;
 use codex_app_server_protocol::CccxWorkerResumeParams;
 use codex_app_server_protocol::CccxWorkerResumeResponse;
 use codex_app_server_protocol::ClientRequest;
@@ -977,6 +979,23 @@ impl AppServerSession {
                 request_id,
                 params: CccxWorkerListParams {
                     thread_id: thread_id.to_string(),
+                },
+            })
+            .await
+    }
+
+    pub(crate) async fn cccx_worker_read(
+        &mut self,
+        thread_id: ThreadId,
+        worker_identifier: String,
+    ) -> std::result::Result<CccxWorkerReadResponse, TypedRequestError> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::CccxWorkerRead {
+                request_id,
+                params: CccxWorkerReadParams {
+                    thread_id: thread_id.to_string(),
+                    worker_identifier,
                 },
             })
             .await
