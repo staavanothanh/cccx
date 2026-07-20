@@ -259,6 +259,28 @@ impl TurnRequestProcessor {
         Ok(Some(CccxPermissionResolveResponse {}.into()))
     }
 
+    pub(crate) async fn cccx_permission_list(
+        &self,
+        params: CccxPermissionListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let requests = thread
+            .list_cccx_permissions()
+            .await
+            .into_iter()
+            .map(|request| CccxPermissionRequestView {
+                request_id: request.request_id,
+                agent_display_name: request.agent_display_name,
+                task_id: request.task_id,
+                action_summary: request.action.summary,
+                risk: format!("{:?}", request.risk),
+                status: format!("{:?}", request.status),
+                reason: request.reason,
+            })
+            .collect();
+        Ok(Some(CccxPermissionListResponse { requests }.into()))
+    }
+
     pub(crate) async fn thread_realtime_start(
         &self,
         request_id: &ConnectionRequestId,

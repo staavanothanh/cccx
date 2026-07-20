@@ -33,6 +33,7 @@ pub(crate) enum AppCommand {
         request_id: String,
         approve: bool,
     },
+    ListCccxPermissions,
     CleanBackgroundTerminals,
     RunUserShellCommand {
         command: String,

@@ -104,6 +104,8 @@ use codex_app_server_protocol::CccxWorkerCancelParams;
 use codex_app_server_protocol::CccxWorkerCancelResponse;
 use codex_app_server_protocol::CccxPermissionResolveParams;
 use codex_app_server_protocol::CccxPermissionResolveResponse;
+use codex_app_server_protocol::CccxPermissionListParams;
+use codex_app_server_protocol::CccxPermissionListResponse;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -958,6 +960,21 @@ impl AppServerSession {
             })
             .await?;
         Ok(())
+    }
+
+    pub(crate) async fn cccx_permission_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> std::result::Result<CccxPermissionListResponse, TypedRequestError> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::CccxPermissionList {
+                request_id,
+                params: CccxPermissionListParams {
+                    thread_id: thread_id.to_string(),
+                },
+            })
+            .await
     }
 
     pub(crate) async fn startup_interrupt(

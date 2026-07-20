@@ -200,6 +200,11 @@ impl AgentControl {
         Arc::clone(&self.cccx_permission_queue)
     }
 
+    /// Read the root-owned CCCX permission queue for inspect/list UI.
+    pub(crate) async fn list_cccx_permissions(&self) -> Vec<cccx_policy::PermissionRequest> {
+        self.cccx_permission_queue.list_all().await
+    }
+
     /// Resolve one CCCX permission request through its correlated native
     /// Codex waiter. Unknown/stale requests fail closed; the operation is
     /// always delivered to the worker that originally created the request.

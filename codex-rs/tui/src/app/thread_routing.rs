@@ -566,6 +566,29 @@ impl App {
                     .await?;
                 Ok(true)
             }
+            AppCommand::ListCccxPermissions => {
+                let response = app_server.cccx_permission_list(thread_id).await?;
+                let text = if response.requests.is_empty() {
+                    "CCCX permission queue is empty.".to_string()
+                } else {
+                    response
+                        .requests
+                        .into_iter()
+                        .map(|request| format!(
+                            "{} [{}] {} · {} · {} · {}",
+                            request.request_id,
+                            request.status,
+                            request.agent_display_name,
+                            request.task_id,
+                            request.risk,
+                            request.action_summary,
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                self.chat_widget.add_info_message(text, None);
+                Ok(true)
+            }
             AppCommand::UserTurn {
                 items,
                 cwd,

@@ -254,6 +254,34 @@ pub struct CccxPermissionResolveParams {
 #[ts(export_to = "v2/")]
 pub struct CccxPermissionResolveResponse {}
 
+/// Sanitized, read-only view of a CCCX permission request.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxPermissionRequestView {
+    pub request_id: String,
+    pub agent_display_name: String,
+    pub task_id: String,
+    pub action_summary: String,
+    pub risk: String,
+    pub status: String,
+    pub reason: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxPermissionListParams {
+    pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxPermissionListResponse {
+    pub requests: Vec<CccxPermissionRequestView>,
+}
+
 // User input types
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

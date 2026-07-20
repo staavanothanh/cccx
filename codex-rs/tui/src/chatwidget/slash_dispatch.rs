@@ -797,8 +797,8 @@ impl ChatWidget {
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::List))) => {
-                self.open_permissions_popup();
-                self.defer_input_until_settings_applied();
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(AppCommand::ListCccxPermissions));
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Approve { request_id }))) => {
                 self.app_event_tx.send(AppEvent::CodexOp(
@@ -825,9 +825,11 @@ impl ChatWidget {
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Inspect { request_id }))) => {
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(AppCommand::ListCccxPermissions));
                 self.add_info_message(
-                    format!("/permissions inspect {request_id} — active requests are displayed in the approval popup with action, scope, and risk level."),
-                    Some("Open /permissions to view the interactive queue inspector.".to_string()),
+                    format!("/permissions inspect {request_id} — requested current queue snapshot."),
+                    None,
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::BatchApprove {

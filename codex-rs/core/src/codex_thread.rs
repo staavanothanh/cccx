@@ -200,6 +200,11 @@ impl CodexThread {
             .await
     }
 
+    /// Read the CCCX permission queue shared by this root's worker tree.
+    pub async fn list_cccx_permissions(&self) -> Vec<cccx_policy::PermissionRequest> {
+        self.session.services.agent_control.list_cccx_permissions().await
+    }
+
     pub(crate) fn new(
         session: Arc<Session>,
         io: SessionIo,
