@@ -839,6 +839,16 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::CccxWorkerReadResponse,
     },
+    CccxWorkerLogs => "cccx/worker/logs" {
+        params: v2::CccxWorkerLogsParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::CccxWorkerLogsResponse,
+    },
+    CccxAgentModelRouteSet => "cccx/agent/model_route/set" {
+        params: v2::CccxAgentModelRouteSetParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::CccxAgentModelRouteSetResponse,
+    },
     CccxPermissionResolve => "cccx/permission/resolve" {
         params: v2::CccxPermissionResolveParams,
         serialization: thread_id(params.thread_id),
@@ -1925,6 +1935,66 @@ mod tests {
                 "params": {
                     "threadId": "root-thread",
                     "workerIdentifier": "a1-auth-fix"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn cccx_worker_logs_is_root_scoped_and_bounded_by_tail() {
+        let request = ClientRequest::CccxWorkerLogs {
+            request_id: request_id(),
+            params: v2::CccxWorkerLogsParams {
+                thread_id: "root-thread".to_string(),
+                worker_identifier: "a1-auth-fix".to_string(),
+                tail: Some(40),
+            },
+        };
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "root-thread".to_string(),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "method": "cccx/worker/logs",
+                "id": 1,
+                "params": {
+                    "threadId": "root-thread",
+                    "workerIdentifier": "a1-auth-fix",
+                    "tail": 40
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn cccx_agent_model_route_set_is_root_scoped_for_next_spawn_only() {
+        let request = ClientRequest::CccxAgentModelRouteSet {
+            request_id: request_id(),
+            params: v2::CccxAgentModelRouteSetParams {
+                thread_id: "root-thread".to_string(),
+                preset: "cx_implementer".to_string(),
+                route: "oc/deepseek-v4".to_string(),
+            },
+        };
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "root-thread".to_string(),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "method": "cccx/agent/model_route/set",
+                "id": 1,
+                "params": {
+                    "threadId": "root-thread",
+                    "preset": "cx_implementer",
+                    "route": "oc/deepseek-v4"
                 }
             })
         );

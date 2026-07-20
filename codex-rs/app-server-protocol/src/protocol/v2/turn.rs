@@ -300,6 +300,55 @@ pub struct CccxWorkerReadResponse {
     pub worker: CccxWorkerView,
 }
 
+/// Sanitized, bounded worker lifecycle log entry. This deliberately carries no
+/// raw transcript, tool payload, or tool output.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerLogEntry {
+    pub logical_session_id: String,
+    pub display_name: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub artifact_id: String,
+    pub status: String,
+    pub summary: String,
+    pub changed_paths_count: usize,
+    pub tests_run_count: usize,
+    pub evidence_count: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerLogsParams {
+    pub thread_id: String,
+    pub worker_identifier: String,
+    #[serde(default)]
+    pub tail: Option<u16>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerLogsResponse {
+    pub entries: Vec<CccxWorkerLogEntry>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxAgentModelRouteSetParams {
+    pub thread_id: String,
+    pub preset: String,
+    pub route: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxAgentModelRouteSetResponse {}
+
 /// Resolve one root-owned CCCX permission request. The request id is opaque;
 /// server-side correlation chooses the native approval and worker thread.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

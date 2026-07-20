@@ -411,6 +411,16 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
+                if matches!(&op, AppCommand::UserTurn { .. })
+                    && let Some(thread_id) = self.current_displayed_thread_id()
+                    && self.read_only_worker_threads.contains(&thread_id)
+                {
+                    self.chat_widget.add_error_message(
+                        "This CCCX worker view is read-only; send follow-up work through the root agent."
+                            .to_string(),
+                    );
+                    return Ok(AppRunControl::Continue);
+                }
                 if matches!(&op, AppCommand::UserTurn { .. }) {
                     self.handle_draw_pre_render(tui)?;
                     if self.transcript_reflow.has_pending_reflow() {
@@ -2005,6 +2015,7 @@ impl App {
                         return Ok(AppRunControl::Continue);
                     }
                 };
+                self.read_only_worker_threads.insert(worker_thread_id);
                 self.select_agent_thread_and_discard_side(tui, app_server, worker_thread_id)
                     .await?;
             }

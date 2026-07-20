@@ -274,12 +274,19 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
         )));
     }
 
-    let Some(work_spec) = work_spec else {
+    let Some(mut work_spec) = work_spec else {
         return Err(FunctionCallError::RespondToModel(
             "cccx spawn requires a structured `work_spec`. Retry spawn_agent with a WorkSpec containing task_id, harness, role, objective, scope, allowed_tools, allowed_mcp_tools, permission_policy, and model_route. Keep `message` as a compact execution brief; do not pass raw parent context."
                 .to_string(),
         ));
     };
+    if let Some(route) =
+        crate::cccx_agent_model_routes::route_for_work_role(&config.codex_home, &work_spec.role)
+            .await
+            .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?
+    {
+        work_spec.model_route = route;
+    }
 
     #[allow(deprecated)]
     let project_root = turn.cwd.clone().to_path_buf();

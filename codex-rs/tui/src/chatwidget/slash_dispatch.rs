@@ -748,11 +748,13 @@ impl ChatWidget {
             Ok(Some(CccxCommand::Agents(AgentsCommand::View { agent_id }))) => {
                 self.app_event_tx.send(AppEvent::ViewCccxWorker(agent_id));
             }
-            Ok(Some(CccxCommand::Agents(AgentsCommand::Logs { agent_id }))) => {
-                self.add_info_message(
-                    format!("/agents logs {agent_id} — open the thread inspector for full logs."),
-                    Some("Run /agents view {agent_id} to switch to the agent thread.".to_string()),
-                );
+            Ok(Some(CccxCommand::Agents(AgentsCommand::Logs { agent_id, tail }))) => {
+                self.app_event_tx.send(AppEvent::CodexOp(
+                    AppCommand::ShowCccxWorkerLogs {
+                        worker_identifier: agent_id,
+                        tail,
+                    },
+                ));
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::Resume {
                 agent_id,
@@ -780,10 +782,9 @@ impl ChatWidget {
                 );
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::Model { preset, route }))) => {
-                self.add_info_message(
-                    format!("/agents model {preset} {route} — agent model route for next spawn; configured through WorkSpec.model_route at spawn time."),
-                    Some("Model route selection pinned in WorkSpec before spawn. Requires runtime session wiring for preset validation (post-MVP).".to_string()),
-                );
+                self.app_event_tx.send(AppEvent::CodexOp(
+                    AppCommand::SetCccxAgentModelRoute { preset, route },
+                ));
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::List))) => {
                 self.app_event_tx
@@ -860,11 +861,8 @@ impl ChatWidget {
             }
             Ok(Some(CccxCommand::Cancel { all, target })) => {
                 if all {
-                    self.app_event_tx.interrupt();
-                    self.add_info_message(
-                        "Interrupted all running subagents.".to_string(),
-                        /*hint*/ None,
-                    );
+                    self.app_event_tx
+                        .send(AppEvent::CodexOp(AppCommand::CancelAllCccxWorkers));
                 } else if let Some(agent_id) = target {
                     self.app_event_tx
                         .send(AppEvent::CodexOp(AppCommand::CancelCccxWorker {

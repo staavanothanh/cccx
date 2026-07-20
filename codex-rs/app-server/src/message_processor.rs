@@ -1287,6 +1287,12 @@ impl MessageProcessor {
             ClientRequest::CccxWorkerRead { params, .. } => {
                 self.turn_processor.cccx_worker_read(params).await
             }
+            ClientRequest::CccxWorkerLogs { params, .. } => {
+                self.turn_processor.cccx_worker_logs(params).await
+            }
+            ClientRequest::CccxAgentModelRouteSet { params, .. } => {
+                self.turn_processor.cccx_agent_model_route_set(params).await
+            }
             ClientRequest::CccxPermissionResolve { params, .. } => {
                 self.turn_processor.cccx_permission_resolve(params).await
             }

@@ -32,8 +32,12 @@ use codex_app_server_protocol::CccxWorkerCancelParams;
 use codex_app_server_protocol::CccxWorkerCancelResponse;
 use codex_app_server_protocol::CccxWorkerListParams;
 use codex_app_server_protocol::CccxWorkerListResponse;
+use codex_app_server_protocol::CccxWorkerLogsParams;
+use codex_app_server_protocol::CccxWorkerLogsResponse;
 use codex_app_server_protocol::CccxWorkerReadParams;
 use codex_app_server_protocol::CccxWorkerReadResponse;
+use codex_app_server_protocol::CccxAgentModelRouteSetParams;
+use codex_app_server_protocol::CccxAgentModelRouteSetResponse;
 use codex_app_server_protocol::CccxWorkerResumeParams;
 use codex_app_server_protocol::CccxWorkerResumeResponse;
 use codex_app_server_protocol::ClientRequest;
@@ -999,6 +1003,46 @@ impl AppServerSession {
                 },
             })
             .await
+    }
+
+    pub(crate) async fn cccx_worker_logs(
+        &mut self,
+        thread_id: ThreadId,
+        worker_identifier: String,
+        tail: u16,
+    ) -> std::result::Result<CccxWorkerLogsResponse, TypedRequestError> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::CccxWorkerLogs {
+                request_id,
+                params: CccxWorkerLogsParams {
+                    thread_id: thread_id.to_string(),
+                    worker_identifier,
+                    tail: Some(tail),
+                },
+            })
+            .await
+    }
+
+    pub(crate) async fn cccx_agent_model_route_set(
+        &mut self,
+        thread_id: ThreadId,
+        preset: String,
+        route: String,
+    ) -> std::result::Result<(), TypedRequestError> {
+        let request_id = self.next_request_id();
+        let _: CccxAgentModelRouteSetResponse = self
+            .client
+            .request_typed(ClientRequest::CccxAgentModelRouteSet {
+                request_id,
+                params: CccxAgentModelRouteSetParams {
+                    thread_id: thread_id.to_string(),
+                    preset,
+                    route,
+                },
+            })
+            .await?;
+        Ok(())
     }
 
     pub(crate) async fn cccx_permission_resolve(

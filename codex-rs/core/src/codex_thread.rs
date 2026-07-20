@@ -101,6 +101,38 @@ pub struct CccxWorkerView {
     pub model_route_summary: String,
 }
 
+/// Sanitized read-only log projection for a CCCX logical worker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CccxWorkerLogEntry {
+    pub logical_session_id: String,
+    pub display_name: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub artifact_id: String,
+    pub status: String,
+    pub summary: String,
+    pub changed_paths_count: usize,
+    pub tests_run_count: usize,
+    pub evidence_count: usize,
+}
+
+fn sanitize_cccx_worker_log_text(input: &str) -> String {
+    const MAX_CHARS: usize = 512;
+    let mut output = String::new();
+    for ch in input.chars() {
+        if output.chars().count() >= MAX_CHARS {
+            output.push_str("...");
+            break;
+        }
+        if ch.is_control() {
+            output.push(' ');
+        } else {
+            output.push(ch);
+        }
+    }
+    output.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Explains why `CodexThread::try_start_turn_if_idle` rejected an automatic
 /// idle turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,6 +280,91 @@ impl CodexThread {
             .map_err(|error| error.to_string())?;
         ThreadId::from_string(&attempt.attempt_id)
             .map_err(|error| format!("CCCX worker incarnation is invalid: {error}"))
+    }
+
+    pub async fn cccx_worker_logs(
+        &self,
+        worker_identifier: &str,
+        tail: usize,
+    ) -> Result<Vec<CccxWorkerLogEntry>, String> {
+        let config = self.config().await;
+        let graph = crate::cccx_task_graph_state::load_task_graph(&config.cwd)
+            .await
+            .map_err(|error| format!("failed to load CCCX task graph: {error}"))?
+            .ok_or_else(|| "CCCX task graph is missing".to_string())?;
+        let tail = tail.clamp(1, 80);
+        let matched_logical_id = {
+            let logical_matches = graph
+                .tasks
+                .values()
+                .flat_map(|task| task.attempts.iter())
+                .filter(|attempt| attempt.worker.logical_session_id == worker_identifier)
+                .map(|attempt| attempt.worker.logical_session_id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            if logical_matches.len() == 1 {
+                logical_matches.into_iter().next().unwrap_or_default()
+            } else if logical_matches.len() > 1 {
+                return Err(format!(
+                    "ambiguous CCCX worker logicalSessionId `{worker_identifier}`"
+                ));
+            } else {
+                let display_matches = graph
+                    .tasks
+                    .values()
+                    .flat_map(|task| task.attempts.iter())
+                    .filter(|attempt| attempt.worker.display_name == worker_identifier)
+                    .map(|attempt| attempt.worker.logical_session_id.clone())
+                    .collect::<std::collections::BTreeSet<_>>();
+                match display_matches.len() {
+                    0 => return Err(format!("unknown CCCX worker `{worker_identifier}`")),
+                    1 => display_matches.into_iter().next().unwrap_or_default(),
+                    _ => {
+                        return Err(format!(
+                            "ambiguous CCCX worker display name `{worker_identifier}`; use logicalSessionId"
+                        ));
+                    }
+                }
+            }
+        };
+
+        let mut entries = Vec::new();
+        for task in graph.tasks.values() {
+            for attempt in &task.attempts {
+                if attempt.worker.logical_session_id != matched_logical_id {
+                    continue;
+                }
+                for artifact_id in &attempt.artifact_ids {
+                    let Some(artifact) = graph.artifacts.get(artifact_id) else {
+                        continue;
+                    };
+                    entries.push(CccxWorkerLogEntry {
+                        logical_session_id: attempt.worker.logical_session_id.clone(),
+                        display_name: attempt.worker.display_name.clone(),
+                        task_id: task.task_id.clone(),
+                        attempt_id: attempt.attempt_id.clone(),
+                        artifact_id: artifact.artifact_id.clone(),
+                        status: format!("{:?}", artifact.status).to_lowercase(),
+                        summary: sanitize_cccx_worker_log_text(&artifact.summary),
+                        changed_paths_count: artifact.changed_paths.len(),
+                        tests_run_count: artifact.tests_run.len(),
+                        evidence_count: artifact.evidence.len(),
+                    });
+                }
+            }
+        }
+        let start = entries.len().saturating_sub(tail);
+        Ok(entries.split_off(start))
+    }
+
+    pub async fn set_cccx_agent_model_route(
+        &self,
+        preset: &str,
+        route: &str,
+    ) -> Result<(), String> {
+        let config = self.config().await;
+        crate::cccx_agent_model_routes::set_agent_model_route(&config.codex_home, preset, route)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     /// Resume a CCCX worker as a fresh native incarnation while preserving its

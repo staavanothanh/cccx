@@ -559,6 +559,25 @@ impl App {
                     .await?;
                 Ok(true)
             }
+            AppCommand::CancelAllCccxWorkers => {
+                let response = app_server.cccx_worker_list(thread_id).await?;
+                let cancellable = response
+                    .workers
+                    .into_iter()
+                    .filter(|worker| matches!(worker.status.as_str(), "running" | "waiting"))
+                    .collect::<Vec<_>>();
+                let count = cancellable.len();
+                for worker in cancellable {
+                    app_server
+                        .cccx_worker_cancel(thread_id, worker.logical_session_id)
+                        .await?;
+                }
+                self.chat_widget.add_info_message(
+                    format!("CCCX cancelled {count} running/waiting worker(s)."),
+                    None,
+                );
+                Ok(true)
+            }
             AppCommand::ResumeCccxWorker {
                 logical_session_id,
                 revalidate,
@@ -589,6 +608,50 @@ impl App {
                     )).collect::<Vec<_>>().join("\n")
                 };
                 self.chat_widget.add_info_message(text, None);
+                Ok(true)
+            }
+            AppCommand::ShowCccxWorkerLogs {
+                worker_identifier,
+                tail,
+            } => {
+                let response = app_server
+                    .cccx_worker_logs(thread_id, worker_identifier.clone(), *tail)
+                    .await?;
+                let text = if response.entries.is_empty() {
+                    format!("CCCX worker `{worker_identifier}` has no sanitized log entries.")
+                } else {
+                    response
+                        .entries
+                        .into_iter()
+                        .map(|entry| {
+                            format!(
+                                "{} [{}] task:{} attempt:{} changes:{} tests:{} evidence:{} · {}",
+                                entry.artifact_id,
+                                entry.status,
+                                entry.task_id,
+                                entry.attempt_id,
+                                entry.changed_paths_count,
+                                entry.tests_run_count,
+                                entry.evidence_count,
+                                entry.summary,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                self.chat_widget.add_info_message(text, None);
+                Ok(true)
+            }
+            AppCommand::SetCccxAgentModelRoute { preset, route } => {
+                app_server
+                    .cccx_agent_model_route_set(thread_id, preset.clone(), route.clone())
+                    .await?;
+                self.chat_widget.add_info_message(
+                    format!(
+                        "CCCX agent preset `{preset}` will use model route `{route}` for future spawns."
+                    ),
+                    None,
+                );
                 Ok(true)
             }
             AppCommand::ResolveCccxPermission {

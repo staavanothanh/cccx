@@ -28,11 +28,20 @@ pub(crate) enum AppCommand {
     CancelCccxWorker {
         worker_identifier: String,
     },
+    CancelAllCccxWorkers,
     ResumeCccxWorker {
         logical_session_id: String,
         revalidate: bool,
     },
     ListCccxWorkers,
+    ShowCccxWorkerLogs {
+        worker_identifier: String,
+        tail: u16,
+    },
+    SetCccxAgentModelRoute {
+        preset: String,
+        route: String,
+    },
     ResolveCccxPermission {
         request_id: String,
         approve: bool,

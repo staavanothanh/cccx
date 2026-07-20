@@ -315,6 +315,47 @@ impl TurnRequestProcessor {
         }.into()))
     }
 
+    pub(crate) async fn cccx_worker_logs(
+        &self,
+        params: CccxWorkerLogsParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let entries = thread
+            .cccx_worker_logs(
+                &params.worker_identifier,
+                params.tail.map(usize::from).unwrap_or(80),
+            )
+            .await
+            .map_err(invalid_request)?
+            .into_iter()
+            .map(|entry| CccxWorkerLogEntry {
+                logical_session_id: entry.logical_session_id,
+                display_name: entry.display_name,
+                task_id: entry.task_id,
+                attempt_id: entry.attempt_id,
+                artifact_id: entry.artifact_id,
+                status: entry.status,
+                summary: entry.summary,
+                changed_paths_count: entry.changed_paths_count,
+                tests_run_count: entry.tests_run_count,
+                evidence_count: entry.evidence_count,
+            })
+            .collect();
+        Ok(Some(CccxWorkerLogsResponse { entries }.into()))
+    }
+
+    pub(crate) async fn cccx_agent_model_route_set(
+        &self,
+        params: CccxAgentModelRouteSetParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        thread
+            .set_cccx_agent_model_route(&params.preset, &params.route)
+            .await
+            .map_err(invalid_request)?;
+        Ok(Some(CccxAgentModelRouteSetResponse {}.into()))
+    }
+
     pub(crate) async fn cccx_permission_resolve(
         &self,
         params: CccxPermissionResolveParams,

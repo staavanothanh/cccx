@@ -43,7 +43,7 @@ pub enum MainModeKind {
 pub enum AgentsCommand {
     List,
     View { agent_id: String },
-    Logs { agent_id: String },
+    Logs { agent_id: String, tail: u16 },
     Resume { agent_id: String, revalidate: bool },
     Cancel { agent_id: String },
     Model { preset: String, route: String },
@@ -69,6 +69,12 @@ pub enum CommandParseError {
     },
     #[error("command `{0}` has too many arguments")]
     TooManyArguments(&'static str),
+    #[error("command `{command}` has invalid argument `{argument}`: `{value}`")]
+    InvalidArgument {
+        command: &'static str,
+        argument: &'static str,
+        value: String,
+    },
 }
 
 pub fn parse_cccx_command(input: &str) -> Result<Option<CccxCommand>, CommandParseError> {
@@ -154,7 +160,28 @@ fn parse_agents(parts: Vec<&str>) -> Result<AgentsCommand, CommandParseError> {
         }),
         ["logs", agent_id] => Ok(AgentsCommand::Logs {
             agent_id: (*agent_id).to_string(),
+            tail: 80,
         }),
+        ["logs", agent_id, "--tail", value] => {
+            let tail = value
+                .parse::<u16>()
+                .map_err(|_| CommandParseError::InvalidArgument {
+                    command: "/agents logs",
+                    argument: "--tail",
+                    value: (*value).to_string(),
+                })?;
+            if tail == 0 || tail > 80 {
+                return Err(CommandParseError::InvalidArgument {
+                    command: "/agents logs",
+                    argument: "--tail",
+                    value: (*value).to_string(),
+                });
+            }
+            Ok(AgentsCommand::Logs {
+                agent_id: (*agent_id).to_string(),
+                tail,
+            })
+        }
         ["resume", agent_id] => Ok(AgentsCommand::Resume {
             agent_id: (*agent_id).to_string(),
             revalidate: false,
@@ -379,9 +406,25 @@ mod tests {
         assert_eq!(
             parse_cccx_command("/agents logs b2-research"),
             Ok(Some(CccxCommand::Agents(AgentsCommand::Logs {
-                agent_id: "b2-research".to_string()
+                agent_id: "b2-research".to_string(),
+                tail: 80,
             })))
         );
+        assert_eq!(
+            parse_cccx_command("/agents logs b2-research --tail 20"),
+            Ok(Some(CccxCommand::Agents(AgentsCommand::Logs {
+                agent_id: "b2-research".to_string(),
+                tail: 20,
+            })))
+        );
+        assert!(matches!(
+            parse_cccx_command("/agents logs b2-research --tail 81"),
+            Err(CommandParseError::InvalidArgument {
+                command: "/agents logs",
+                argument: "--tail",
+                ..
+            })
+        ));
         assert_eq!(
             parse_cccx_command("/agents resume b2-research --revalidate"),
             Ok(Some(CccxCommand::Agents(AgentsCommand::Resume {
