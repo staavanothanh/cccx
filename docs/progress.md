@@ -2788,3 +2788,19 @@ cargo +1.95.0 check -p codex-core -j 1
 Remaining Phase 8 work: add a session-level injection/isolation regression,
 extend compaction survivor state beyond TaskGraph, and complete ADR/MCP
 authority and stale-write runtime proof.
+
+## 2026-07-20 — Phase 8B: structured Main CC compaction survivor
+
+- Compaction now emits `cccx.compaction_survivor.v1` for Main CC only. Its
+  structured payload contains the durable TaskGraph, bounded Project Memory,
+  and persisted checkpoint references.
+- Child actors receive no full survivor bundle, preserving the WorkSpec/Artifact
+  isolation boundary across compaction.
+- The bundle records `codebase-memory-mcp` as the ADR index authority rather
+  than inventing a second local ADR store.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 check -p codex-core -j 1
+```

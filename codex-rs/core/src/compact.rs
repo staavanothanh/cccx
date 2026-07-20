@@ -90,6 +90,15 @@ pub(crate) async fn build_compaction_initial_context(
 }
 
 async fn cccx_compaction_survivor_item(turn_context: &TurnContext) -> Option<ResponseItem> {
+    // Durable project state belongs to Main CC. A child receives only its
+    // WorkSpec at spawn; reinjecting a full survivor bundle would violate the
+    // cross-harness boundary.
+    if !matches!(
+        turn_context.cccx_actor_identity(),
+        cccx_protocol::ActorIdentity::MainCc
+    ) {
+        return None;
+    }
     #[allow(deprecated)]
     let project_root = turn_context.cwd.as_path();
     let graph = match cccx_task_graph_state::load_task_graph(project_root).await {
@@ -100,24 +109,65 @@ async fn cccx_compaction_survivor_item(turn_context: &TurnContext) -> Option<Res
             return None;
         }
     };
-    let json = match cccx_task_graph_state::compaction_survivor_json(&graph) {
+    let task_graph = match cccx_task_graph_state::compaction_survivor_json(&graph) {
         Ok(json) => json,
         Err(error) => {
             tracing::warn!(%error, "failed to serialize cccx TaskGraph compaction survivor");
             return None;
         }
     };
+    let memory = crate::project_memory::ProjectMemory::new(
+        turn_context.config.codex_home.as_path(),
+        project_root,
+    );
+    let project_memory = match memory.load_context().await {
+        Ok(memory) => memory,
+        Err(error) => {
+            tracing::warn!(%error, "failed to load cccx Project Memory for compaction survivor");
+            String::new()
+        }
+    };
+    let checkpoint_refs = checkpoint_refs(project_root).await;
+    let json = serde_json::json!({
+        "schema": "cccx.compaction_survivor.v1",
+        "task_graph": serde_json::from_str::<serde_json::Value>(&task_graph).ok(),
+        "project_memory": project_memory,
+        "checkpoint_refs": checkpoint_refs,
+        // ADR state remains owned by codebase-memory-mcp; the index is not
+        // duplicated locally until its runtime commit bridge exists.
+        "adr_index_ref": "codebase-memory-mcp",
+    });
     Some(ResponseItem::Message {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: format!(
-                "<cccx_task_graph_survivor_json>\n{json}\n</cccx_task_graph_survivor_json>"
+                "<cccx_compaction_survivor_json>\n{json}\n</cccx_compaction_survivor_json>"
             ),
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     })
+}
+
+async fn checkpoint_refs(project_root: &std::path::Path) -> Vec<String> {
+    let checkpoint_dir = project_root.join(".cccx").join("state").join("checkpoints");
+    let mut entries = match tokio::fs::read_dir(&checkpoint_dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(%error, "failed to read cccx checkpoint refs for compaction survivor");
+            return Vec::new();
+        }
+    };
+    let mut refs = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if let Some(name) = entry.file_name().to_str() {
+            refs.push(name.to_string());
+        }
+    }
+    refs.sort();
+    refs
 }
 
 pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
