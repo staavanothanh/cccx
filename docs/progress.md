@@ -2619,6 +2619,30 @@ Notes:
   attempt Artifact/TaskGraph/headless event, implement retry/backoff with
   side-effect awareness, and add mock 9router multi-turn tool-loop coverage.
 
+## 2026-07-20 — Phase 7B: Chat Completions tool-loop request proof
+
+- Added a request-level regression test proving the canonical
+  chat-completions path preserves the opaque 9router model id
+  (`oc/deepseek-v4-flash-free`) without provider parsing/translation.
+- The same test verifies an OpenAI-compatible tool loop payload:
+  system/user messages, grouped parallel assistant `tool_calls`, tool results,
+  namespaced multi-agent tool flattening, `tool_search`, streaming, and
+  `parallel_tool_calls`.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p codex-core chat_completions_request_preserves_9router_model_and_tool_loop_schema --lib -j 1
+```
+
+Remaining Phase 7 work:
+
+- Replace this request-level proof with a local mock 9router end-to-end stream
+  once the test harness can drive the full `stream_chat_completions_api` path.
+- Persist live gateway provenance/retry/termination metadata into Artifact,
+  TaskGraph, and headless events for the same attempt.
+- Implement transient retry/backoff with side-effect awareness.
+
 ## 2026-07-20 — Phase 5D: Task Graph writer lease
 
 - Added `update_task_graph()`, a project-local writer-lease transaction for

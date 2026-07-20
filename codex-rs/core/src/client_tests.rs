@@ -41,6 +41,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -1053,4 +1054,113 @@ fn parallel_function_call_history_must_serialize_as_one_assistant_message() {
         serialized_history[0]["tool_calls"].as_array().map(Vec::len),
         Some(2)
     );
+}
+
+#[test]
+fn chat_completions_request_preserves_9router_model_and_tool_loop_schema() {
+    let client = test_model_client(SessionSource::Cli);
+    let mut model_info = test_model_info();
+    model_info.slug = "oc/deepseek-v4-flash-free".to_string();
+    model_info.supports_parallel_tool_calls = true;
+    let prompt = Prompt {
+        base_instructions: BaseInstructions {
+            text: "You are cccx.".to_string(),
+        },
+        input: vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "inspect the repo".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "spawn_agent".to_string(),
+                namespace: Some("multi_agent_v1".to_string()),
+                arguments: r#"{"task_name":"explore"}"#.to_string(),
+                call_id: "call-spawn".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::ToolSearchCall {
+                id: None,
+                call_id: Some("call-search".to_string()),
+                status: Some("completed".to_string()),
+                execution: "local".to_string(),
+                arguments: json!({
+                    "query": "cccx runtime",
+                    "limit": 5,
+                }),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "call-spawn".to_string(),
+                output: FunctionCallOutputPayload::from_text("spawned worker".to_string()),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::ToolSearchOutput {
+                id: None,
+                call_id: Some("call-search".to_string()),
+                status: "completed".to_string(),
+                execution: "ok".to_string(),
+                tools: vec![json!({"name":"search_graph"})],
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ],
+        tools: vec![
+            ToolSpec::Namespace(ResponsesApiNamespace {
+                name: "multi_agent_v1".to_string(),
+                description: "agent tools".to_string(),
+                tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+                    name: "spawn_agent".to_string(),
+                    description: "spawn a worker".to_string(),
+                    strict: true,
+                    defer_loading: None,
+                    parameters: JsonSchema::object(BTreeMap::new(), None, Some(false.into())),
+                    output_schema: None,
+                })],
+            }),
+            ToolSpec::ToolSearch {
+                execution: "local".to_string(),
+                description: "search available tools".to_string(),
+                parameters: JsonSchema::object(BTreeMap::new(), None, Some(false.into())),
+            },
+        ],
+        parallel_tool_calls: true,
+        ..Default::default()
+    };
+
+    let request = client
+        .build_chat_completions_request(&prompt, &model_info, None)
+        .expect("chat-completions request should serialize for 9router");
+
+    assert_eq!(request["model"], "oc/deepseek-v4-flash-free");
+    assert_eq!(request["stream"], true);
+    assert_eq!(request["tool_choice"], "auto");
+    assert_eq!(request["parallel_tool_calls"], true);
+    assert_eq!(request["tools"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        request["tools"][0]["function"]["name"].as_str(),
+        Some("multi_agent_v1__spawn_agent")
+    );
+    assert_eq!(
+        request["tools"][1]["function"]["name"].as_str(),
+        Some("tool_search")
+    );
+
+    let messages = request["messages"].as_array().expect("messages array");
+    assert_eq!(messages[0]["role"], "system");
+    assert_eq!(messages[1]["role"], "user");
+    assert_eq!(
+        messages[2]["tool_calls"].as_array().map(Vec::len),
+        Some(2),
+        "parallel assistant tool calls must be grouped into one assistant message"
+    );
+    assert_eq!(messages[3]["role"], "tool");
+    assert_eq!(messages[3]["tool_call_id"], "call-spawn");
+    assert_eq!(messages[4]["role"], "tool");
+    assert_eq!(messages[4]["tool_call_id"], "call-search");
 }
