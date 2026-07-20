@@ -1822,6 +1822,37 @@ mod tests {
     }
 
     #[test]
+    fn cccx_permission_resolve_is_scoped_to_root_and_hides_native_targeting() {
+        let request = ClientRequest::CccxPermissionResolve {
+            request_id: request_id(),
+            params: v2::CccxPermissionResolveParams {
+                thread_id: "root-thread".to_string(),
+                request_id: "pr-42".to_string(),
+                approve: true,
+            },
+        };
+
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "root-thread".to_string(),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "method": "cccx/permission/resolve",
+                "id": 1,
+                "params": {
+                    "threadId": "root-thread",
+                    "requestId": "pr-42",
+                    "approve": true,
+                }
+            })
+        );
+    }
+
+    #[test]
     fn client_request_serialization_scope_covers_keyed_families() {
         let thread_id = "thread-1".to_string();
         let thread_resume = ClientRequest::ThreadResume {
