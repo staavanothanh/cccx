@@ -32,6 +32,9 @@ pub(crate) struct CccxRuntimeState {
 pub(crate) struct CccxSpawnRuntime {
     pub(crate) project_root: PathBuf,
     pub(crate) work_spec: WorkSpec,
+    /// Stable CCCX worker identity, distinct from the current thread
+    /// incarnation created for this execution attempt.
+    pub(crate) logical_session_id: String,
     pub(crate) display_name: String,
     pub(crate) model_route_summary: String,
 }
@@ -204,7 +207,7 @@ impl CccxRuntimeRegistry {
             state
                 .register_work_spec(
                     runtime.work_spec.clone(),
-                    child_thread_id.to_string(),
+                    runtime.logical_session_id.clone(),
                     child_thread_id.to_string(),
                     runtime.display_name.clone(),
                     runtime.model_route_summary.clone(),
@@ -236,7 +239,7 @@ impl CccxRuntimeRegistry {
         };
         if !success {
             let checkpoint = SubagentCheckpoint {
-                logical_session_id: child_thread_id.to_string(),
+                logical_session_id: runtime.logical_session_id.clone(),
                 worker_incarnation_id: child_thread_id.to_string(),
                 task_id: runtime.work_spec.task_id.clone(),
                 attempt_id: child_thread_id.to_string(),
@@ -572,6 +575,7 @@ mod tests {
         let child_thread_id = ThreadId::new();
         let runtime = CccxSpawnRuntime {
             project_root: project.path().to_path_buf(),
+            logical_session_id: "logical-verification".to_string(),
             work_spec,
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
@@ -614,6 +618,7 @@ mod tests {
         let child_thread_id = ThreadId::new();
         let runtime = CccxSpawnRuntime {
             project_root: project.path().to_path_buf(),
+            logical_session_id: "logical-verification".to_string(),
             work_spec,
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
@@ -643,6 +648,7 @@ mod tests {
         let child_thread_id = ThreadId::new();
         let runtime = CccxSpawnRuntime {
             project_root: project.path().to_path_buf(),
+            logical_session_id: "logical-interrupted".to_string(),
             work_spec,
             display_name: "interrupted-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
@@ -656,13 +662,14 @@ mod tests {
 
         let checkpoint = crate::checkpoint::load_checkpoint(
             project.path(),
-            &child_thread_id.to_string(),
+            "logical-interrupted",
         )
         .await
         .unwrap()
         .expect("interrupted worker must leave a checkpoint");
         assert_eq!(checkpoint.task_id, "T1");
-        assert_eq!(checkpoint.attempt_id, child_thread_id.to_string());
+        assert_eq!(checkpoint.logical_session_id, "logical-interrupted");
+        assert_eq!(checkpoint.worker_incarnation_id, child_thread_id.to_string());
         assert_eq!(checkpoint.base_commit.as_deref(), Some("base-commit"));
         assert_eq!(checkpoint.last_completed_step, "provider disconnected");
     }
@@ -673,6 +680,7 @@ mod tests {
         let child_thread_id = ThreadId::new();
         let runtime = CccxSpawnRuntime {
             project_root: project.path().to_path_buf(),
+            logical_session_id: "logical-cancelled".to_string(),
             work_spec: work_spec(),
             display_name: "cancelled-worker".to_string(),
             model_route_summary: "9router/test".to_string(),

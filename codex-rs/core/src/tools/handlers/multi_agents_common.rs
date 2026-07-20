@@ -328,6 +328,7 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
 
     Ok(Some(Arc::new(CccxSpawnRuntime {
         project_root,
+        logical_session_id: work_spec.work_spec_id.clone(),
         work_spec,
         display_name,
         model_route_summary: route_summary,
