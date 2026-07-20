@@ -242,6 +242,20 @@ impl TurnRequestProcessor {
         Ok(Some(CccxWorkerCancelResponse { accepted: true }.into()))
     }
 
+    pub(crate) async fn cccx_worker_resume(
+        &self,
+        params: CccxWorkerResumeParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let worker_incarnation_id = thread
+            .resume_cccx_worker(&params.logical_session_id, params.revalidate)
+            .await
+            .map_err(invalid_request)?;
+        Ok(Some(CccxWorkerResumeResponse {
+            worker_incarnation_id: worker_incarnation_id.to_string(),
+        }.into()))
+    }
+
     pub(crate) async fn cccx_permission_resolve(
         &self,
         params: CccxPermissionResolveParams,

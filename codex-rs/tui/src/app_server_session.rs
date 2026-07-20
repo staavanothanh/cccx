@@ -30,6 +30,8 @@ use codex_app_server_protocol::CccxPermissionResolveParams;
 use codex_app_server_protocol::CccxPermissionResolveResponse;
 use codex_app_server_protocol::CccxWorkerCancelParams;
 use codex_app_server_protocol::CccxWorkerCancelResponse;
+use codex_app_server_protocol::CccxWorkerResumeParams;
+use codex_app_server_protocol::CccxWorkerResumeResponse;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigRequirementsReadResponse;
@@ -941,6 +943,26 @@ impl AppServerSession {
             })
             .await?;
         Ok(())
+    }
+
+    pub(crate) async fn cccx_worker_resume(
+        &mut self,
+        thread_id: ThreadId,
+        logical_session_id: String,
+        revalidate: bool,
+    ) -> std::result::Result<String, TypedRequestError> {
+        let request_id = self.next_request_id();
+        let response: CccxWorkerResumeResponse = self.client.request_typed(
+            ClientRequest::CccxWorkerResume {
+                request_id,
+                params: CccxWorkerResumeParams {
+                    thread_id: thread_id.to_string(),
+                    logical_session_id,
+                    revalidate,
+                },
+            },
+        ).await?;
+        Ok(response.worker_incarnation_id)
     }
 
     pub(crate) async fn cccx_permission_resolve(

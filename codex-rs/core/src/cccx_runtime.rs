@@ -199,22 +199,38 @@ impl CccxRuntimeRegistry {
     /// must spawn a fresh worker incarnation only after this gate succeeds.
     pub(crate) async fn prepare_resume(
         project_root: &Path,
-        logical_session_id: &str,
+        worker_identifier: &str,
         current_git_head: &str,
         max_age_minutes: u32,
         revalidate: bool,
     ) -> Result<SubagentCheckpoint, String> {
-        let checkpoint = crate::checkpoint::load_checkpoint(project_root, logical_session_id)
-            .await
-            .map_err(|error| format!("failed to load CCCX checkpoint: {error}"))?
-            .ok_or_else(|| format!("no checkpoint exists for CCCX worker `{logical_session_id}`"))?;
         let graph = cccx_task_graph_state::load_task_graph(project_root)
             .await
             .map_err(|error| format!("failed to load CCCX task graph: {error}"))?
             .ok_or_else(|| "CCCX task graph is missing".to_string())?;
-        let worker = graph.tasks.values().flat_map(|task| task.attempts.iter())
-            .find(|attempt| attempt.worker.logical_session_id == logical_session_id)
-            .ok_or_else(|| format!("unknown CCCX logical worker `{logical_session_id}`"))?;
+        let workers = graph
+            .tasks
+            .values()
+            .flat_map(|task| task.attempts.iter())
+            .filter(|attempt| {
+                attempt.worker.logical_session_id == worker_identifier
+                    || attempt.worker.display_name == worker_identifier
+            })
+            .collect::<Vec<_>>();
+        let worker = match workers.as_slice() {
+            [] => return Err(format!("unknown CCCX worker `{worker_identifier}`")),
+            [worker] => *worker,
+            _ => {
+                return Err(format!(
+                    "CCCX worker display name `{worker_identifier}` is ambiguous; use its logicalSessionId"
+                ));
+            }
+        };
+        let logical_session_id = &worker.worker.logical_session_id;
+        let checkpoint = crate::checkpoint::load_checkpoint(project_root, logical_session_id)
+            .await
+            .map_err(|error| format!("failed to load CCCX checkpoint: {error}"))?
+            .ok_or_else(|| format!("no checkpoint exists for CCCX worker `{logical_session_id}`"))?;
         if worker.worker.status != WorkerStatus::Resumable {
             return Err(format!("CCCX worker `{logical_session_id}` is {:?}, not resumable", worker.worker.status));
         }
@@ -744,6 +760,9 @@ mod tests {
             .unwrap();
         assert!(CccxRuntimeRegistry::prepare_resume(
             project.path(), "logical-resume", "head", 60, true
+        ).await.is_ok());
+        assert!(CccxRuntimeRegistry::prepare_resume(
+            project.path(), "a1-worker", "head", 60, true
         ).await.is_ok());
     }
 

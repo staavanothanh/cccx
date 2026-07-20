@@ -48,6 +48,8 @@ use codex_app_server_protocol::CccxPermissionResolveParams;
 use codex_app_server_protocol::CccxPermissionResolveResponse;
 use codex_app_server_protocol::CccxWorkerCancelParams;
 use codex_app_server_protocol::CccxWorkerCancelResponse;
+use codex_app_server_protocol::CccxWorkerResumeParams;
+use codex_app_server_protocol::CccxWorkerResumeResponse;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ClientResponsePayload;

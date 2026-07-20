@@ -194,7 +194,7 @@ impl CodexThread {
     /// logical identity and the exact checkpointed WorkSpec.
     pub async fn resume_cccx_worker(
         &self,
-        logical_session_id: &str,
+        worker_identifier: &str,
         revalidate: bool,
     ) -> Result<ThreadId, String> {
         let mut config = (*self.config().await).clone();
@@ -204,7 +204,7 @@ impl CodexThread {
             .unwrap_or_default();
         let checkpoint = CccxRuntimeRegistry::prepare_resume(
             &config.cwd,
-            logical_session_id,
+            worker_identifier,
             &current_head,
             60,
             revalidate,
@@ -248,7 +248,7 @@ impl CodexThread {
         let runtime = Arc::new(CccxSpawnRuntime {
             project_root: config.cwd.to_path_buf(),
             work_spec,
-            logical_session_id: logical_session_id.to_string(),
+            logical_session_id: checkpoint.logical_session_id.clone(),
             display_name,
             model_route_summary,
         });

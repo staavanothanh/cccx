@@ -557,6 +557,19 @@ impl App {
                 app_server.cccx_worker_cancel(thread_id, *agent_id).await?;
                 Ok(true)
             }
+            AppCommand::ResumeCccxWorker {
+                logical_session_id,
+                revalidate,
+            } => {
+                let worker_id = app_server
+                    .cccx_worker_resume(thread_id, logical_session_id.clone(), *revalidate)
+                    .await?;
+                self.chat_widget.add_info_message(
+                    format!("CCCX worker `{logical_session_id}` resumed as incarnation `{worker_id}`."),
+                    None,
+                );
+                Ok(true)
+            }
             AppCommand::ResolveCccxPermission {
                 request_id,
                 approve,

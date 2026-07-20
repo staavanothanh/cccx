@@ -29,6 +29,10 @@ pub(crate) enum AppCommand {
     CancelCccxWorker {
         agent_id: ThreadId,
     },
+    ResumeCccxWorker {
+        logical_session_id: String,
+        revalidate: bool,
+    },
     ResolveCccxPermission {
         request_id: String,
         approve: bool,

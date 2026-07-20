@@ -1278,6 +1278,9 @@ impl MessageProcessor {
                     .cccx_worker_cancel(&request_id, params)
                     .await
             }
+            ClientRequest::CccxWorkerResume { params, .. } => {
+                self.turn_processor.cccx_worker_resume(params).await
+            }
             ClientRequest::CccxPermissionResolve { params, .. } => {
                 self.turn_processor.cccx_permission_resolve(params).await
             }

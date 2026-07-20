@@ -765,13 +765,19 @@ impl ChatWidget {
                     Some("Run /agents view {agent_id} to switch to the agent thread.".to_string()),
                 );
             }
-            Ok(Some(CccxCommand::Agents(AgentsCommand::Resume { agent_id }))) => {
-                // Open the resume picker — Codex validates git head/session state
-                // before allowing resume (cccx checkpoint policy enforced in core).
-                self.app_event_tx.send(AppEvent::OpenResumePicker);
+            Ok(Some(CccxCommand::Agents(AgentsCommand::Resume {
+                agent_id,
+                revalidate,
+            }))) => {
+                self.app_event_tx.send(AppEvent::CodexOp(
+                    AppCommand::ResumeCccxWorker {
+                        logical_session_id: agent_id.clone(),
+                        revalidate,
+                    },
+                ));
                 self.add_info_message(
-                    format!("/agents resume {agent_id} — resume picker opened. Select a session to restore."),
-                    Some("cccx checkpoint validation runs before resume: git head must match.".to_string()),
+                    format!("/agents resume {agent_id} — validating checkpoint and starting a new worker incarnation."),
+                    Some("Use --revalidate when the checkpoint base revision has changed.".to_string()),
                 );
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::Cancel { agent_id }))) => {

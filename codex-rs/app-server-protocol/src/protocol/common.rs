@@ -824,6 +824,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::CccxWorkerCancelResponse,
     },
+    CccxWorkerResume => "cccx/worker/resume" {
+        params: v2::CccxWorkerResumeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::CccxWorkerResumeResponse,
+    },
     CccxPermissionResolve => "cccx/permission/resolve" {
         params: v2::CccxPermissionResolveParams,
         serialization: thread_id(params.thread_id),
@@ -1826,6 +1831,37 @@ mod tests {
                     "threadId": "root-thread",
                     "agentId": "worker-thread",
                     "reason": "user requested cancellation",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn cccx_worker_resume_is_scoped_to_root_without_exposing_worker_capabilities() {
+        let request = ClientRequest::CccxWorkerResume {
+            request_id: request_id(),
+            params: v2::CccxWorkerResumeParams {
+                thread_id: "root-thread".to_string(),
+                logical_session_id: "logical-worker-7".to_string(),
+                revalidate: true,
+            },
+        };
+
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "root-thread".to_string(),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "method": "cccx/worker/resume",
+                "id": 1,
+                "params": {
+                    "threadId": "root-thread",
+                    "logicalSessionId": "logical-worker-7",
+                    "revalidate": true,
                 }
             })
         );

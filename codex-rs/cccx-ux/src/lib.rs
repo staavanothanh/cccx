@@ -44,7 +44,7 @@ pub enum AgentsCommand {
     List,
     View { agent_id: String },
     Logs { agent_id: String },
-    Resume { agent_id: String },
+    Resume { agent_id: String, revalidate: bool },
     Cancel { agent_id: String },
     Model { preset: String, route: String },
 }
@@ -157,6 +157,11 @@ fn parse_agents(parts: Vec<&str>) -> Result<AgentsCommand, CommandParseError> {
         }),
         ["resume", agent_id] => Ok(AgentsCommand::Resume {
             agent_id: (*agent_id).to_string(),
+            revalidate: false,
+        }),
+        ["resume", agent_id, "--revalidate"] => Ok(AgentsCommand::Resume {
+            agent_id: (*agent_id).to_string(),
+            revalidate: true,
         }),
         ["cancel", agent_id] => Ok(AgentsCommand::Cancel {
             agent_id: (*agent_id).to_string(),
@@ -375,6 +380,13 @@ mod tests {
             parse_cccx_command("/agents logs b2-research"),
             Ok(Some(CccxCommand::Agents(AgentsCommand::Logs {
                 agent_id: "b2-research".to_string()
+            })))
+        );
+        assert_eq!(
+            parse_cccx_command("/agents resume b2-research --revalidate"),
+            Ok(Some(CccxCommand::Agents(AgentsCommand::Resume {
+                agent_id: "b2-research".to_string(),
+                revalidate: true,
             })))
         );
         assert_eq!(

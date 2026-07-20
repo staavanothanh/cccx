@@ -238,6 +238,24 @@ pub struct CccxWorkerCancelResponse {
     pub accepted: bool,
 }
 
+/// Resume one interrupted CCCX logical worker as a fresh native incarnation.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerResumeParams {
+    pub thread_id: String,
+    pub logical_session_id: String,
+    #[serde(default)]
+    pub revalidate: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerResumeResponse {
+    pub worker_incarnation_id: String,
+}
+
 /// Resolve one root-owned CCCX permission request. The request id is opaque;
 /// server-side correlation chooses the native approval and worker thread.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
