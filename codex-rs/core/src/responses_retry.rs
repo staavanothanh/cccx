@@ -48,12 +48,11 @@ pub(crate) async fn handle_retryable_response_stream_error(
     if *retries < max_retries {
         *retries += 1;
         let retry_count = *retries;
-        let delay = match &err {
-            CodexErr::Stream(_, requested_delay) => {
-                requested_delay.unwrap_or_else(|| backoff(retry_count))
-            }
-            _ => backoff(retry_count),
-        };
+        let delay = retry_delay_for_stream_error(
+            &err,
+            retry_count,
+            codex_features::cccx_mvp::provider_boundary_active(),
+        );
         log_retry(request, turn_context, &err, retry_count, max_retries, delay);
 
         // In release builds, hide the first websocket retry notification to reduce noisy
@@ -76,6 +75,29 @@ pub(crate) async fn handle_retryable_response_stream_error(
     }
 
     Err(err)
+}
+
+fn retry_delay_for_stream_error(
+    err: &CodexErr,
+    retry_count: u64,
+    cccx_provider_boundary_active: bool,
+) -> Duration {
+    if let CodexErr::Stream(_, Some(requested_delay)) = err {
+        return *requested_delay;
+    }
+    if cccx_provider_boundary_active {
+        cccx_gateway_backoff(retry_count)
+    } else {
+        backoff(retry_count)
+    }
+}
+
+fn cccx_gateway_backoff(attempt: u64) -> Duration {
+    match attempt {
+        0 | 1 => Duration::from_secs(5),
+        2 => Duration::from_secs(15),
+        _ => Duration::from_secs(45),
+    }
 }
 
 fn log_retry(
@@ -101,5 +123,31 @@ fn log_retry(
                 "remote compaction v2 stream failed; retrying request after delay"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cccx_gateway_backoff_is_5_15_45() {
+        assert_eq!(cccx_gateway_backoff(1), Duration::from_secs(5));
+        assert_eq!(cccx_gateway_backoff(2), Duration::from_secs(15));
+        assert_eq!(cccx_gateway_backoff(3), Duration::from_secs(45));
+        assert_eq!(cccx_gateway_backoff(4), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn retry_after_overrides_cccx_gateway_backoff() {
+        let err = CodexErr::Stream(
+            "rate limited".to_string(),
+            Some(Duration::from_secs(23)),
+        );
+
+        assert_eq!(
+            retry_delay_for_stream_error(&err, 1, true),
+            Duration::from_secs(23)
+        );
     }
 }

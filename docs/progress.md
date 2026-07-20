@@ -2689,3 +2689,24 @@ Remaining Phase 7 work:
 - Persist live gateway provenance/retry/termination metadata into Artifact,
   TaskGraph, and headless events for the same attempt.
 - Implement transient retry/backoff with side-effect awareness.
+
+## 2026-07-20 — Phase 7C: cccx stream retry delay profile
+
+- `responses_retry` now uses the cccx Phase 7 delay profile when the
+  provider-boundary gate is active: retry delays are 5s, 15s, then 45s capped.
+- Server/requested retry delay (`Retry-After` surfaced as `CodexErr::Stream`
+  requested delay) still wins over the local cccx profile.
+- The change is deliberately scoped to stream retry delay selection; it does
+  not yet implement side-effect-aware retry suppression.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_gateway_backoff --lib -j 1
+```
+
+Remaining Phase 7 work:
+
+- Side-effect-aware retry suppression/new-attempt resume.
+- Live gateway provenance persistence into Artifact/TaskGraph/headless events.
+- Full local mock 9router stream through `stream_chat_completions_api`.
