@@ -148,6 +148,38 @@ pub(crate) async fn handle_mcp_tool_call(
         tool: tool_name.clone(),
         arguments: arguments_value.clone(),
     };
+    if let Some(result) = crate::cccx_adr::maybe_intercept_adr_commit(
+        turn_context.cccx_actor_identity(),
+        turn_context.cccx_harness(),
+        &server,
+        &tool_name,
+        arguments_value.as_ref(),
+    ) {
+        let item_metadata = McpToolCallItemMetadata::from_tool_metadata(&server, None);
+        notify_mcp_tool_call_started(
+            sess.as_ref(),
+            turn_context.as_ref(),
+            &call_id,
+            invocation.clone(),
+            item_metadata.clone(),
+        )
+        .await;
+        notify_mcp_tool_call_completed(
+            sess.as_ref(),
+            turn_context.as_ref(),
+            &call_id,
+            invocation,
+            item_metadata,
+            Duration::ZERO,
+            Ok(result.clone()),
+        )
+        .await;
+        return HandledMcpToolCall {
+            result,
+            tool_input: arguments_value
+                .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
+        };
+    }
 
     let metadata = lookup_mcp_tool_metadata(
         sess.as_ref(),

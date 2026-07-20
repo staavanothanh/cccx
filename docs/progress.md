@@ -2804,3 +2804,20 @@ Validation (green):
 ```powershell
 cargo +1.95.0 check -p codex-core -j 1
 ```
+
+## 2026-07-20 — Phase 8C: `/remember` and ADR PreDecisionWrite gate
+
+- `/remember` now writes through the CCCX_HOME-scoped `ProjectMemory` store
+  and no longer advertises the obsolete project-local `.cccx/memory` path.
+- Added a runtime PreDecisionWrite interception for
+  `codebase-memory-mcp.manage_adr`: only `MainCc` under the CC harness reaches
+  the MCP call; CC/CX children receive a structured `cccx.adr_proposal.v1`
+  result for Main review instead of mutating ADR state.
+- Updated the memories runtime call-site for the expanded `ModelClient`
+  project-root constructor.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 check -p codex-core -p codex-tui -j 1
+```

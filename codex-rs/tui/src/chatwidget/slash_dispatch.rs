@@ -841,16 +841,19 @@ impl ChatWidget {
                     );
                 } else if let Some(cwd) = self.current_cwd.clone() {
                     let text_for_async = text.clone();
+                    let cccx_home = self.config.codex_home.clone();
                     tokio::spawn(async move {
-                        if let Err(err) = ProjectMemory::new(&cwd).remember(&text_for_async).await {
+                        if let Err(err) =
+                            ProjectMemory::new(cccx_home.as_path(), &cwd).remember(&text_for_async).await
+                        {
                             tracing::warn!(
-                                "/remember failed to write project memory under {}: {err}",
+                                "/remember failed to write project memory for {}: {err}",
                                 cwd.display()
                             );
                         }
                     });
                     self.add_info_message(
-                        format!("/remember — writing \"{text}\" to .cccx/memory/MEMORY.md"),
+                        format!("/remember — writing \"{text}\" to CCCX_HOME project memory"),
                         /*hint*/ None,
                     );
                 } else {
