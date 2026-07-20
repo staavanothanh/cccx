@@ -219,13 +219,13 @@ pub struct TurnInterruptResponse {}
 /// Request a terminal cancellation of one CCCX worker.
 ///
 /// `thread_id` identifies the requesting/root thread for request ordering;
-/// `agent_id` identifies the worker that will receive the terminal operation.
+/// `worker_identifier` is resolved only within that root's CCCX TaskGraph.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct CccxWorkerCancelParams {
     pub thread_id: String,
-    pub agent_id: String,
+    pub worker_identifier: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }

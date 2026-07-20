@@ -1806,12 +1806,12 @@ mod tests {
     }
 
     #[test]
-    fn cccx_worker_cancel_is_scoped_to_requesting_thread_and_carries_target() {
+    fn cccx_worker_cancel_is_scoped_to_requesting_thread_and_carries_stable_target() {
         let request = ClientRequest::CccxWorkerCancel {
             request_id: request_id(),
             params: v2::CccxWorkerCancelParams {
                 thread_id: "root-thread".to_string(),
-                agent_id: "worker-thread".to_string(),
+                worker_identifier: "a1-auth-fix".to_string(),
                 reason: Some("user requested cancellation".to_string()),
             },
         };
@@ -1829,7 +1829,7 @@ mod tests {
                 "id": 1,
                 "params": {
                     "threadId": "root-thread",
-                    "agentId": "worker-thread",
+                    "workerIdentifier": "a1-auth-fix",
                     "reason": "user requested cancellation",
                 }
             })

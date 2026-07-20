@@ -347,6 +347,31 @@ impl TaskGraph {
             .collect()
     }
 
+    /// Resolve a user-facing CCCX worker identifier without exposing any
+    /// transcript or capability data. A display name must be unique; callers
+    /// can always use the stable logical session id to disambiguate.
+    pub fn find_worker_attempt(
+        &self,
+        identifier: &str,
+    ) -> Result<(&TaskNode, &AttemptRecord), TaskGraphError> {
+        let matches = self
+            .tasks
+            .values()
+            .flat_map(|task| task.attempts.iter().map(move |attempt| (task, attempt)))
+            .filter(|(_, attempt)| {
+                attempt.worker.logical_session_id == identifier
+                    || attempt.worker.display_name == identifier
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => Err(TaskGraphError::UnknownWorker(identifier.to_string())),
+            [worker] => Ok(*worker),
+            _ => Err(TaskGraphError::AmbiguousWorkerDisplayName(
+                identifier.to_string(),
+            )),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), TaskGraphError> {
         if self.schema_version != CCCX_TASK_GRAPH_SCHEMA_VERSION {
             return Err(TaskGraphError::UnsupportedSchemaVersion(
@@ -406,6 +431,10 @@ pub enum TaskGraphError {
     TaskBlocked(String),
     #[error("unknown attempt `{0}`")]
     UnknownAttempt(String),
+    #[error("unknown CCCX worker `{0}`")]
+    UnknownWorker(String),
+    #[error("ambiguous CCCX worker display name `{0}`; use logicalSessionId")]
+    AmbiguousWorkerDisplayName(String),
     #[error("invalid artifact: {0}")]
     InvalidArtifact(String),
     #[error("invalid verification record: {0}")]
@@ -715,6 +744,32 @@ mod tests {
                 display_name: "a1-task".to_string(),
                 worker_status: WorkerStatus::Running,
             }]
+        );
+    }
+
+    #[test]
+    fn worker_lookup_accepts_logical_or_unique_display_name_and_rejects_ambiguity() {
+        let mut graph = TaskGraph::new("g", "workers");
+        graph
+            .add_task(TaskNode::new("T1", "first", verification_spec()))
+            .unwrap();
+        graph.start_attempt("T1", attempt()).unwrap();
+
+        let (_, by_logical) = graph.find_worker_attempt("ls-a1").unwrap();
+        assert_eq!(by_logical.attempt_id, "attempt-1");
+        let (_, by_display) = graph.find_worker_attempt("a1-task").unwrap();
+        assert_eq!(by_display.worker.logical_session_id, "ls-a1");
+
+        graph
+            .add_task(TaskNode::new("T2", "second", verification_spec()))
+            .unwrap();
+        let mut duplicate = attempt();
+        duplicate.attempt_id = "attempt-2".to_string();
+        duplicate.worker.logical_session_id = "ls-a2".to_string();
+        graph.start_attempt("T2", duplicate).unwrap();
+        assert_eq!(
+            graph.find_worker_attempt("a1-task"),
+            Err(TaskGraphError::AmbiguousWorkerDisplayName("a1-task".to_string()))
         );
     }
 

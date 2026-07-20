@@ -928,7 +928,7 @@ impl AppServerSession {
     pub(crate) async fn cccx_worker_cancel(
         &mut self,
         thread_id: ThreadId,
-        agent_id: ThreadId,
+        worker_identifier: String,
     ) -> std::result::Result<(), TypedRequestError> {
         let request_id = self.next_request_id();
         let _: CccxWorkerCancelResponse = self
@@ -937,7 +937,7 @@ impl AppServerSession {
                 request_id,
                 params: CccxWorkerCancelParams {
                     thread_id: thread_id.to_string(),
-                    agent_id: agent_id.to_string(),
+                    worker_identifier,
                     reason: None,
                 },
             })

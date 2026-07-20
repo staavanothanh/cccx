@@ -781,19 +781,14 @@ impl ChatWidget {
                 );
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::Cancel { agent_id }))) => {
-                match codex_protocol::ThreadId::from_string(&agent_id) {
-                    Ok(agent_id) => {
-                        self.app_event_tx
-                            .send(AppEvent::CodexOp(AppCommand::CancelCccxWorker { agent_id }));
-                        self.add_info_message(
-                            format!("/agents cancel {agent_id} — terminal cancellation sent."),
-                            Some("Check /agents list to confirm cancellation.".to_string()),
-                        );
-                    }
-                    Err(error) => {
-                        self.add_error_message(format!("Invalid agent id `{agent_id}`: {error}"))
-                    }
-                }
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(AppCommand::CancelCccxWorker {
+                        worker_identifier: agent_id.clone(),
+                    }));
+                self.add_info_message(
+                    format!("/agents cancel {agent_id} — terminal cancellation sent."),
+                    Some("Check /agents list to confirm cancellation.".to_string()),
+                );
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::Model { preset, route }))) => {
                 self.add_info_message(
@@ -882,18 +877,14 @@ impl ChatWidget {
                         /*hint*/ None,
                     );
                 } else if let Some(agent_id) = target {
-                    match codex_protocol::ThreadId::from_string(&agent_id) {
-                        Ok(agent_id) => {
-                            self.app_event_tx
-                                .send(AppEvent::CodexOp(AppCommand::CancelCccxWorker { agent_id }));
-                            self.add_info_message(
-                                format!("/cancel {agent_id} — terminal cancellation sent."),
-                                Some("Check /agents list to confirm cancellation.".to_string()),
-                            );
-                        }
-                        Err(error) => self
-                            .add_error_message(format!("Invalid agent id `{agent_id}`: {error}")),
-                    }
+                    self.app_event_tx
+                        .send(AppEvent::CodexOp(AppCommand::CancelCccxWorker {
+                            worker_identifier: agent_id.clone(),
+                        }));
+                    self.add_info_message(
+                        format!("/cancel {agent_id} — terminal cancellation sent."),
+                        Some("Check /agents list to confirm cancellation.".to_string()),
+                    );
                 } else {
                     self.app_event_tx.interrupt();
                     self.add_info_message(

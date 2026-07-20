@@ -9,7 +9,6 @@ use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
 use codex_app_server_protocol::UserInput;
 use codex_config::types::ApprovalsReviewer;
-use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
@@ -27,7 +26,7 @@ use serde_json::Value;
 pub(crate) enum AppCommand {
     Interrupt,
     CancelCccxWorker {
-        agent_id: ThreadId,
+        worker_identifier: String,
     },
     ResumeCccxWorker {
         logical_session_id: String,

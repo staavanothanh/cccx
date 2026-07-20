@@ -225,11 +225,16 @@ impl TurnRequestProcessor {
         params: CccxWorkerCancelParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let CccxWorkerCancelParams {
-            thread_id: _,
-            agent_id,
+            thread_id,
+            worker_identifier,
             reason,
         } = params;
-        let (_, worker) = self.load_thread(&agent_id).await?;
+        let (_, root) = self.load_thread(&thread_id).await?;
+        let worker_thread_id = root
+            .cccx_worker_thread_id(&worker_identifier)
+            .await
+            .map_err(invalid_request)?;
+        let (_, worker) = self.load_thread(&worker_thread_id.to_string()).await?;
         self.submit_core_op(
             request_id,
             worker.as_ref(),

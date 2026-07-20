@@ -553,8 +553,10 @@ impl App {
                 }
                 Ok(true)
             }
-            AppCommand::CancelCccxWorker { agent_id } => {
-                app_server.cccx_worker_cancel(thread_id, *agent_id).await?;
+            AppCommand::CancelCccxWorker { worker_identifier } => {
+                app_server
+                    .cccx_worker_cancel(thread_id, worker_identifier.clone())
+                    .await?;
                 Ok(true)
             }
             AppCommand::ResumeCccxWorker {

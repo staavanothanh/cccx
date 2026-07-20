@@ -190,6 +190,24 @@ pub struct BackgroundTerminalInfo {
 /// Conduit for the bidirectional stream of messages that compose a thread
 /// (formerly called a conversation) in Codex.
 impl CodexThread {
+    /// Resolve a stable CCCX worker identity to its current native incarnation.
+    /// This is root-scoped: callers cannot select an arbitrary native thread.
+    pub async fn cccx_worker_thread_id(
+        &self,
+        worker_identifier: &str,
+    ) -> Result<ThreadId, String> {
+        let config = self.config().await;
+        let graph = crate::cccx_task_graph_state::load_task_graph(&config.cwd)
+            .await
+            .map_err(|error| format!("failed to load CCCX task graph: {error}"))?
+            .ok_or_else(|| "CCCX task graph is missing".to_string())?;
+        let (_, attempt) = graph
+            .find_worker_attempt(worker_identifier)
+            .map_err(|error| error.to_string())?;
+        ThreadId::from_string(&attempt.attempt_id)
+            .map_err(|error| format!("CCCX worker incarnation is invalid: {error}"))
+    }
+
     /// Resume a CCCX worker as a fresh native incarnation while preserving its
     /// logical identity and the exact checkpointed WorkSpec.
     pub async fn resume_cccx_worker(
