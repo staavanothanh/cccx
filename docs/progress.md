@@ -2710,3 +2710,26 @@ Remaining Phase 7 work:
 - Side-effect-aware retry suppression/new-attempt resume.
 - Live gateway provenance persistence into Artifact/TaskGraph/headless events.
 - Full local mock 9router stream through `stream_chat_completions_api`.
+
+## 2026-07-20 — Phase 7D: block transparent retry after tool execution
+
+- Added a cccx guard in the sampling turn stream path: if a retryable stream
+  error occurs after tool execution has already been enqueued, the error is
+  converted to a non-retryable user-visible failure.
+- This prevents the outer sampling retry loop from replaying the same prompt
+  after observable tool side effects may already have happened.
+- The guard is scoped to the cccx provider-boundary mode; non-cccx behavior and
+  retryable errors before any tool execution preserve the existing retry path.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p codex-core tool_execution --lib -j 1
+```
+
+Remaining Phase 7 work:
+
+- Convert blocked post-tool stream failures into structured interrupted
+  attempt/resume state instead of only a non-retryable error.
+- Live gateway provenance persistence into Artifact/TaskGraph/headless events.
+- Full local mock 9router stream through `stream_chat_completions_api`.

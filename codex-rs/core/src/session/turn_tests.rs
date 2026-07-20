@@ -66,3 +66,40 @@ async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
         Some("plan contributed assistant text")
     );
 }
+
+#[test]
+fn cccx_blocks_retryable_stream_error_after_tool_execution() {
+    let outcome: CodexResult<()> = Err(CodexErr::Stream("disconnect".to_string(), None));
+
+    let err = block_retry_after_tool_execution(outcome, true, true)
+        .expect_err("retryable stream error after tool execution must be blocked");
+
+    assert!(
+        err.to_string()
+            .contains("automatic retry is blocked to avoid repeating observable side effects"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        !err.is_retryable(),
+        "blocked side-effect retry must not remain retryable"
+    );
+}
+
+#[test]
+fn non_cccx_or_no_tool_execution_keeps_retryable_stream_error() {
+    let no_tool = block_retry_after_tool_execution::<()>(
+        Err(CodexErr::Stream("disconnect".to_string(), None)),
+        false,
+        true,
+    )
+    .expect_err("original error should pass through");
+    assert!(no_tool.is_retryable());
+
+    let non_cccx = block_retry_after_tool_execution::<()>(
+        Err(CodexErr::Stream("disconnect".to_string(), None)),
+        true,
+        false,
+    )
+    .expect_err("original error should pass through");
+    assert!(non_cccx.is_retryable());
+}

@@ -2014,6 +2014,7 @@ async fn try_run_sampling_request(
     let defer_streamed_turn_items_for_contributors =
         !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
+    let mut tool_execution_enqueued = false;
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
@@ -2140,8 +2141,9 @@ async fn try_run_sampling_request(
                     {
                         Ok(output_result) => output_result,
                         Err(err) => break Err(err),
-                    };
+                };
                 if let Some(tool_future) = output_result.tool_future {
+                    tool_execution_enqueued = true;
                     in_flight.push_back(tool_future);
                 }
                 if let Some(agent_message) = output_result.last_agent_message {
@@ -2517,7 +2519,34 @@ async fn try_run_sampling_request(
         }
     }
 
-    outcome
+    block_cccx_retry_after_tool_execution(outcome, tool_execution_enqueued)
+}
+
+fn block_cccx_retry_after_tool_execution<T>(
+    outcome: CodexResult<T>,
+    tool_execution_enqueued: bool,
+) -> CodexResult<T> {
+    block_retry_after_tool_execution(
+        outcome,
+        tool_execution_enqueued,
+        codex_features::cccx_mvp::provider_boundary_active(),
+    )
+}
+
+fn block_retry_after_tool_execution<T>(
+    outcome: CodexResult<T>,
+    tool_execution_enqueued: bool,
+    cccx_provider_boundary_active: bool,
+) -> CodexResult<T> {
+    if !cccx_provider_boundary_active || !tool_execution_enqueued {
+        return outcome;
+    }
+    match outcome {
+        Err(err) if err.is_retryable() => Err(CodexErr::InvalidRequest(format!(
+            "cccx: stream failed after tool execution was enqueued; automatic retry is blocked to avoid repeating observable side effects. Start a new attempt or resume from the latest checkpoint. Original error: {err}"
+        ))),
+        other => other,
+    }
 }
 
 pub(crate) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -> Option<String> {
