@@ -2455,6 +2455,53 @@ executes a pinned `WorkSpec` verification command and persists its resulting
 record. Remaining Phase 5 scope is the unified single-writer state store,
 `/goal`, and bounded audit correction.
 
+## 2026-07-20 — Phase 5D: Task Graph writer lease
+
+- Added `update_task_graph()`, a project-local writer-lease transaction for
+  complete read-modify-write lifecycle updates. `register_spawn()` and
+  `complete_spawn()` now use it, preventing concurrent workers from losing
+  sibling Task/Attempt/Artifact changes through stale graph snapshots.
+- Temporary state files are explicitly `sync_all()`-ed before rename. Mode
+  state now uses the same atomic replacement path rather than a direct write.
+- Added a concurrent transaction test which creates two independent tasks at
+  once and proves both survive persistence. The existing interrupted-temp-file
+  recovery test remains green.
+
+Validation (all green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_task_graph_state --lib
+cargo +1.95.0 test -p codex-core cccx_runtime --lib
+```
+
+The only warnings are the pre-existing unused permission-queue methods.
+Remaining Phase 5 work: shared active-attempt/mode metadata, task-scoped
+`/goal`, and bounded audit correction.
+
+## 2026-07-20 — Phase 5E: task-scoped `/goal`
+
+- Added `TaskNode.goal_condition` and `goal_condition_met`. They are persisted
+  per task, never inferred from Artifact prose, and only become true when a
+  harness-owned `VerificationRecord` passes.
+- `/goal` is now routed through cccx rather than the upstream session-scoped
+  ThreadGoal path. Syntax is explicit: `/goal <task-id> <condition>`.
+  The TUI emits `SetCccxTaskGoal`; App dispatch invokes core's
+  `set_task_goal_condition()`, which uses the TaskGraph writer transaction.
+- Updating a verified task's condition invalidates its previous proof and
+  returns it to blocked/unverified. Sibling tasks remain untouched.
+
+Validation (all green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p cccx-task-graph
+cargo +1.95.0 test -p codex-core cccx_task_graph_state --lib
+cargo +1.95.0 check -p codex-tui
+cargo +1.95.0 test -p codex-tui goal_slash_command_with_extra_os --lib
+```
+
+Remaining Phase 5 work: persist active-attempt metadata beside mode/graph and
+add bounded audit-correction behavior for failed evaluation.
+
 ## 2026-07-20 — Phase 5F: unified survivor state and bounded correction
 
 - Active worker metadata is now a persisted projection of `TaskGraph` attempts
@@ -2642,50 +2689,3 @@ Remaining Phase 7 work:
 - Persist live gateway provenance/retry/termination metadata into Artifact,
   TaskGraph, and headless events for the same attempt.
 - Implement transient retry/backoff with side-effect awareness.
-
-## 2026-07-20 — Phase 5D: Task Graph writer lease
-
-- Added `update_task_graph()`, a project-local writer-lease transaction for
-  complete read-modify-write lifecycle updates. `register_spawn()` and
-  `complete_spawn()` now use it, preventing concurrent workers from losing
-  sibling Task/Attempt/Artifact changes through stale graph snapshots.
-- Temporary state files are explicitly `sync_all()`-ed before rename. Mode
-  state now uses the same atomic replacement path rather than a direct write.
-- Added a concurrent transaction test which creates two independent tasks at
-  once and proves both survive persistence. The existing interrupted-temp-file
-  recovery test remains green.
-
-Validation (all green, shared `D:\\cargo-targets\\cccx`):
-
-```powershell
-cargo +1.95.0 test -p codex-core cccx_task_graph_state --lib
-cargo +1.95.0 test -p codex-core cccx_runtime --lib
-```
-
-The only warnings are the pre-existing unused permission-queue methods.
-Remaining Phase 5 work: shared active-attempt/mode metadata, task-scoped
-`/goal`, and bounded audit correction.
-
-## 2026-07-20 — Phase 5E: task-scoped `/goal`
-
-- Added `TaskNode.goal_condition` and `goal_condition_met`. They are persisted
-  per task, never inferred from Artifact prose, and only become true when a
-  harness-owned `VerificationRecord` passes.
-- `/goal` is now routed through cccx rather than the upstream session-scoped
-  ThreadGoal path. Syntax is explicit: `/goal <task-id> <condition>`.
-  The TUI emits `SetCccxTaskGoal`; App dispatch invokes core's
-  `set_task_goal_condition()`, which uses the TaskGraph writer transaction.
-- Updating a verified task's condition invalidates its previous proof and
-  returns it to blocked/unverified. Sibling tasks remain untouched.
-
-Validation (all green, shared `D:\\cargo-targets\\cccx`):
-
-```powershell
-cargo +1.95.0 test -p cccx-task-graph
-cargo +1.95.0 test -p codex-core cccx_task_graph_state --lib
-cargo +1.95.0 check -p codex-tui
-cargo +1.95.0 test -p codex-tui goal_slash_command_with_extra_os --lib
-```
-
-Remaining Phase 5 work: persist active-attempt metadata beside mode/graph and
-add bounded audit-correction behavior for failed evaluation.
