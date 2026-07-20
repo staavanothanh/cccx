@@ -20,6 +20,7 @@ use codex_protocol::ThreadId;
 use crate::artifact_collector::ArtifactCollector;
 use crate::cccx_task_graph_state;
 use crate::checkpoint::SubagentCheckpoint;
+use crate::checkpoint::CheckpointValidation;
 use crate::goal_evaluator::GoalEvaluator;
 use crate::verification_runner::run_verification;
 
@@ -193,6 +194,43 @@ pub(crate) struct CccxRuntimeRegistry {
 }
 
 impl CccxRuntimeRegistry {
+    /// Load the persisted state required for a CCCX logical-worker resume.
+    /// This is deliberately separate from upstream rollout resume: callers
+    /// must spawn a fresh worker incarnation only after this gate succeeds.
+    pub(crate) async fn prepare_resume(
+        project_root: &Path,
+        logical_session_id: &str,
+        current_git_head: &str,
+        max_age_minutes: u32,
+        revalidate: bool,
+    ) -> Result<SubagentCheckpoint, String> {
+        let checkpoint = crate::checkpoint::load_checkpoint(project_root, logical_session_id)
+            .await
+            .map_err(|error| format!("failed to load CCCX checkpoint: {error}"))?
+            .ok_or_else(|| format!("no checkpoint exists for CCCX worker `{logical_session_id}`"))?;
+        let graph = cccx_task_graph_state::load_task_graph(project_root)
+            .await
+            .map_err(|error| format!("failed to load CCCX task graph: {error}"))?
+            .ok_or_else(|| "CCCX task graph is missing".to_string())?;
+        let worker = graph.tasks.values().flat_map(|task| task.attempts.iter())
+            .find(|attempt| attempt.worker.logical_session_id == logical_session_id)
+            .ok_or_else(|| format!("unknown CCCX logical worker `{logical_session_id}`"))?;
+        if worker.worker.status != WorkerStatus::Resumable {
+            return Err(format!("CCCX worker `{logical_session_id}` is {:?}, not resumable", worker.worker.status));
+        }
+        if checkpoint.attempt_id != worker.attempt_id {
+            return Err(format!("checkpoint attempt `{}` does not match worker attempt `{}`", checkpoint.attempt_id, worker.attempt_id));
+        }
+        if checkpoint.work_spec.is_none() || checkpoint.display_name.is_none() {
+            return Err("checkpoint predates resumable CCCX worker metadata; create a new WorkSpec attempt instead".to_string());
+        }
+        match crate::checkpoint::validate_checkpoint(&checkpoint, current_git_head, max_age_minutes) {
+            CheckpointValidation::Valid => Ok(checkpoint),
+            CheckpointValidation::NeedsRevalidation { .. } if revalidate => Ok(checkpoint),
+            CheckpointValidation::NeedsRevalidation { .. } => Err("checkpoint requires --revalidate because the base revision changed".to_string()),
+            CheckpointValidation::Stale { reason, .. } => Err(format!("checkpoint is not resumable: {reason}")),
+        }
+    }
     pub(crate) async fn register_spawn(
         &mut self,
         child_thread_id: ThreadId,
@@ -247,6 +285,8 @@ impl CccxRuntimeRegistry {
             worker_incarnation_id: child_thread_id.to_string(),
             task_id: runtime.work_spec.task_id.clone(),
             attempt_id: child_thread_id.to_string(),
+            work_spec: Some(runtime.work_spec.clone()),
+            display_name: Some(runtime.display_name.clone()),
             last_completed_step,
             partial_diff: String::new(),
             pending_steps: vec![runtime.work_spec.objective.clone()],
@@ -274,6 +314,8 @@ impl CccxRuntimeRegistry {
                 worker_incarnation_id: child_thread_id.to_string(),
                 task_id: runtime.work_spec.task_id.clone(),
                 attempt_id: child_thread_id.to_string(),
+                work_spec: Some(runtime.work_spec.clone()),
+                display_name: Some(runtime.display_name.clone()),
                 last_completed_step: status_summary.clone(),
                 partial_diff: String::new(),
                 pending_steps: vec![runtime.work_spec.objective.clone()],
@@ -298,7 +340,7 @@ impl CccxRuntimeRegistry {
         let artifact_status = if success {
             ArtifactStatus::Success
         } else {
-            ArtifactStatus::Blocked
+            ArtifactStatus::Interrupted
         };
         let artifact = collector.finalize(
             artifact_status,
@@ -681,6 +723,28 @@ mod tests {
             checkpoint.last_completed_step,
             "apply_patch completed (call-1)"
         );
+    }
+
+    #[tokio::test]
+    async fn prepare_resume_rejects_completed_and_accepts_interrupted_worker() {
+        let project = tempfile::TempDir::new().unwrap();
+        let child_thread_id = ThreadId::new();
+        let runtime = CccxSpawnRuntime {
+            project_root: project.path().to_path_buf(),
+            logical_session_id: "logical-resume".to_string(),
+            work_spec: work_spec(),
+            display_name: "a1-worker".to_string(),
+            model_route_summary: "9router/test".to_string(),
+        };
+        let mut registry = CccxRuntimeRegistry::default();
+        registry.register_spawn(child_thread_id, runtime).await.unwrap();
+        registry
+            .complete_spawn(child_thread_id, "transport lost".to_string(), false)
+            .await
+            .unwrap();
+        assert!(CccxRuntimeRegistry::prepare_resume(
+            project.path(), "logical-resume", "head", 60, true
+        ).await.is_ok());
     }
 
     #[tokio::test]

@@ -1,4 +1,8 @@
 use crate::agent::AgentStatus;
+use crate::agent::control::SpawnAgentOptions;
+use crate::cccx_runtime::CccxRuntimeRegistry;
+use crate::cccx_runtime::CccxSpawnRuntime;
+use crate::cccx_runtime::parent_capability_set_for_work_spec;
 use crate::config::ConstraintResult;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
@@ -31,6 +35,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
@@ -185,6 +190,90 @@ pub struct BackgroundTerminalInfo {
 /// Conduit for the bidirectional stream of messages that compose a thread
 /// (formerly called a conversation) in Codex.
 impl CodexThread {
+    /// Resume a CCCX worker as a fresh native incarnation while preserving its
+    /// logical identity and the exact checkpointed WorkSpec.
+    pub async fn resume_cccx_worker(
+        &self,
+        logical_session_id: &str,
+        revalidate: bool,
+    ) -> Result<ThreadId, String> {
+        let mut config = (*self.config().await).clone();
+        let current_head = codex_git_utils::get_head_commit_hash(&config.cwd)
+            .await
+            .map(|sha| sha.0)
+            .unwrap_or_default();
+        let checkpoint = CccxRuntimeRegistry::prepare_resume(
+            &config.cwd,
+            logical_session_id,
+            &current_head,
+            60,
+            revalidate,
+        )
+        .await?;
+        let work_spec = checkpoint
+            .work_spec
+            .clone()
+            .ok_or_else(|| "checkpoint is missing the pinned WorkSpec".to_string())?;
+        let display_name = checkpoint
+            .display_name
+            .clone()
+            .ok_or_else(|| "checkpoint is missing the worker display name".to_string())?;
+        let model_route_summary = config
+            .model
+            .clone()
+            .unwrap_or_else(|| "inherit-main".to_string());
+        let parent = parent_capability_set_for_work_spec(
+            &config.cwd,
+            &model_route_summary,
+            &work_spec,
+            work_spec.allowed_tools.clone(),
+            work_spec.allowed_mcp_tools.clone(),
+        );
+        crate::cccx_spawn::apply_cccx_harness_to_config(&mut config, &parent, &work_spec)
+            .map_err(|error| error.to_string())?;
+        let resume_input = format!(
+            "Resume the existing CCCX worker. Continue from checkpoint only; do not expand scope.\n\
+             Last completed step: {}\nPending steps: {}\nPartial diff: {}",
+            checkpoint.last_completed_step,
+            checkpoint.pending_steps.join("; "),
+            checkpoint.partial_diff,
+        );
+        let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: self.session.thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: Some(format!("{:?}", work_spec.role)),
+        });
+        let runtime = Arc::new(CccxSpawnRuntime {
+            project_root: config.cwd.to_path_buf(),
+            work_spec,
+            logical_session_id: logical_session_id.to_string(),
+            display_name,
+            model_route_summary,
+        });
+        let spawned = self
+            .session
+            .services
+            .agent_control
+            .spawn_agent_with_metadata(
+                config,
+                vec![UserInput::Text {
+                    text: resume_input,
+                    text_elements: Vec::new(),
+                }],
+                Some(source),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(self.session.thread_id),
+                    cccx_runtime: Some(runtime),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(spawned.thread_id)
+    }
+
     /// Resolve a queued CCCX permission request through its root-owned
     /// control plane. The request itself chooses the target worker; callers
     /// cannot provide an arbitrary approval id or thread id.
