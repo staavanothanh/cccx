@@ -801,15 +801,27 @@ impl ChatWidget {
                 self.defer_input_until_settings_applied();
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Approve { request_id }))) => {
+                self.app_event_tx.send(AppEvent::CodexOp(
+                    AppCommand::ResolveCccxPermission {
+                        request_id: request_id.clone(),
+                        approve: true,
+                    },
+                ));
                 self.add_info_message(
-                    format!("/permissions approve {request_id} — permission requests are managed through the interactive approval prompt (Y/N). The cccx PermissionRequestQueue validates digest freshness, circuit-breaker protection, and single-request isolation."),
-                    Some("Use Y/N in the approval popup for approve actions. Queue-backed approve via CccxPermissionQueue requires runtime session wiring (post-MVP).".to_string()),
+                    format!("/permissions approve {request_id} — decision sent to the queued request."),
+                    None,
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Deny { request_id }))) => {
+                self.app_event_tx.send(AppEvent::CodexOp(
+                    AppCommand::ResolveCccxPermission {
+                        request_id: request_id.clone(),
+                        approve: false,
+                    },
+                ));
                 self.add_info_message(
-                    format!("/permissions deny {request_id} — permission requests are managed through the interactive approval prompt (Y/N). Single-request deny does not cancel siblings from the same agent."),
-                    Some("Use Y/N in the approval popup for deny actions. Queue-backed deny requires runtime session wiring (post-MVP).".to_string()),
+                    format!("/permissions deny {request_id} — decision sent to the queued request."),
+                    None,
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Inspect { request_id }))) => {

@@ -102,6 +102,8 @@ use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::CccxWorkerCancelParams;
 use codex_app_server_protocol::CccxWorkerCancelResponse;
+use codex_app_server_protocol::CccxPermissionResolveParams;
+use codex_app_server_protocol::CccxPermissionResolveResponse;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -931,6 +933,27 @@ impl AppServerSession {
                     thread_id: thread_id.to_string(),
                     agent_id: agent_id.to_string(),
                     reason: None,
+                },
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn cccx_permission_resolve(
+        &mut self,
+        thread_id: ThreadId,
+        request_id: String,
+        approve: bool,
+    ) -> std::result::Result<(), TypedRequestError> {
+        let transport_request_id = self.next_request_id();
+        let _: CccxPermissionResolveResponse = self
+            .client
+            .request_typed(ClientRequest::CccxPermissionResolve {
+                request_id: transport_request_id,
+                params: CccxPermissionResolveParams {
+                    thread_id: thread_id.to_string(),
+                    request_id,
+                    approve,
                 },
             })
             .await?;

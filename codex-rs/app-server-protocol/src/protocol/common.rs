@@ -824,6 +824,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::CccxWorkerCancelResponse,
     },
+    CccxPermissionResolve => "cccx/permission/resolve" {
+        params: v2::CccxPermissionResolveParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::CccxPermissionResolveResponse,
+    },
     #[experimental("thread/realtime/start")]
     ThreadRealtimeStart => "thread/realtime/start" {
         params: v2::ThreadRealtimeStartParams,

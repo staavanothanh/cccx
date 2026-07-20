@@ -177,6 +177,7 @@ use uuid::Uuid;
 
 use crate::client::ModelClient;
 use crate::permission_queue_bridge::CccxPermissionQueue;
+use crate::permission_queue_bridge::NativeApproval;
 use crate::codex_thread::ThreadConfigSnapshot;
 #[cfg(test)]
 use crate::compact::collect_user_messages;
@@ -486,6 +487,7 @@ async fn resolve_cccx_permission_request(
     if let Err(error) = queue.resolve_native_decision(request_id, approved).await {
         warn!(%request_id, %error, "cccx permission queue could not resolve native approval");
     }
+    queue.forget_native_approval(request_id).await;
 }
 
 impl Session {
@@ -2221,6 +2223,27 @@ impl Session {
                 reason
                     .clone()
                     .unwrap_or_else(|| "command approval requested".to_string()),
+            )
+            .await;
+        self.services
+            .cccx_permission_queue
+            .register_native_approval(
+                cccx_request_id.clone(),
+                NativeApproval::Exec {
+                    thread_id: self.thread_id.to_string(),
+                    approval_id: effective_approval_id.clone(),
+                    turn_id: turn_context.sub_id.clone(),
+                },
+            )
+            .await;
+        self.services
+            .cccx_permission_queue
+            .register_native_approval(
+                cccx_request_id.clone(),
+                NativeApproval::Patch {
+                    thread_id: self.thread_id.to_string(),
+                    approval_id: approval_id.clone().unwrap_or_else(|| call_id.clone()),
+                },
             )
             .await;
         tracing::trace!(

@@ -185,6 +185,21 @@ pub struct BackgroundTerminalInfo {
 /// Conduit for the bidirectional stream of messages that compose a thread
 /// (formerly called a conversation) in Codex.
 impl CodexThread {
+    /// Resolve a queued CCCX permission request through its root-owned
+    /// control plane. The request itself chooses the target worker; callers
+    /// cannot provide an arbitrary approval id or thread id.
+    pub async fn resolve_cccx_permission(
+        &self,
+        request_id: &str,
+        approve: bool,
+    ) -> Result<(), String> {
+        self.session
+            .services
+            .agent_control
+            .resolve_cccx_permission(request_id, approve)
+            .await
+    }
+
     pub(crate) fn new(
         session: Arc<Session>,
         io: SessionIo,

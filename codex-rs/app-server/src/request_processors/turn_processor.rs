@@ -242,6 +242,23 @@ impl TurnRequestProcessor {
         Ok(Some(CccxWorkerCancelResponse { accepted: true }.into()))
     }
 
+    pub(crate) async fn cccx_permission_resolve(
+        &self,
+        params: CccxPermissionResolveParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let CccxPermissionResolveParams {
+            thread_id,
+            request_id,
+            approve,
+        } = params;
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        thread
+            .resolve_cccx_permission(&request_id, approve)
+            .await
+            .map_err(invalid_request)?;
+        Ok(Some(CccxPermissionResolveResponse {}.into()))
+    }
+
     pub(crate) async fn thread_realtime_start(
         &self,
         request_id: &ConnectionRequestId,

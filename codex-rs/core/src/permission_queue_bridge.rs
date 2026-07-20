@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::BTreeMap;
 
 use cccx_policy::{
     NormalizedAction, PermissionRequest, PermissionRequestQueue, PermissionRisk, QueueError,
@@ -9,7 +10,28 @@ use tokio::sync::Mutex as AsyncMutex;
 /// Wraps cccx-policy's PermissionRequestQueue for thread-safe use in session.
 pub struct CccxPermissionQueue {
     inner: Arc<AsyncMutex<PermissionRequestQueue>>,
+    /// The queue owns the correlation between its stable `pr-*` identity and
+    /// the native Codex approval waiter that must receive the decision.
+    native_approvals: Arc<AsyncMutex<BTreeMap<String, NativeApproval>>>,
     counter: AtomicU64,
+}
+
+/// Native approval waiter correlated with a CCCX permission request.
+///
+/// This deliberately stores only opaque IDs. The decision is still delivered
+/// through the worker session's normal `Op::{ExecApproval, PatchApproval}`
+/// path, so one queued request cannot resolve another worker's prompt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NativeApproval {
+    Exec {
+        thread_id: String,
+        approval_id: String,
+        turn_id: String,
+    },
+    Patch {
+        thread_id: String,
+        approval_id: String,
+    },
 }
 
 impl Default for CccxPermissionQueue {
@@ -22,6 +44,7 @@ impl CccxPermissionQueue {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(AsyncMutex::new(PermissionRequestQueue::default())),
+            native_approvals: Arc::new(AsyncMutex::new(BTreeMap::new())),
             counter: AtomicU64::new(0),
         }
     }
@@ -75,11 +98,43 @@ impl CccxPermissionQueue {
         }
     }
 
+    pub async fn register_native_approval(
+        &self,
+        request_id: String,
+        native_approval: NativeApproval,
+    ) {
+        self.native_approvals
+            .lock()
+            .await
+            .insert(request_id, native_approval);
+    }
+
+    pub async fn native_approval(&self, request_id: &str) -> Option<NativeApproval> {
+        self.native_approvals.lock().await.get(request_id).cloned()
+    }
+
+    pub async fn forget_native_approval(&self, request_id: &str) {
+        self.native_approvals.lock().await.remove(request_id);
+    }
+
     pub async fn cancel_agent_requests(&self, agent_session_id: &str) {
+        let request_ids = self
+            .inner
+            .lock()
+            .await
+            .list_all()
+            .into_iter()
+            .filter(|request| request.agent_id == agent_session_id)
+            .map(|request| request.request_id)
+            .collect::<Vec<_>>();
         self.inner
             .lock()
             .await
             .cancel_agent_requests(agent_session_id);
+        let mut native_approvals = self.native_approvals.lock().await;
+        for request_id in request_ids {
+            native_approvals.remove(&request_id);
+        }
     }
 
     pub async fn active_request_id(&self) -> Option<String> {
@@ -357,5 +412,31 @@ mod tests {
             Some(PermissionRequestStatus::Approved)
         );
         assert_eq!(queue.active_request_id().await.as_deref(), Some(second.as_str()));
+    }
+
+    #[tokio::test]
+    async fn native_approval_mapping_is_isolated_and_removed_on_worker_cancel() {
+        let queue = CccxPermissionQueue::new();
+        let request_id = queue
+            .enqueue(
+                "worker-a".to_string(),
+                "worker A".to_string(),
+                "T1".to_string(),
+                action("T1"),
+                "needs approval".to_string(),
+            )
+            .await;
+        let native = NativeApproval::Exec {
+            thread_id: "worker-a".to_string(),
+            approval_id: "approval-a".to_string(),
+            turn_id: "turn-a".to_string(),
+        };
+        queue
+            .register_native_approval(request_id.clone(), native.clone())
+            .await;
+
+        assert_eq!(queue.native_approval(&request_id).await, Some(native));
+        queue.cancel_agent_requests("worker-a").await;
+        assert_eq!(queue.native_approval(&request_id).await, None);
     }
 }

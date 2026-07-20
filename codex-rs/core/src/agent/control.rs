@@ -8,6 +8,7 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::cccx_runtime::CccxRuntimeRegistry;
 use crate::permission_queue_bridge::CccxPermissionQueue;
+use crate::permission_queue_bridge::NativeApproval;
 use crate::cccx_runtime::CccxSpawnRuntime;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
@@ -34,6 +35,7 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
@@ -196,6 +198,60 @@ impl AgentControl {
 
     pub(crate) fn cccx_permission_queue(&self) -> Arc<CccxPermissionQueue> {
         Arc::clone(&self.cccx_permission_queue)
+    }
+
+    /// Resolve one CCCX permission request through its correlated native
+    /// Codex waiter. Unknown/stale requests fail closed; the operation is
+    /// always delivered to the worker that originally created the request.
+    pub(crate) async fn resolve_cccx_permission(
+        &self,
+        request_id: &str,
+        approve: bool,
+    ) -> Result<(), String> {
+        let native = self
+            .cccx_permission_queue
+            .native_approval(request_id)
+            .await
+            .ok_or_else(|| format!("unknown or completed CCCX permission request `{request_id}`"))?;
+        let (thread_id, op) = match native {
+            NativeApproval::Exec {
+                thread_id,
+                approval_id,
+                turn_id,
+            } => (
+                thread_id,
+                Op::ExecApproval {
+                    id: approval_id,
+                    turn_id: Some(turn_id),
+                    decision: if approve {
+                        ReviewDecision::Approved
+                    } else {
+                        ReviewDecision::Denied
+                    },
+                },
+            ),
+            NativeApproval::Patch {
+                thread_id,
+                approval_id,
+            } => (
+                thread_id,
+                Op::PatchApproval {
+                    id: approval_id,
+                    decision: if approve {
+                        ReviewDecision::Approved
+                    } else {
+                        ReviewDecision::Denied
+                    },
+                },
+            ),
+        };
+        let worker_id = ThreadId::from_string(&thread_id)
+            .map_err(|error| format!("invalid worker identity for `{request_id}`: {error}"))?;
+        let state = self.upgrade().map_err(|error| error.to_string())?;
+        self.handle_thread_request_result(worker_id, &state, state.send_op(worker_id, op).await)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     pub(crate) async fn cccx_work_spec_for_thread(

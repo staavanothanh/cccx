@@ -557,6 +557,15 @@ impl App {
                 app_server.cccx_worker_cancel(thread_id, *agent_id).await?;
                 Ok(true)
             }
+            AppCommand::ResolveCccxPermission {
+                request_id,
+                approve,
+            } => {
+                app_server
+                    .cccx_permission_resolve(thread_id, request_id.clone(), *approve)
+                    .await?;
+                Ok(true)
+            }
             AppCommand::UserTurn {
                 items,
                 cwd,
