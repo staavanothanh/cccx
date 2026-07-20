@@ -164,6 +164,20 @@ impl AgentControl {
         }
     }
 
+    /// Best-effort checkpoint for an active CCCX worker after a successful
+    /// bounded tool step. Non-CCCX sessions simply have no registry entry.
+    pub(crate) async fn checkpoint_cccx_worker(
+        &self,
+        child_thread_id: ThreadId,
+        last_completed_step: String,
+    ) -> Result<bool, String> {
+        self.cccx_runtime
+            .lock()
+            .await
+            .checkpoint_spawn(child_thread_id, last_completed_step)
+            .await
+    }
+
     /// Record the terminal cancellation of one CCCX worker attempt.
     ///
     /// The worker session performs this immediately before it aborts itself,

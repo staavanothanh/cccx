@@ -103,8 +103,8 @@ impl CccxRuntimeState {
             artifact.verification = GoalEvaluator::evaluate(
                 self.task_graph
                     .tasks
-                .get(&attempt.work_spec.task_id)
-                .ok_or_else(|| format!("unknown cccx task `{}`", attempt.work_spec.task_id))?,
+                    .get(&attempt.work_spec.task_id)
+                    .ok_or_else(|| format!("unknown cccx task `{}`", attempt.work_spec.task_id))?,
                 &artifact.attempt_id,
                 exit_code,
                 log_digest,
@@ -161,13 +161,15 @@ impl CccxRuntimeState {
             return Ok(());
         }
         use sha2::{Digest, Sha256};
-        let protocol_spec = work_spec.verification_spec.clone().unwrap_or(
-            cccx_protocol::VerificationSpec {
-                command: None,
-                protected_digests: BTreeMap::new(),
-                verification_policy_id: None,
-            },
-        );
+        let protocol_spec =
+            work_spec
+                .verification_spec
+                .clone()
+                .unwrap_or(cccx_protocol::VerificationSpec {
+                    command: None,
+                    protected_digests: BTreeMap::new(),
+                    verification_policy_id: None,
+                });
         let spec_payload = serde_json::to_vec(&protocol_spec).map_err(|error| error.to_string())?;
         let spec_digest = format!("sha256:{:x}", Sha256::digest(spec_payload));
         self.task_graph
@@ -228,6 +230,35 @@ impl CccxRuntimeRegistry {
             .map(|runtime| runtime.work_spec.clone())
     }
 
+    /// Persist a resumable snapshot while a bounded worker is still active.
+    /// This is intentionally best-effort at the tool boundary: a successful
+    /// edit must not be reported as failed merely because checkpoint storage
+    /// is temporarily unavailable.
+    pub(crate) async fn checkpoint_spawn(
+        &self,
+        child_thread_id: ThreadId,
+        last_completed_step: String,
+    ) -> Result<bool, String> {
+        let Some(runtime) = self.by_thread.get(&child_thread_id.to_string()) else {
+            return Ok(false);
+        };
+        let checkpoint = SubagentCheckpoint {
+            logical_session_id: runtime.logical_session_id.clone(),
+            worker_incarnation_id: child_thread_id.to_string(),
+            task_id: runtime.work_spec.task_id.clone(),
+            attempt_id: child_thread_id.to_string(),
+            last_completed_step,
+            partial_diff: String::new(),
+            pending_steps: vec![runtime.work_spec.objective.clone()],
+            checkpointed_at: chrono::Utc::now().to_rfc3339(),
+            base_commit: runtime.work_spec.base_revision.git_head.clone(),
+        };
+        crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
+            .await
+            .map_err(|error| format!("failed to persist worker checkpoint: {error}"))?;
+        Ok(true)
+    }
+
     pub(crate) async fn complete_spawn(
         &mut self,
         child_thread_id: ThreadId,
@@ -251,7 +282,9 @@ impl CccxRuntimeRegistry {
             };
             crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
                 .await
-                .map_err(|error| format!("failed to persist interrupted worker checkpoint: {error}"))?;
+                .map_err(|error| {
+                    format!("failed to persist interrupted worker checkpoint: {error}")
+                })?;
         }
         let graph = cccx_task_graph_state::load_task_graph(&runtime.project_root)
             .await
@@ -304,9 +337,12 @@ impl CccxRuntimeRegistry {
             if let Some(run) = verification_run {
                 use sha2::{Digest, Sha256};
                 let task_id = runtime.work_spec.task_id.clone();
-                let artifact_digest = format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
+                let artifact_digest =
+                    format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
                 let task = state.task_graph().tasks.get(&task_id).ok_or_else(|| {
-                    cccx_task_graph_state::TaskGraphStateError::Mutation(format!("unknown cccx task `{task_id}`"))
+                    cccx_task_graph_state::TaskGraphStateError::Mutation(format!(
+                        "unknown cccx task `{task_id}`"
+                    ))
                 })?;
                 let record = GoalEvaluator::evaluate_execution(
                     task,
@@ -323,7 +359,7 @@ impl CccxRuntimeRegistry {
             Ok(())
         })
         .await
-            .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?;
         if let Some(error) = verification_error {
             return Err(error);
         }
@@ -349,11 +385,7 @@ impl CccxRuntimeRegistry {
         let artifact = collector.finalize(
             ArtifactStatus::Cancelled,
             reason.clone(),
-            provenance_for_runtime(
-                &runtime.work_spec,
-                &runtime.model_route_summary,
-                &reason,
-            ),
+            provenance_for_runtime(&runtime.work_spec, &runtime.model_route_summary, &reason),
         );
         let initial = TaskGraph::new("cccx-runtime", "cccx runtime graph");
         cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
@@ -562,9 +594,17 @@ mod tests {
         work_spec.verification_spec = Some(cccx_protocol::VerificationSpec {
             command: Some(CommandSpec {
                 argv: if cfg!(windows) {
-                    vec!["cmd".to_string(), "/C".to_string(), "echo cccx-wire".to_string()]
+                    vec![
+                        "cmd".to_string(),
+                        "/C".to_string(),
+                        "echo cccx-wire".to_string(),
+                    ]
                 } else {
-                    vec!["sh".to_string(), "-c".to_string(), "printf cccx-wire".to_string()]
+                    vec![
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        "printf cccx-wire".to_string(),
+                    ]
                 },
                 cwd: ".".to_string(),
                 timeout_ms: Some(5_000),
@@ -581,11 +621,16 @@ mod tests {
             model_route_summary: "9router/test".to_string(),
         };
         let mut registry = CccxRuntimeRegistry::default();
-        registry.register_spawn(child_thread_id, runtime).await.unwrap();
-        assert!(registry
-            .complete_spawn(child_thread_id, "worker completed".to_string(), true)
+        registry
+            .register_spawn(child_thread_id, runtime)
             .await
-            .unwrap());
+            .unwrap();
+        assert!(
+            registry
+                .complete_spawn(child_thread_id, "worker completed".to_string(), true)
+                .await
+                .unwrap()
+        );
         let graph = cccx_task_graph_state::load_task_graph(project.path())
             .await
             .unwrap()
@@ -596,6 +641,46 @@ mod tests {
         assert_eq!(record.verifier, "cccx-verification-runner");
         assert_eq!(record.command.as_ref().unwrap().exit_code, 0);
         assert!(record.protected_input_digest.is_some());
+    }
+
+    #[tokio::test]
+    async fn active_spawn_writes_checkpoint_after_bounded_step() {
+        let project = tempfile::TempDir::new().unwrap();
+        let child_thread_id = ThreadId::new();
+        let runtime = CccxSpawnRuntime {
+            project_root: project.path().to_path_buf(),
+            logical_session_id: "logical-post-tool".to_string(),
+            work_spec: work_spec(),
+            display_name: "worker".to_string(),
+            model_route_summary: "9router/test".to_string(),
+        };
+        let mut registry = CccxRuntimeRegistry::default();
+        registry
+            .register_spawn(child_thread_id, runtime)
+            .await
+            .unwrap();
+
+        assert!(
+            registry
+                .checkpoint_spawn(
+                    child_thread_id,
+                    "apply_patch completed (call-1)".to_string()
+                )
+                .await
+                .unwrap()
+        );
+        let checkpoint = crate::checkpoint::load_checkpoint(project.path(), "logical-post-tool")
+            .await
+            .unwrap()
+            .expect("post-tool checkpoint must persist");
+        assert_eq!(
+            checkpoint.worker_incarnation_id,
+            child_thread_id.to_string()
+        );
+        assert_eq!(
+            checkpoint.last_completed_step,
+            "apply_patch completed (call-1)"
+        );
     }
 
     #[tokio::test]
@@ -624,18 +709,27 @@ mod tests {
             model_route_summary: "9router/test".to_string(),
         };
         let mut registry = CccxRuntimeRegistry::default();
-        registry.register_spawn(child_thread_id, runtime).await.unwrap();
-        assert!(registry
-            .complete_spawn(child_thread_id, "worker completed".to_string(), true)
+        registry
+            .register_spawn(child_thread_id, runtime)
             .await
-            .unwrap());
+            .unwrap();
+        assert!(
+            registry
+                .complete_spawn(child_thread_id, "worker completed".to_string(), true)
+                .await
+                .unwrap()
+        );
         let graph = cccx_task_graph_state::load_task_graph(project.path())
             .await
             .unwrap()
             .unwrap();
         let task = &graph.tasks["T1"];
         assert!(!task.is_verified());
-        assert!(task.correction_required.as_deref().is_some_and(|reason| reason.contains("exit code 7")));
+        assert!(
+            task.correction_required
+                .as_deref()
+                .is_some_and(|reason| reason.contains("exit code 7"))
+        );
         assert_eq!(task.attempts[0].verification_records.len(), 1);
         assert!(!task.attempts[0].verification_records[0].passed);
     }
@@ -654,22 +748,27 @@ mod tests {
             model_route_summary: "9router/test".to_string(),
         };
         let mut registry = CccxRuntimeRegistry::default();
-        registry.register_spawn(child_thread_id, runtime).await.unwrap();
-        assert!(registry
-            .complete_spawn(child_thread_id, "provider disconnected".to_string(), false)
+        registry
+            .register_spawn(child_thread_id, runtime)
             .await
-            .unwrap());
+            .unwrap();
+        assert!(
+            registry
+                .complete_spawn(child_thread_id, "provider disconnected".to_string(), false)
+                .await
+                .unwrap()
+        );
 
-        let checkpoint = crate::checkpoint::load_checkpoint(
-            project.path(),
-            "logical-interrupted",
-        )
-        .await
-        .unwrap()
-        .expect("interrupted worker must leave a checkpoint");
+        let checkpoint = crate::checkpoint::load_checkpoint(project.path(), "logical-interrupted")
+            .await
+            .unwrap()
+            .expect("interrupted worker must leave a checkpoint");
         assert_eq!(checkpoint.task_id, "T1");
         assert_eq!(checkpoint.logical_session_id, "logical-interrupted");
-        assert_eq!(checkpoint.worker_incarnation_id, child_thread_id.to_string());
+        assert_eq!(
+            checkpoint.worker_incarnation_id,
+            child_thread_id.to_string()
+        );
         assert_eq!(checkpoint.base_commit.as_deref(), Some("base-commit"));
         assert_eq!(checkpoint.last_completed_step, "provider disconnected");
     }
@@ -686,20 +785,30 @@ mod tests {
             model_route_summary: "9router/test".to_string(),
         };
         let mut registry = CccxRuntimeRegistry::default();
-        registry.register_spawn(child_thread_id, runtime).await.unwrap();
-        assert!(registry
-            .cancel_spawn(child_thread_id, "user cancelled".to_string())
+        registry
+            .register_spawn(child_thread_id, runtime)
             .await
-            .unwrap());
-        assert!(crate::checkpoint::load_checkpoint(project.path(), &child_thread_id.to_string())
-            .await
-            .unwrap()
-            .is_none());
+            .unwrap();
+        assert!(
+            registry
+                .cancel_spawn(child_thread_id, "user cancelled".to_string())
+                .await
+                .unwrap()
+        );
+        assert!(
+            crate::checkpoint::load_checkpoint(project.path(), &child_thread_id.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
         let graph = cccx_task_graph_state::load_task_graph(project.path())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(graph.tasks["T1"].status, cccx_task_graph::TaskStatus::Cancelled);
+        assert_eq!(
+            graph.tasks["T1"].status,
+            cccx_task_graph::TaskStatus::Cancelled
+        );
     }
 
     // ── Phase 3 tests ──
