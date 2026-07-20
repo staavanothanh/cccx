@@ -1284,6 +1284,11 @@ impl MessageProcessor {
             ClientRequest::CccxPermissionList { params, .. } => {
                 self.turn_processor.cccx_permission_list(params).await
             }
+            ClientRequest::CccxPermissionBatchApprove { params, .. } => {
+                self.turn_processor
+                    .cccx_permission_batch_approve(params)
+                    .await
+            }
             ClientRequest::ThreadRealtimeStart { params, .. } => {
                 self.turn_processor
                     .thread_realtime_start(&request_id, params)

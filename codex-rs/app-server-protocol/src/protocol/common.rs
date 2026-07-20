@@ -834,6 +834,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::CccxPermissionListResponse,
     },
+    CccxPermissionBatchApprove => "cccx/permission/batch_approve" {
+        params: v2::CccxPermissionBatchApproveParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::CccxPermissionBatchApproveResponse,
+    },
     #[experimental("thread/realtime/start")]
     ThreadRealtimeStart => "thread/realtime/start" {
         params: v2::ThreadRealtimeStartParams,
@@ -1853,6 +1858,31 @@ mod tests {
                     "requestId": "pr-42",
                     "approve": true,
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn cccx_permission_batch_approve_is_scoped_to_root_thread() {
+        let request = ClientRequest::CccxPermissionBatchApprove {
+            request_id: request_id(),
+            params: v2::CccxPermissionBatchApproveParams {
+                thread_id: "root-thread".to_string(),
+            },
+        };
+
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "root-thread".to_string(),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "method": "cccx/permission/batch_approve",
+                "id": 1,
+                "params": { "threadId": "root-thread" }
             })
         );
     }

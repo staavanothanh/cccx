@@ -202,7 +202,20 @@ impl CodexThread {
 
     /// Read the CCCX permission queue shared by this root's worker tree.
     pub async fn list_cccx_permissions(&self) -> Vec<cccx_policy::PermissionRequest> {
-        self.session.services.agent_control.list_cccx_permissions().await
+        self.session
+            .services
+            .agent_control
+            .list_cccx_permissions()
+            .await
+    }
+
+    /// Start a sequential batch for safe CCCX permission requests.
+    pub async fn begin_cccx_safe_permission_batch(&self) -> Result<bool, String> {
+        self.session
+            .services
+            .agent_control
+            .begin_cccx_safe_batch()
+            .await
     }
 
     pub(crate) fn new(

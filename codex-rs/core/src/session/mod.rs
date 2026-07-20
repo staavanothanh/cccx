@@ -176,8 +176,6 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::client::ModelClient;
-use crate::permission_queue_bridge::CccxPermissionQueue;
-use crate::permission_queue_bridge::NativeApproval;
 use crate::codex_thread::ThreadConfigSnapshot;
 #[cfg(test)]
 use crate::compact::collect_user_messages;
@@ -189,6 +187,8 @@ use crate::config::PermissionProfileState;
 use crate::config::StartedNetworkProxy;
 use crate::config::resolve_web_search_mode_for_turn;
 use crate::context_manager::ContextManager;
+use crate::permission_queue_bridge::CccxPermissionQueue;
+use crate::permission_queue_bridge::NativeApproval;
 use crate::thread_rollout_truncation::initial_history_has_prior_user_turns;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerSource;
@@ -469,6 +469,7 @@ const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyb
 
 async fn resolve_cccx_permission_request(
     queue: &CccxPermissionQueue,
+    agent_control: &crate::agent::AgentControl,
     request_id: &str,
     decision: &ReviewDecision,
 ) {
@@ -488,6 +489,14 @@ async fn resolve_cccx_permission_request(
         warn!(%request_id, %error, "cccx permission queue could not resolve native approval");
     }
     queue.forget_native_approval(request_id).await;
+    if approved {
+        if let Err(error) = agent_control.advance_cccx_safe_batch().await {
+            agent_control.stop_cccx_safe_batch().await;
+            warn!(%error, "cccx permission batch could not advance after native approval");
+        }
+    } else {
+        agent_control.stop_cccx_safe_batch().await;
+    }
 }
 
 impl Session {
@@ -2298,6 +2307,7 @@ impl Session {
         let decision = rx_approve.await.unwrap_or(ReviewDecision::Abort);
         resolve_cccx_permission_request(
             &self.services.cccx_permission_queue,
+            &self.services.agent_control,
             &cccx_request_id,
             &decision,
         )
@@ -2384,6 +2394,7 @@ impl Session {
         let decision = rx_approve.await.unwrap_or(ReviewDecision::Abort);
         resolve_cccx_permission_request(
             &self.services.cccx_permission_queue,
+            &self.services.agent_control,
             &cccx_request_id,
             &decision,
         )

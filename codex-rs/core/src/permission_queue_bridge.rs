@@ -1,6 +1,6 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::collections::BTreeMap;
 
 use cccx_policy::{
     NormalizedAction, PermissionRequest, PermissionRequestQueue, PermissionRisk, QueueError,
@@ -69,10 +69,12 @@ impl CccxPermissionQueue {
         request_id
     }
 
+    #[cfg(test)]
     pub async fn approve(&self, request_id: &str, observed_digest: &str) -> Result<(), QueueError> {
         self.inner.lock().await.approve(request_id, observed_digest)
     }
 
+    #[cfg(test)]
     pub async fn deny(&self, request_id: &str) -> Result<(), QueueError> {
         self.inner.lock().await.deny(request_id)
     }
@@ -145,12 +147,26 @@ impl CccxPermissionQueue {
             .map(String::from)
     }
 
+    /// Return the only request that may be auto-approved by a batch
+    /// controller. Queued requests must wait until the native decision for
+    /// the current active request completes and promotes them.
+    pub async fn active_safe_request_id(&self) -> Option<String> {
+        let queue = self.inner.lock().await;
+        let request_id = queue.active_request_id()?;
+        let request = queue.get(request_id)?;
+        (request.risk != PermissionRisk::High && request.risk != PermissionRisk::CircuitBreaker)
+            .then(|| request_id.to_string())
+    }
+
+    #[cfg(test)]
     pub async fn get(&self, request_id: &str) -> Option<PermissionRequest> {
         self.inner.lock().await.get(request_id).cloned()
     }
 
-    /// Batch-approve queued requests that are NOT circuit-breaker/high-risk.
-    /// Returns the IDs that were approved.
+    /// Test-only access to the policy queue's batch primitive. Production uses
+    /// the sequential native-approval controller above instead, so a worker's
+    /// native waiter is never orphaned.
+    #[cfg(test)]
     pub async fn batch_approve_safe(&self) -> Vec<String> {
         self.inner.lock().await.batch_approve_safe()
     }
@@ -411,7 +427,10 @@ mod tests {
             queue.get(&first).await.map(|request| request.status),
             Some(PermissionRequestStatus::Approved)
         );
-        assert_eq!(queue.active_request_id().await.as_deref(), Some(second.as_str()));
+        assert_eq!(
+            queue.active_request_id().await.as_deref(),
+            Some(second.as_str())
+        );
     }
 
     #[tokio::test]
@@ -438,5 +457,30 @@ mod tests {
         assert_eq!(queue.native_approval(&request_id).await, Some(native));
         queue.cancel_agent_requests("worker-a").await;
         assert_eq!(queue.native_approval(&request_id).await, None);
+    }
+
+    #[tokio::test]
+    async fn active_safe_request_excludes_high_risk_native_waiters() {
+        let queue = CccxPermissionQueue::new();
+        let shell = NormalizedAction {
+            action_type: ActionType::Shell,
+            summary: "unsafe command".to_string(),
+            command: Some("Remove-Item".to_string()),
+            target_paths: Vec::new(),
+            tool_name: Some("shell_command".to_string()),
+            task_id: "T1".to_string(),
+            changed_files: 0,
+            changed_lines: 0,
+        };
+        queue
+            .enqueue(
+                "worker-a".to_string(),
+                "worker A".to_string(),
+                "T1".to_string(),
+                shell,
+                "requires shell approval".to_string(),
+            )
+            .await;
+        assert_eq!(queue.active_safe_request_id().await, None);
     }
 }

@@ -574,19 +574,31 @@ impl App {
                     response
                         .requests
                         .into_iter()
-                        .map(|request| format!(
-                            "{} [{}] {} · {} · {} · {}",
-                            request.request_id,
-                            request.status,
-                            request.agent_display_name,
-                            request.task_id,
-                            request.risk,
-                            request.action_summary,
-                        ))
+                        .map(|request| {
+                            format!(
+                                "{} [{}] {} · {} · {} · {}",
+                                request.request_id,
+                                request.status,
+                                request.agent_display_name,
+                                request.task_id,
+                                request.risk,
+                                request.action_summary,
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join("\n")
                 };
                 self.chat_widget.add_info_message(text, None);
+                Ok(true)
+            }
+            AppCommand::BeginCccxSafePermissionBatch => {
+                let started = app_server.cccx_permission_batch_approve(thread_id).await?;
+                let text = if started {
+                    "CCCX safe batch approval started; requests advance one at a time."
+                } else {
+                    "No active low/medium-risk CCCX permission is eligible; high-risk and circuit-breaker requests remain queued."
+                };
+                self.chat_widget.add_info_message(text.to_string(), None);
                 Ok(true)
             }
             AppCommand::UserTurn {

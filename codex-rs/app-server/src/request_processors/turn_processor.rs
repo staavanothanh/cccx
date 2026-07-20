@@ -281,6 +281,18 @@ impl TurnRequestProcessor {
         Ok(Some(CccxPermissionListResponse { requests }.into()))
     }
 
+    pub(crate) async fn cccx_permission_batch_approve(
+        &self,
+        params: CccxPermissionBatchApproveParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let started = thread
+            .begin_cccx_safe_permission_batch()
+            .await
+            .map_err(invalid_request)?;
+        Ok(Some(CccxPermissionBatchApproveResponse { started }.into()))
+    }
+
     pub(crate) async fn thread_realtime_start(
         &self,
         request_id: &ConnectionRequestId,

@@ -7,13 +7,13 @@ use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::cccx_runtime::CccxRuntimeRegistry;
-use crate::permission_queue_bridge::CccxPermissionQueue;
-use crate::permission_queue_bridge::NativeApproval;
 use crate::cccx_runtime::CccxSpawnRuntime;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
 use crate::environment_selection::TurnEnvironmentSnapshot;
+use crate::permission_queue_bridge::CccxPermissionQueue;
+use crate::permission_queue_bridge::NativeApproval;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::emit_subagent_session_started;
 use crate::session_prefix::format_inter_agent_completion_message;
@@ -35,8 +35,8 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ResumedHistory;
+use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -118,6 +118,7 @@ pub(crate) struct AgentControl {
     cccx_runtime_active: Arc<AtomicUsize>,
     /// One root-owned queue shared by Main CC and every descendant session.
     cccx_permission_queue: Arc<CccxPermissionQueue>,
+    cccx_batch_approval_active: Arc<tokio::sync::Mutex<bool>>,
 }
 
 impl AgentControl {
@@ -217,7 +218,9 @@ impl AgentControl {
             .cccx_permission_queue
             .native_approval(request_id)
             .await
-            .ok_or_else(|| format!("unknown or completed CCCX permission request `{request_id}`"))?;
+            .ok_or_else(|| {
+                format!("unknown or completed CCCX permission request `{request_id}`")
+            })?;
         let (thread_id, op) = match native {
             NativeApproval::Exec {
                 thread_id,
@@ -257,6 +260,42 @@ impl AgentControl {
             .await
             .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    /// Begin or advance a root-scoped batch of safe approvals. Each call only
+    /// dispatches the currently active safe request; the native completion
+    /// callback invokes this again after queue promotion.
+    pub(crate) async fn begin_cccx_safe_batch(&self) -> Result<bool, String> {
+        let mut batch_active = self.cccx_batch_approval_active.lock().await;
+        *batch_active = true;
+        drop(batch_active);
+        match self.advance_cccx_safe_batch().await {
+            Ok(started) => Ok(started),
+            Err(error) => {
+                self.stop_cccx_safe_batch().await;
+                Err(error)
+            }
+        }
+    }
+
+    /// Stop a batch after an explicit denial or a delivery failure. A later
+    /// ordinary approval must never accidentally continue a stale batch.
+    pub(crate) async fn stop_cccx_safe_batch(&self) {
+        *self.cccx_batch_approval_active.lock().await = false;
+    }
+
+    pub(crate) async fn advance_cccx_safe_batch(&self) -> Result<bool, String> {
+        let mut batch_active = self.cccx_batch_approval_active.lock().await;
+        if !*batch_active {
+            return Ok(false);
+        }
+        let Some(request_id) = self.cccx_permission_queue.active_safe_request_id().await else {
+            *batch_active = false;
+            return Ok(false);
+        };
+        drop(batch_active);
+        self.resolve_cccx_permission(&request_id, true).await?;
+        Ok(true)
     }
 
     pub(crate) async fn cccx_work_spec_for_thread(

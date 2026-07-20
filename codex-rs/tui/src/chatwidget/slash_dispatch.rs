@@ -777,17 +777,16 @@ impl ChatWidget {
             Ok(Some(CccxCommand::Agents(AgentsCommand::Cancel { agent_id }))) => {
                 match codex_protocol::ThreadId::from_string(&agent_id) {
                     Ok(agent_id) => {
-                        self.app_event_tx.send(AppEvent::CodexOp(
-                            AppCommand::CancelCccxWorker { agent_id },
-                        ));
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(AppCommand::CancelCccxWorker { agent_id }));
                         self.add_info_message(
                             format!("/agents cancel {agent_id} — terminal cancellation sent."),
                             Some("Check /agents list to confirm cancellation.".to_string()),
                         );
                     }
-                    Err(error) => self.add_error_message(
-                        format!("Invalid agent id `{agent_id}`: {error}"),
-                    ),
+                    Err(error) => {
+                        self.add_error_message(format!("Invalid agent id `{agent_id}`: {error}"))
+                    }
                 }
             }
             Ok(Some(CccxCommand::Agents(AgentsCommand::Model { preset, route }))) => {
@@ -801,26 +800,28 @@ impl ChatWidget {
                     .send(AppEvent::CodexOp(AppCommand::ListCccxPermissions));
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Approve { request_id }))) => {
-                self.app_event_tx.send(AppEvent::CodexOp(
-                    AppCommand::ResolveCccxPermission {
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(AppCommand::ResolveCccxPermission {
                         request_id: request_id.clone(),
                         approve: true,
-                    },
-                ));
+                    }));
                 self.add_info_message(
-                    format!("/permissions approve {request_id} — decision sent to the queued request."),
+                    format!(
+                        "/permissions approve {request_id} — decision sent to the queued request."
+                    ),
                     None,
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Deny { request_id }))) => {
-                self.app_event_tx.send(AppEvent::CodexOp(
-                    AppCommand::ResolveCccxPermission {
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(AppCommand::ResolveCccxPermission {
                         request_id: request_id.clone(),
                         approve: false,
-                    },
-                ));
+                    }));
                 self.add_info_message(
-                    format!("/permissions deny {request_id} — decision sent to the queued request."),
+                    format!(
+                        "/permissions deny {request_id} — decision sent to the queued request."
+                    ),
                     None,
                 );
             }
@@ -828,18 +829,17 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::CodexOp(AppCommand::ListCccxPermissions));
                 self.add_info_message(
-                    format!("/permissions inspect {request_id} — requested current queue snapshot."),
+                    format!(
+                        "/permissions inspect {request_id} — requested current queue snapshot."
+                    ),
                     None,
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::BatchApprove {
-                request_ids,
+                request_ids: _,
             }))) => {
-                let count = request_ids.len();
-                self.add_info_message(
-                    format!("/permissions batch-approve — {count} requests identified. Batch approval with circuit-breaker/high-risk bypass requires runtime session wiring (post-MVP)."),
-                    Some("Use Y/N in the approval popup for individual approve actions.".to_string()),
-                );
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(AppCommand::BeginCccxSafePermissionBatch));
             }
             Ok(Some(CccxCommand::Remember { note })) => {
                 let text = note.unwrap_or_default();
@@ -878,17 +878,15 @@ impl ChatWidget {
                 } else if let Some(agent_id) = target {
                     match codex_protocol::ThreadId::from_string(&agent_id) {
                         Ok(agent_id) => {
-                            self.app_event_tx.send(AppEvent::CodexOp(
-                                AppCommand::CancelCccxWorker { agent_id },
-                            ));
+                            self.app_event_tx
+                                .send(AppEvent::CodexOp(AppCommand::CancelCccxWorker { agent_id }));
                             self.add_info_message(
                                 format!("/cancel {agent_id} — terminal cancellation sent."),
                                 Some("Check /agents list to confirm cancellation.".to_string()),
                             );
                         }
-                        Err(error) => self.add_error_message(
-                            format!("Invalid agent id `{agent_id}`: {error}"),
-                        ),
+                        Err(error) => self
+                            .add_error_message(format!("Invalid agent id `{agent_id}`: {error}")),
                     }
                 } else {
                     self.app_event_tx.interrupt();

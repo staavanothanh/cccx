@@ -22,6 +22,14 @@ use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::CccxPermissionBatchApproveParams;
+use codex_app_server_protocol::CccxPermissionBatchApproveResponse;
+use codex_app_server_protocol::CccxPermissionListParams;
+use codex_app_server_protocol::CccxPermissionListResponse;
+use codex_app_server_protocol::CccxPermissionResolveParams;
+use codex_app_server_protocol::CccxPermissionResolveResponse;
+use codex_app_server_protocol::CccxWorkerCancelParams;
+use codex_app_server_protocol::CccxWorkerCancelResponse;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigRequirementsReadResponse;
@@ -100,12 +108,6 @@ use codex_app_server_protocol::ThreadUnarchiveResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::Turn;
-use codex_app_server_protocol::CccxWorkerCancelParams;
-use codex_app_server_protocol::CccxWorkerCancelResponse;
-use codex_app_server_protocol::CccxPermissionResolveParams;
-use codex_app_server_protocol::CccxPermissionResolveResponse;
-use codex_app_server_protocol::CccxPermissionListParams;
-use codex_app_server_protocol::CccxPermissionListResponse;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -975,6 +977,23 @@ impl AppServerSession {
                 },
             })
             .await
+    }
+
+    pub(crate) async fn cccx_permission_batch_approve(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> std::result::Result<bool, TypedRequestError> {
+        let request_id = self.next_request_id();
+        let response: CccxPermissionBatchApproveResponse = self
+            .client
+            .request_typed(ClientRequest::CccxPermissionBatchApprove {
+                request_id,
+                params: CccxPermissionBatchApproveParams {
+                    thread_id: thread_id.to_string(),
+                },
+            })
+            .await?;
+        Ok(response.started)
     }
 
     pub(crate) async fn startup_interrupt(

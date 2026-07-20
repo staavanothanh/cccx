@@ -79,8 +79,12 @@ pub async fn cancel_cccx_worker(sess: &Arc<Session>, reason: String) {
         .await
     {
         Ok(true) => sess.abort_all_tasks(TurnAbortReason::Cancelled).await,
-        Ok(false) => warn!(thread_id = %sess.thread_id, "cccx: ignored terminal cancellation for an unknown worker"),
-        Err(error) => warn!(%error, thread_id = %sess.thread_id, "cccx: failed to record terminal worker cancellation"),
+        Ok(false) => {
+            warn!(thread_id = %sess.thread_id, "cccx: ignored terminal cancellation for an unknown worker")
+        }
+        Err(error) => {
+            warn!(%error, thread_id = %sess.thread_id, "cccx: failed to record terminal worker cancellation")
+        }
     }
 }
 
