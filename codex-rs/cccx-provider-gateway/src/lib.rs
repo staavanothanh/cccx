@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
+use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 use url::Url;
@@ -340,13 +341,23 @@ pub enum ProviderGatewayError {
     HttpRequest(reqwest::Error),
     #[error("9router returned HTTP {status}: {body}")]
     HttpStatus { status: u16, body: String },
+    #[error("failed to read cccx model catalog `{path}`: {source}")]
+    CatalogRead {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("failed to parse cccx model catalog `{path}`: {source}")]
+    CatalogParse {
+        path: String,
+        source: serde_json::Error,
+    },
 }
 
 /// Local model catalog that defines which models are available to the `/model`
 /// command and model picker when 9router's catalog API is not available.
 ///
-/// This is a static, local-consensus catalog of known-good model IDs that the
-/// cccx CLI can safely offer without calling an external API.
+/// Route IDs remain opaque. cccx only offers owner-configured route IDs; it
+/// does not hardcode upstream GPT presets or infer downstream providers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalConfigCatalog {
     /// The default model ID (e.g. `"oc/deepseek-v4-flash-free"`).
@@ -355,36 +366,89 @@ pub struct LocalConfigCatalog {
     pub available_models: Vec<String>,
     /// The fallback policy ID to use for all routes.
     pub fallback_policy_id: FallbackPolicyId,
-}
-
-impl Default for LocalConfigCatalog {
-    fn default() -> Self {
-        Self {
-            default_model: "oc/deepseek-v4-flash-free".to_string(),
-            available_models: vec![
-                "oc/deepseek-v4-flash-free".to_string(),
-                "oc/deepseek-v4-pro".to_string(),
-            ],
-            fallback_policy_id: FallbackPolicyId::Strict,
-        }
-    }
+    #[serde(default)]
+    pub fetched_at: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub digest: Option<String>,
 }
 
 impl LocalConfigCatalog {
+    pub const FILE_NAME: &'static str = "cccx-model-catalog.json";
+
+    /// Build a minimal catalog from the currently configured runtime model.
+    pub fn from_current_model(current_model: impl Into<String>) -> Self {
+        let current_model = current_model.into();
+        Self {
+            default_model: current_model.clone(),
+            available_models: vec![current_model],
+            fallback_policy_id: FallbackPolicyId::Strict,
+            fetched_at: None,
+            source: Some("current_config".to_string()),
+            digest: None,
+        }
+    }
+
+    pub fn load_from_home_or_current(
+        cccx_home: &Path,
+        current_model: impl Into<String>,
+    ) -> Result<Self, ProviderGatewayError> {
+        let path = cccx_home.join(Self::FILE_NAME);
+        let current_model = current_model.into();
+        if !path.exists() {
+            return Ok(Self::from_current_model(current_model));
+        }
+        let contents = std::fs::read_to_string(&path).map_err(|source| {
+            ProviderGatewayError::CatalogRead {
+                path: path.display().to_string(),
+                source,
+            }
+        })?;
+        let mut catalog: Self =
+            serde_json::from_str(&contents).map_err(|source| ProviderGatewayError::CatalogParse {
+                path: path.display().to_string(),
+                source,
+            })?;
+        catalog.normalize(current_model);
+        Ok(catalog)
+    }
+
+    fn normalize(&mut self, current_model: String) {
+        self.available_models.retain(|model| {
+            let trimmed = model.trim();
+            !trimmed.is_empty() && !trimmed.chars().any(char::is_control)
+        });
+        self.available_models.sort();
+        self.available_models.dedup();
+
+        if !current_model.trim().is_empty()
+            && !self.available_models.iter().any(|model| model == &current_model)
+        {
+            self.available_models.push(current_model.clone());
+        }
+        if self.default_model.trim().is_empty()
+            || !self
+                .available_models
+                .iter()
+                .any(|model| model == &self.default_model)
+        {
+            self.default_model = current_model;
+        }
+    }
+
     /// Returns the models that should appear in the `/model` popup, keyed by
     /// the display name shown in the TUI.
-    pub fn display_entries(&self) -> Vec<(&str, &str)> {
+    pub fn display_entries(&self) -> Vec<(String, String)> {
         self.available_models
             .iter()
             .map(|m| {
-                let display = if m.contains("flash-free") {
-                    "Flash (free)"
-                } else if m.contains("-pro") {
-                    "Pro"
+                let display = if m == &self.default_model {
+                    format!("{m} (default)")
                 } else {
-                    m.as_str()
+                    m.clone()
                 };
-                (m.as_str(), display)
+                (m.clone(), display)
             })
             .collect()
     }
@@ -396,7 +460,6 @@ pub mod provenance;
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use std::collections::BTreeSet;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -590,43 +653,105 @@ mod tests {
 #[cfg(test)]
 mod local_catalog_tests {
     use super::*;
+    use std::fs;
 
     #[test]
-    fn default_catalog_has_flash_free_as_default() {
-        let catalog = LocalConfigCatalog::default();
+    fn current_model_catalog_uses_configured_model_as_only_default() {
+        let catalog = LocalConfigCatalog::from_current_model("oc/deepseek-v4-flash-free");
         assert_eq!(catalog.default_model, "oc/deepseek-v4-flash-free");
+        assert_eq!(catalog.available_models, vec!["oc/deepseek-v4-flash-free"]);
+        assert_eq!(catalog.source.as_deref(), Some("current_config"));
     }
 
     #[test]
-    fn default_catalog_contains_at_least_flash_and_pro() {
-        let catalog = LocalConfigCatalog::default();
-        assert!(
-            catalog
-                .available_models
-                .contains(&"oc/deepseek-v4-flash-free".to_string())
-        );
-        assert!(
-            catalog
-                .available_models
-                .contains(&"oc/deepseek-v4-pro".to_string())
-        );
+    fn missing_catalog_file_falls_back_to_current_model_only() {
+        let home = std::env::temp_dir().join(format!(
+            "cccx-provider-gateway-catalog-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+
+        let catalog =
+            LocalConfigCatalog::load_from_home_or_current(&home, "oc/deepseek-v4-flash-free")
+                .unwrap();
+
+        assert_eq!(catalog.default_model, "oc/deepseek-v4-flash-free");
+        assert_eq!(catalog.available_models, vec!["oc/deepseek-v4-flash-free"]);
+
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
-    fn default_catalog_strict_fallback() {
-        let catalog = LocalConfigCatalog::default();
+    fn file_catalog_is_loaded_and_keeps_current_model_available() {
+        let home = std::env::temp_dir().join(format!(
+            "cccx-provider-gateway-catalog-file-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(LocalConfigCatalog::FILE_NAME),
+            r#"{
+  "default_model": "oc/deepseek-v4-pro",
+  "available_models": ["oc/deepseek-v4-pro", "oc/deepseek-v4-pro", ""],
+  "fallback_policy_id": "strict",
+  "fetched_at": "2026-07-20T00:00:00Z",
+  "source": "test",
+  "digest": "sha256:test"
+}"#,
+        )
+        .unwrap();
+
+        let catalog =
+            LocalConfigCatalog::load_from_home_or_current(&home, "oc/deepseek-v4-flash-free")
+                .unwrap();
+
+        assert_eq!(catalog.default_model, "oc/deepseek-v4-pro");
+        assert_eq!(
+            catalog.available_models,
+            vec!["oc/deepseek-v4-pro", "oc/deepseek-v4-flash-free"]
+        );
+        assert_eq!(catalog.source.as_deref(), Some("test"));
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn current_model_catalog_strict_fallback() {
+        let catalog = LocalConfigCatalog::from_current_model("oc/deepseek-v4-flash-free");
         assert_eq!(catalog.fallback_policy_id, FallbackPolicyId::Strict);
     }
 
     #[test]
-    fn display_entries_produces_readable_labels() {
-        let catalog = LocalConfigCatalog::default();
+    fn display_entries_mark_only_configured_default() {
+        let catalog = LocalConfigCatalog {
+            default_model: "oc/deepseek-v4-flash-free".to_string(),
+            available_models: vec![
+                "oc/deepseek-v4-flash-free".to_string(),
+                "oc/deepseek-v4-pro".to_string(),
+            ],
+            fallback_policy_id: FallbackPolicyId::Strict,
+            fetched_at: None,
+            source: Some("test".to_string()),
+            digest: None,
+        };
         let entries = catalog.display_entries();
         assert_eq!(entries.len(), 2);
-        // Flash (free) model
-        assert_eq!(entries[0], ("oc/deepseek-v4-flash-free", "Flash (free)"));
-        // Pro model
-        assert_eq!(entries[1], ("oc/deepseek-v4-pro", "Pro"));
+        assert_eq!(
+            entries[0],
+            (
+                "oc/deepseek-v4-flash-free".to_string(),
+                "oc/deepseek-v4-flash-free (default)".to_string()
+            )
+        );
+        assert_eq!(
+            entries[1],
+            (
+                "oc/deepseek-v4-pro".to_string(),
+                "oc/deepseek-v4-pro".to_string()
+            )
+        );
     }
 
     #[test]
@@ -635,8 +760,17 @@ mod local_catalog_tests {
             default_model: "unknown/model".to_string(),
             available_models: vec!["unknown/model".to_string()],
             fallback_policy_id: FallbackPolicyId::Strict,
+            fetched_at: None,
+            source: None,
+            digest: None,
         };
         let entries = catalog.display_entries();
-        assert_eq!(entries, vec![("unknown/model", "unknown/model")]);
+        assert_eq!(
+            entries,
+            vec![(
+                "unknown/model".to_string(),
+                "unknown/model (default)".to_string()
+            )]
+        );
     }
 }

@@ -2582,6 +2582,43 @@ The method is intentionally not yet called: Phase 6 still needs the distinct
 terminal-cancel transport contract across app-server and TUI; reusing
 `turn/interrupt` would incorrectly make cancellation resumable.
 
+## 2026-07-20 — Phase 7A: 9router catalog/provenance + completed-stream EOF
+
+- `/model` in cccx mode no longer uses a hardcoded local catalog or clones
+  upstream GPT presets into the cccx picker. It now reads optional
+  `CCCX_HOME/cccx-model-catalog.json`; if the file is missing or invalid, it
+  falls back to the current runtime/configured model only.
+- `GatewayProvenance` no longer infers downstream effective provider/model from
+  the requested route string or local provider id. Missing 9router metadata
+  remains unknown until the gateway reports concrete metadata.
+- Removed remaining user-facing/debug text implying a provider-boundary env
+  bypass.
+- Fixed the stream mapper bug where EOF or a late transport error after
+  `ResponseEvent::Completed` could still be treated as
+  `stream closed before response.completed`. This matches 9router/OpenAI-style
+  stream behavior where terminal completion followed by connection close is a
+  valid end state.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p cccx-provider-gateway --lib -j 1
+cargo +1.95.0 test -p codex-core provider_gateway_bridge --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-core response_stream_ --lib -j 1 -- --test-threads=1
+cargo +1.95.0 check -p codex-tui -j 1
+```
+
+Notes:
+
+- One prior validation attempt with `cargo test -p codex-core response_stream_`
+  and the default Rust test harness parallelism produced a tracing-feedback
+  race in an existing test. Re-running the same filter with
+  `-- --test-threads=1` passed; the two new terminal-stream regressions passed
+  in both runs.
+- Remaining Phase 7 work: persist live gateway provenance into the same
+  attempt Artifact/TaskGraph/headless event, implement retry/backoff with
+  side-effect awareness, and add mock 9router multi-turn tool-loop coverage.
+
 ## 2026-07-20 — Phase 5D: Task Graph writer lease
 
 - Added `update_task_graph()`, a project-local writer-lease transaction for

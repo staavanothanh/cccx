@@ -664,6 +664,67 @@ async fn response_stream_records_last_model_feedback_ids() {
 }
 
 #[tokio::test]
+async fn response_stream_eof_after_completed_is_clean_terminal() -> anyhow::Result<()> {
+    let api_stream = futures::stream::iter([
+        Ok(ResponseEvent::Created),
+        Ok(ResponseEvent::Completed {
+            response_id: "resp-123".to_string(),
+            token_usage: None,
+            end_turn: Some(true),
+        }),
+    ]);
+    let (mut stream, _) = super::map_response_events(
+        Some("req-123".to_string()),
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+    );
+
+    let mut saw_completed = false;
+    while let Some(event) = stream.next().await {
+        match event? {
+            ResponseEvent::Completed { response_id, .. } => {
+                saw_completed = true;
+                assert_eq!(response_id, "resp-123");
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_completed, "mapped stream should forward response.completed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn response_stream_error_after_completed_is_ignored() -> anyhow::Result<()> {
+    let api_stream = futures::stream::iter([
+        Ok(ResponseEvent::Completed {
+            response_id: "resp-123".to_string(),
+            token_usage: None,
+            end_turn: Some(true),
+        }),
+        Err(ApiError::Stream("late disconnect after completed".to_string())),
+    ]);
+    let (mut stream, _) = super::map_response_events(
+        Some("req-123".to_string()),
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+    );
+
+    let mut events = Vec::new();
+    while let Some(event) = stream.next().await {
+        events.push(event?);
+    }
+
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], ResponseEvent::Completed { .. }));
+    Ok(())
+}
+
+#[tokio::test]
 async fn bedrock_unauthorized_error_uses_provider_mapping() {
     let provider = create_model_provider(
         ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),

@@ -48,6 +48,24 @@ impl GatewayProvenance {
         }
     }
 
+    /// Record observed gateway metadata without inferring downstream provider
+    /// identity from the requested route string. Missing fields remain
+    /// `None`/unknown until 9router returns real metadata.
+    pub fn record_effective_metadata(
+        &mut self,
+        route_id: Option<String>,
+        provider: Option<String>,
+        model: Option<String>,
+    ) {
+        if self.effective_route_id.is_none() {
+            self.effective_route_id = route_id;
+            self.effective_provider = provider;
+            self.effective_model = model;
+        } else if let (Some(provider), Some(model)) = (provider, model) {
+            self.fallback_chain.push(format!("{provider}:{model}"));
+        }
+    }
+
     pub fn record_fallback_policy(&mut self, policy: crate::FallbackPolicyId) {
         self.fallback_policy_id = Some(policy);
     }
@@ -116,6 +134,18 @@ mod tests {
             provenance.stream_termination_status.as_deref(),
             Some("completed")
         );
+    }
+
+    #[test]
+    fn provenance_does_not_infer_effective_metadata_when_router_does_not_report_it() {
+        let mut provenance = GatewayProvenance::new("oc/deepseek-v4-flash-free".to_string());
+
+        provenance.record_effective_metadata(None, None, None);
+
+        assert_eq!(provenance.effective_route_id, None);
+        assert_eq!(provenance.effective_provider, None);
+        assert_eq!(provenance.effective_model, None);
+        assert!(provenance.fallback_chain.is_empty());
     }
 
     #[test]

@@ -1795,9 +1795,8 @@ impl ModelClientSession {
         ProviderGatewayBridge,
         Option<cccx_provider_gateway::provenance::GatewayProvenance>,
     ) {
-        // Phase 1: provider boundary is ALWAYS active (cannot be disabled
-        // by CCCX_MVP_ALLOW_UPSTREAM_SURFACES). The surface_gate_enabled()
-        // flag controls UI surfaces only.
+        // Phase 1: provider boundary is always active. The surface gate only
+        // controls UI exposure; it is not a provider-boundary bypass.
         let enabled = codex_features::cccx_mvp::provider_boundary_active();
         let bridge = ProviderGatewayBridge::new(enabled);
         let wire_api_label = match self.client.state.provider.info().wire_api {
@@ -1820,7 +1819,7 @@ impl ModelClientSession {
         if !bridge.check_fail_closed(provider_info) {
             return Err(CodexErr::InvalidRequest(format!(
                 "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
-                 Configure a 9router route in your cccx config or set CCCX_MVP_ALLOW_UPSTREAM_SURFACES=1 for debug use only.",
+                 Configure a 9router route in your cccx config. The provider boundary is always active and cannot be disabled.",
                 provider_info.name,
             )));
         }
@@ -1831,16 +1830,13 @@ impl ModelClientSession {
         &self,
         bridge: &ProviderGatewayBridge,
         provenance: &mut Option<cccx_provider_gateway::provenance::GatewayProvenance>,
-        model_info: &ModelInfo,
+        _model_info: &ModelInfo,
     ) {
-        let provider_info = self.client.state.provider.info();
-        let effective_route = bridge.resolve_route(provider_info, &model_info.slug);
-        bridge.end_call(
-            provenance,
-            Some(effective_route.as_str()),
-            Some(provider_info.name.as_str()),
-            Some(model_info.slug.as_str()),
-        );
+        // 9router owns downstream provider translation. Unless the gateway
+        // returns concrete response metadata/headers, cccx must keep effective
+        // route/provider/model unknown instead of inferring them from the
+        // requested route string or local provider id.
+        bridge.end_call(provenance, None, None, None);
         if let Some(provenance) = provenance.as_ref() {
             trace!(
                 requested_route_id = %provenance.requested_route_id,
@@ -2581,6 +2577,7 @@ where
         let mut items_added: Vec<ResponseItem> = Vec::new();
         let (request_start, mut ttft_ms) = (Instant::now(), None);
         let mut api_stream = api_stream;
+        let mut completed = false;
         let upstream_request_id = upstream_request_id.as_deref();
         if let Some(upstream_request_id) = upstream_request_id {
             feedback_tags!(last_model_request_id = upstream_request_id);
@@ -2648,6 +2645,7 @@ where
                     {
                         return;
                     }
+                    completed = true;
                 }
                 Ok(event) => {
                     if matches!(&event, ResponseEvent::OutputItemAdded(_)) && ttft_ms.is_none() {
@@ -2665,6 +2663,9 @@ where
                     }
                 }
                 Err(err) => {
+                    if completed {
+                        return;
+                    }
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let upstream_request_id =
@@ -2687,6 +2688,9 @@ where
                     }
                 }
             }
+        }
+        if completed {
+            return;
         }
         inference_trace_attempt.record_failed(
             "stream closed before response.completed",

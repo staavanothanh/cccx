@@ -55,19 +55,11 @@ impl ProviderGatewayBridge {
         effective_model: Option<&str>,
     ) {
         if let Some(prov) = provenance.as_mut() {
-            if let (Some(route), Some(provider), Some(model)) =
-                (effective_route_id, effective_provider, effective_model)
-            {
-                prov.record_effective(route.to_string(), provider.to_string(), model.to_string());
-            }
-        }
-    }
-
-    pub fn resolve_route(&self, provider_info: &ModelProviderInfo, model_slug: &str) -> String {
-        if self.enabled && provider_info.is_9router() {
-            format!("9router/{}", model_slug)
-        } else {
-            model_slug.to_string()
+            prov.record_effective_metadata(
+                effective_route_id.map(str::to_string),
+                effective_provider.map(str::to_string),
+                effective_model.map(str::to_string),
+            );
         }
     }
 }
@@ -84,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn enabled_gateway_records_effective_9router_route() {
+    fn enabled_gateway_records_effective_metadata_when_supplied() {
         let bridge = ProviderGatewayBridge::new(true);
         let mut provenance = bridge.begin_call("oc/deepseek-v4-flash-free");
 
@@ -109,6 +101,20 @@ mod tests {
     }
 
     #[test]
+    fn enabled_gateway_does_not_infer_downstream_route_without_metadata() {
+        let bridge = ProviderGatewayBridge::new(true);
+        let mut provenance = bridge.begin_call("oc/deepseek-v4-flash-free");
+
+        bridge.end_call(&mut provenance, None, None, None);
+
+        let provenance = provenance.expect("enabled bridge creates provenance");
+        assert_eq!(provenance.requested_route_id, "oc/deepseek-v4-flash-free");
+        assert_eq!(provenance.effective_route_id, None);
+        assert_eq!(provenance.effective_provider, None);
+        assert_eq!(provenance.effective_model, None);
+    }
+
+    #[test]
     fn enabled_gateway_records_wire_api_and_stream_termination_in_provenance() {
         let bridge = ProviderGatewayBridge::new(true);
         let mut provenance =
@@ -122,19 +128,6 @@ mod tests {
             provenance.stream_termination_status.as_deref(),
             Some("completed")
         );
-    }
-
-    #[test]
-    fn route_resolution_prefixes_only_canonical_9router_provider() {
-        let bridge = ProviderGatewayBridge::new(true);
-        let router = ModelProviderInfo::create_9router_provider();
-        let openai = ModelProviderInfo::create_openai_provider(None);
-
-        assert_eq!(
-            bridge.resolve_route(&router, "oc/deepseek-v4-flash-free"),
-            "9router/oc/deepseek-v4-flash-free"
-        );
-        assert_eq!(bridge.resolve_route(&openai, "gpt-5.6-sol"), "gpt-5.6-sol");
     }
 
     #[test]

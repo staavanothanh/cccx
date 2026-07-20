@@ -40,14 +40,27 @@ impl ChatWidget {
         self.open_model_popup_with_presets(presets);
     }
 
-    fn cccx_model_popup_presets(&self, presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
-        let catalog = cccx_provider_gateway::LocalConfigCatalog::default();
+    fn cccx_model_popup_presets(&mut self, _presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
+        let current_model = self.current_model().to_string();
+        let catalog = match cccx_provider_gateway::LocalConfigCatalog::load_from_home_or_current(
+            self.config.codex_home.as_path(),
+            current_model.clone(),
+        ) {
+            Ok(catalog) => catalog,
+            Err(err) => {
+                self.add_info_message(
+                    format!("Failed to load cccx model catalog: {err}"),
+                    /*hint*/ None,
+                );
+                cccx_provider_gateway::LocalConfigCatalog::from_current_model(current_model.clone())
+            }
+        };
         let default_effort = self
             .effective_reasoning_effort()
             .unwrap_or(ReasoningEffortConfig::Medium);
 
         // Pre-compute display names from the local catalog.
-        let display_map: std::collections::BTreeMap<&str, &str> = catalog
+        let display_map: std::collections::BTreeMap<String, String> = catalog
             .display_entries()
             .into_iter()
             .map(|(id, display)| (id, display))
@@ -59,9 +72,9 @@ impl ChatWidget {
             .iter()
             .map(|model_id| {
                 let display_name = display_map
-                    .get(model_id.as_str())
-                    .copied()
-                    .unwrap_or(model_id.as_str());
+                    .get(model_id)
+                    .cloned()
+                    .unwrap_or_else(|| model_id.clone());
                 ModelPreset {
                     id: model_id.clone(),
                     model: model_id.clone(),
@@ -87,36 +100,32 @@ impl ChatWidget {
             })
             .collect();
 
-        // Also include the current model if it's not in the local catalog yet
-        // (user may have an active remote model from before local catalog existed).
-        let current_model = self.current_model().to_string();
+        // Also include the current model if a stale catalog omitted it. Do not
+        // clone upstream GPT presets into cccx mode; route IDs must come from
+        // the owner config/catalog or the active runtime model.
         if !local_presets.iter().any(|p| p.model == current_model) {
-            if let Some(upstream_preset) = presets.iter().find(|p| p.model == current_model) {
-                local_presets.push(upstream_preset.clone());
-            } else {
-                local_presets.push(ModelPreset {
-                    id: current_model.clone(),
-                    model: current_model.clone(),
-                    display_name: current_model.clone(),
-                    description: "Active model (not in local config catalog)".to_string(),
-                    default_reasoning_effort: default_effort.clone(),
-                    supported_reasoning_efforts: vec![ReasoningEffortPreset {
-                        effort: default_effort.clone(),
-                        description: "configured default".to_string(),
-                    }],
-                    supports_personality: false,
-                    additional_speed_tiers: Vec::new(),
-                    service_tiers: Vec::new(),
-                    default_service_tier: None,
-                    is_default: false,
-                    upgrade: None,
-                    show_in_picker: true,
-                    multi_agent_version: None,
-                    availability_nux: None,
-                    supported_in_api: true,
-                    input_modalities: default_input_modalities(),
-                });
-            }
+            local_presets.push(ModelPreset {
+                id: current_model.clone(),
+                model: current_model.clone(),
+                display_name: current_model.clone(),
+                description: "Active cccx model from runtime config".to_string(),
+                default_reasoning_effort: default_effort.clone(),
+                supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                    effort: default_effort.clone(),
+                    description: "configured default".to_string(),
+                }],
+                supports_personality: false,
+                additional_speed_tiers: Vec::new(),
+                service_tiers: Vec::new(),
+                default_service_tier: None,
+                is_default: false,
+                upgrade: None,
+                show_in_picker: true,
+                multi_agent_version: None,
+                availability_nux: None,
+                supported_in_api: true,
+                input_modalities: default_input_modalities(),
+            });
         }
 
         local_presets
