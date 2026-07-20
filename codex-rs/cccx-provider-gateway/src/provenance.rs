@@ -1,5 +1,5 @@
 /// Provenance record for a single model call through 9router.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GatewayProvenance {
     pub gateway_request_id: String,
     pub requested_route_id: String,

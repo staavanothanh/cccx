@@ -124,6 +124,7 @@ mod tests {
             input_digest: "sha256:input".to_string(),
             output_digest: "sha256:output".to_string(),
             tool_call_sequence_digest: None,
+            stream_termination_status: None,
         }
     }
 

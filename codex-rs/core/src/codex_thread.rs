@@ -430,6 +430,7 @@ impl CodexThread {
             logical_session_id: checkpoint.logical_session_id.clone(),
             display_name,
             model_route_summary,
+            gateway_provenance: None,
         });
         let spawned = self
             .session

@@ -84,6 +84,7 @@ fn success_artifact(art_id: &str, work_spec_id: &str, attempt_id: &str) -> Artif
             input_digest: "sha256:in".to_string(),
             output_digest: "sha256:out".to_string(),
             tool_call_sequence_digest: None,
+            stream_termination_status: None,
         }),
         verification: None,
     }

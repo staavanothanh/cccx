@@ -9,6 +9,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+use cccx_provider_gateway::provenance::GatewayProvenance;
+use cccx_provider_gateway::FallbackPolicyId;
 use cccx_protocol::{
     Artifact, ArtifactProvenance, ArtifactStatus, ModelRouteSelection, PermissionPolicy, WorkSpec,
 };
@@ -38,6 +40,7 @@ pub(crate) struct CccxSpawnRuntime {
     pub(crate) logical_session_id: String,
     pub(crate) display_name: String,
     pub(crate) model_route_summary: String,
+    pub(crate) gateway_provenance: Option<GatewayProvenance>,
 }
 
 #[derive(Clone)]
@@ -356,6 +359,15 @@ impl CccxRuntimeRegistry {
                     format!("failed to persist interrupted worker checkpoint: {error}")
                 })?;
         }
+        let gateway_provenance = match runtime.gateway_provenance {
+            Some(provenance) => Some(provenance),
+            None => crate::cccx_gateway_provenance_state::load_gateway_provenance(
+                &runtime.project_root,
+                &child_thread_id.to_string(),
+            )
+            .await
+            .map_err(|error| format!("failed to load terminal gateway provenance: {error}"))?,
+        };
         let graph = cccx_task_graph_state::load_task_graph(&runtime.project_root)
             .await
             .map_err(|error| error.to_string())?
@@ -377,6 +389,7 @@ impl CccxRuntimeRegistry {
                 &runtime.work_spec,
                 &runtime.model_route_summary,
                 &status_summary,
+                gateway_provenance.as_ref(),
             ),
         );
 
@@ -447,6 +460,15 @@ impl CccxRuntimeRegistry {
         let Some(runtime) = self.by_thread.remove(&child_thread_id.to_string()) else {
             return Ok(false);
         };
+        let gateway_provenance = match runtime.gateway_provenance {
+            Some(provenance) => Some(provenance),
+            None => crate::cccx_gateway_provenance_state::load_gateway_provenance(
+                &runtime.project_root,
+                &child_thread_id.to_string(),
+            )
+            .await
+            .map_err(|error| format!("failed to load terminal gateway provenance: {error}"))?,
+        };
         let mut collector = ArtifactCollector::new(
             &runtime.work_spec.work_spec_id,
             &child_thread_id.to_string(),
@@ -455,7 +477,12 @@ impl CccxRuntimeRegistry {
         let artifact = collector.finalize(
             ArtifactStatus::Cancelled,
             reason.clone(),
-            provenance_for_runtime(&runtime.work_spec, &runtime.model_route_summary, &reason),
+            provenance_for_runtime(
+                &runtime.work_spec,
+                &runtime.model_route_summary,
+                &reason,
+                gateway_provenance.as_ref(),
+            ),
         );
         let initial = TaskGraph::new("cccx-runtime", "cccx runtime graph");
         cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
@@ -514,6 +541,7 @@ fn provenance_for_runtime(
     work_spec: &WorkSpec,
     route_id: &str,
     status_summary: &str,
+    gateway: Option<&GatewayProvenance>,
 ) -> ArtifactProvenance {
     use sha2::{Digest, Sha256};
     let mut sorted_tools: Vec<_> = work_spec.allowed_tools.iter().collect();
@@ -525,29 +553,54 @@ fn provenance_for_runtime(
         .join(",");
     let input_payload = format!("{}|{}", work_spec.objective, tools_joined);
     let input_digest = format!("sha256:{:x}", Sha256::digest(input_payload.as_bytes()));
-    // Phase 5: effective_route_id is "unknown" when gateway_request_id is None
-    // (no 9router evidence). We no longer copy requested_route_id as effective.
-    let effective_route_id = "unknown".to_string();
+    // Phase 5/7: effective_route_id is "unknown" when 9router provides no
+    // effective downstream metadata. We never infer it from the requested route.
+    let requested_route_id = gateway
+        .map(|gateway| gateway.requested_route_id.clone())
+        .unwrap_or_else(|| route_id.to_string());
+    let effective_route_id = gateway
+        .and_then(|gateway| gateway.effective_route_id.clone())
+        .unwrap_or_else(|| "unknown".to_string());
     // Phase 5 audit: output_digest is SHA256(status_summary), not a constant.
     // Different completions produce different output digests.
     let output_digest = format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
     ArtifactProvenance {
         producer_harness: work_spec.harness.clone(),
         producer_role: work_spec.role.clone(),
-        provider_gateway_request_id: "unknown".to_string(),
+        provider_gateway_request_id: gateway
+            .map(|gateway| gateway.gateway_request_id.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
         model_profile_id: "unknown".to_string(),
         capability_profile_id: "unknown".to_string(),
-        fallback_policy_id: work_spec.fallback_policy_id.clone(),
-        requested_route_id: route_id.to_string(),
+        fallback_policy_id: gateway
+            .and_then(|gateway| gateway.fallback_policy_id)
+            .map(fallback_policy_id_to_str)
+            .unwrap_or_else(|| work_spec.fallback_policy_id.as_str())
+            .to_string(),
+        requested_route_id,
         effective_route_id,
-        gateway_request_id: None,
-        requested_model: None,
-        effective_model: None,
-        retry_count: 0,
-        fallback_chain: Vec::new(),
+        gateway_request_id: gateway.map(|gateway| gateway.gateway_request_id.clone()),
+        requested_model: gateway.map(|gateway| gateway.requested_route_id.clone()),
+        effective_model: gateway.and_then(|gateway| gateway.effective_model.clone()),
+        retry_count: gateway
+            .map(|gateway| gateway.retry_count as usize)
+            .unwrap_or_default(),
+        fallback_chain: gateway
+            .map(|gateway| gateway.fallback_chain.clone())
+            .unwrap_or_default(),
         input_digest,
         output_digest,
         tool_call_sequence_digest: None,
+        stream_termination_status: gateway
+            .and_then(|gateway| gateway.stream_termination_status.clone()),
+    }
+}
+
+fn fallback_policy_id_to_str(policy: FallbackPolicyId) -> &'static str {
+    match policy {
+        FallbackPolicyId::Strict => "strict",
+        FallbackPolicyId::Compatible => "compatible",
+        FallbackPolicyId::RouterDefault => "router_default",
     }
 }
 
@@ -618,6 +671,7 @@ mod tests {
             input_digest: "sha256:i".into(),
             output_digest: "sha256:o".into(),
             tool_call_sequence_digest: None,
+            stream_termination_status: None,
         }
     }
     #[test]
@@ -689,6 +743,7 @@ mod tests {
             work_spec,
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            gateway_provenance: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -723,6 +778,7 @@ mod tests {
             work_spec: work_spec(),
             display_name: "worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            gateway_provenance: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -763,6 +819,7 @@ mod tests {
             work_spec: work_spec(),
             display_name: "a1-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            gateway_provenance: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry.register_spawn(child_thread_id, runtime).await.unwrap();
@@ -788,6 +845,7 @@ mod tests {
             work_spec: work_spec(),
             display_name: "a1-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            gateway_provenance: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry.register_spawn(child_thread_id, runtime).await.unwrap();
@@ -825,6 +883,7 @@ mod tests {
             work_spec,
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            gateway_provenance: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -864,6 +923,7 @@ mod tests {
             work_spec,
             display_name: "interrupted-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            gateway_provenance: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -901,6 +961,7 @@ mod tests {
             work_spec: work_spec(),
             display_name: "cancelled-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            gateway_provenance: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -1007,7 +1068,12 @@ mod tests {
     #[test]
     fn p5_provenance_digests_are_real_not_placeholders() {
         let ws = work_spec();
-        let prov = provenance_for_runtime(&ws, "9router/test-route", "test completed: 3/3 passed");
+        let prov = provenance_for_runtime(
+            &ws,
+            "9router/test-route",
+            "test completed: 3/3 passed",
+            None,
+        );
 
         // Digests must be real SHA256 format
         assert!(
@@ -1049,8 +1115,8 @@ mod tests {
         ws2.objective = "build and test with coverage".to_string();
         ws2.allowed_tools = BTreeSet::from(["edit".to_string(), "apply_patch".to_string()]);
 
-        let prov1 = provenance_for_runtime(&ws1, "route-1", "status A");
-        let prov2 = provenance_for_runtime(&ws2, "route-1", "status A");
+        let prov1 = provenance_for_runtime(&ws1, "route-1", "status A", None);
+        let prov2 = provenance_for_runtime(&ws2, "route-1", "status A", None);
 
         // Different input payloads → different input digests
         assert_ne!(
@@ -1059,7 +1125,7 @@ mod tests {
         );
 
         // Different status_summary → different output_digest (Phase 5 audit fix)
-        let prov3 = provenance_for_runtime(&ws1, "route-1", "status B: different output");
+        let prov3 = provenance_for_runtime(&ws1, "route-1", "status B: different output", None);
         assert_ne!(
             prov1.output_digest, prov3.output_digest,
             "Phase 5 audit: output_digest MUST change when status_summary changes"
@@ -1071,7 +1137,7 @@ mod tests {
     #[test]
     fn p5_effective_route_unknown_when_no_gateway_evidence() {
         let ws = work_spec();
-        let prov = provenance_for_runtime(&ws, "9router/requested-route", "completed");
+        let prov = provenance_for_runtime(&ws, "9router/requested-route", "completed", None);
 
         // When gateway_request_id is None, effective_route_id must be "unknown", not "9router/requested-route"
         assert_eq!(
@@ -1096,7 +1162,7 @@ mod tests {
     #[test]
     fn p5_audit_provenance_passes_digest_format_validation() {
         let ws = work_spec();
-        let prov = provenance_for_runtime(&ws, "route", "completed successfully");
+        let prov = provenance_for_runtime(&ws, "route", "completed successfully", None);
         // Runtime provenance MUST pass the protocol's digest format checker
         prov.verify_digest_format()
             .expect("Phase 5: runtime provenance digest must pass verify_digest_format");

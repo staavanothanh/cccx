@@ -24,6 +24,7 @@
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
@@ -517,6 +518,7 @@ fn session_telemetry_for_request(
 #[derive(Debug)]
 struct ModelClientState {
     thread_id: ThreadId,
+    project_root: PathBuf,
     provider: SharedModelProvider,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -732,6 +734,7 @@ impl ModelClient {
         auth_manager: Option<Arc<AuthManager>>,
         agent_identity_policy: AgentIdentityAuthPolicy,
         thread_id: ThreadId,
+        project_root: PathBuf,
         provider_info: ModelProviderInfo,
         session_source: SessionSource,
         originator: String,
@@ -755,6 +758,7 @@ impl ModelClient {
         Self {
             state: Arc::new(ModelClientState {
                 thread_id,
+                project_root,
                 provider: model_provider,
                 auth_env_telemetry,
                 session_source,
@@ -1826,12 +1830,12 @@ impl ModelClientSession {
         Ok(())
     }
 
-    fn record_gateway_provenance(
+    fn finalize_gateway_provenance(
         &self,
         bridge: &ProviderGatewayBridge,
         provenance: &mut Option<cccx_provider_gateway::provenance::GatewayProvenance>,
         _model_info: &ModelInfo,
-    ) {
+    ) -> Option<CccxGatewayAttemptRecorder> {
         // 9router owns downstream provider translation. Unless the gateway
         // returns concrete response metadata/headers, cccx must keep effective
         // route/provider/model unknown instead of inferring them from the
@@ -1846,6 +1850,11 @@ impl ModelClientSession {
                 "cccx: recorded provider gateway provenance"
             );
         }
+        provenance.take().map(|provenance| CccxGatewayAttemptRecorder {
+            project_root: self.client.state.project_root.clone(),
+            thread_id: self.client.state.thread_id.to_string(),
+            provenance,
+        })
     }
 
     /// Streams a turn via the OpenAI Responses API.
@@ -1938,7 +1947,7 @@ impl ModelClientSession {
 
             match stream_result {
                 Ok(stream) => {
-                    self.record_gateway_provenance(
+                    let gateway_recorder = self.finalize_gateway_provenance(
                         &gateway_bridge,
                         &mut gateway_provenance,
                         model_info,
@@ -1948,6 +1957,7 @@ impl ModelClientSession {
                         request_session_telemetry,
                         inference_trace_attempt,
                         Arc::clone(&self.client.state.provider),
+                        gateway_recorder,
                     );
                     return Ok(stream);
                 }
@@ -1973,11 +1983,13 @@ impl ModelClientSession {
                     continue;
                 }
                 Err(err) => {
-                    self.record_gateway_provenance(
+                    if let Some(mut recorder) = self.finalize_gateway_provenance(
                         &gateway_bridge,
                         &mut gateway_provenance,
                         model_info,
-                    );
+                    ) {
+                        recorder.persist_terminal("error").await;
+                    }
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
@@ -2053,7 +2065,7 @@ impl ModelClientSession {
 
             match client.stream(request, options).await {
                 Ok(stream) => {
-                    self.record_gateway_provenance(
+                    let gateway_recorder = self.finalize_gateway_provenance(
                         &gateway_bridge,
                         &mut gateway_provenance,
                         model_info,
@@ -2063,6 +2075,7 @@ impl ModelClientSession {
                         session_telemetry.clone(),
                         inference_trace_attempt,
                         Arc::clone(&self.client.state.provider),
+                        gateway_recorder,
                     );
                     return Ok(stream);
                 }
@@ -2093,11 +2106,13 @@ impl ModelClientSession {
                     );
                 }
                 Err(err) => {
-                    self.record_gateway_provenance(
+                    if let Some(mut recorder) = self.finalize_gateway_provenance(
                         &gateway_bridge,
                         &mut gateway_provenance,
                         model_info,
-                    );
+                    ) {
+                        recorder.persist_terminal("error").await;
+                    }
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
@@ -2275,6 +2290,7 @@ impl ModelClientSession {
                 request_session_telemetry,
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
+                None,
             );
             self.websocket_session.last_response_rx = Some(last_request_rx);
             return Ok(WebsocketStreamOutcome::Stream(stream));
@@ -2529,11 +2545,35 @@ fn add_responses_lite_header(headers: &mut ApiHeaderMap, use_responses_lite: boo
 const RESPONSE_STREAM_CHANNEL_CAPACITY: usize = 1600;
 const STREAM_DROPPED_REASON: &str = "response stream dropped before provider terminal event";
 
+/// Carries cccx gateway provenance from a live HTTP stream into the terminal
+/// stream consumer. It is intentionally never serialized into the LLM request.
+struct CccxGatewayAttemptRecorder {
+    project_root: PathBuf,
+    thread_id: String,
+    provenance: cccx_provider_gateway::provenance::GatewayProvenance,
+}
+
+impl CccxGatewayAttemptRecorder {
+    async fn persist_terminal(&mut self, status: &str) {
+        self.provenance.record_stream_termination(status);
+        if let Err(error) = crate::cccx_gateway_provenance_state::save_gateway_provenance(
+            &self.project_root,
+            &self.thread_id,
+            &self.provenance,
+        )
+        .await
+        {
+            warn!(%error, thread_id = %self.thread_id, "cccx: failed to persist terminal provider gateway provenance");
+        }
+    }
+}
+
 fn map_response_stream(
     api_stream: codex_api::ResponseStream,
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
+    gateway_recorder: Option<CccxGatewayAttemptRecorder>,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
     let codex_api::ResponseStream {
         rx_event,
@@ -2549,6 +2589,7 @@ fn map_response_stream(
         session_telemetry,
         inference_trace_attempt,
         provider,
+        gateway_recorder,
     )
 }
 
@@ -2558,6 +2599,7 @@ fn map_response_events<S>(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
+    gateway_recorder: Option<CccxGatewayAttemptRecorder>,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
@@ -2577,7 +2619,9 @@ where
         let mut items_added: Vec<ResponseItem> = Vec::new();
         let (request_start, mut ttft_ms) = (Instant::now(), None);
         let mut api_stream = api_stream;
+        let mut gateway_recorder = gateway_recorder;
         let mut completed = false;
+        let mut saw_error = false;
         let upstream_request_id = upstream_request_id.as_deref();
         if let Some(upstream_request_id) = upstream_request_id {
             feedback_tags!(last_model_request_id = upstream_request_id);
@@ -2590,6 +2634,9 @@ where
                         upstream_request_id,
                         &items_added,
                     );
+                    if let Some(recorder) = gateway_recorder.as_mut() {
+                        recorder.persist_terminal("cancelled").await;
+                    }
                     return;
                 }
                 event = api_stream.next() => event,
@@ -2610,6 +2657,9 @@ where
                             upstream_request_id,
                             &items_added,
                         );
+                        if let Some(recorder) = gateway_recorder.as_mut() {
+                            recorder.persist_terminal("cancelled").await;
+                        }
                         return;
                     }
                 }
@@ -2628,6 +2678,9 @@ where
                         &token_usage,
                         &items_added,
                     );
+                    if let Some(recorder) = gateway_recorder.as_mut() {
+                        recorder.persist_terminal("completed").await;
+                    }
                     if let Some(sender) = tx_last_response.take() {
                         let _ = sender.send(LastResponse {
                             response_id: response_id.clone(),
@@ -2659,6 +2712,9 @@ where
                             upstream_request_id,
                             &items_added,
                         );
+                        if let Some(recorder) = gateway_recorder.as_mut() {
+                            recorder.persist_terminal("cancelled").await;
+                        }
                         return;
                     }
                 }
@@ -2666,6 +2722,7 @@ where
                     if completed {
                         return;
                     }
+                    saw_error = true;
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let upstream_request_id =
@@ -2684,6 +2741,9 @@ where
                         logged_error = true;
                     }
                     if tx_event.send(Err(mapped)).await.is_err() {
+                        if let Some(recorder) = gateway_recorder.as_mut() {
+                            recorder.persist_terminal("error").await;
+                        }
                         return;
                     }
                 }
@@ -2691,6 +2751,11 @@ where
         }
         if completed {
             return;
+        }
+        if let Some(recorder) = gateway_recorder.as_mut() {
+            recorder
+                .persist_terminal(if saw_error { "error" } else { "truncated" })
+                .await;
         }
         inference_trace_attempt.record_failed(
             "stream closed before response.completed",

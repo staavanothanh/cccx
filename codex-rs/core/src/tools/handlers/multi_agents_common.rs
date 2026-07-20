@@ -339,6 +339,7 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
         work_spec,
         display_name,
         model_route_summary: route_summary,
+        gateway_provenance: None,
     })))
 }
 

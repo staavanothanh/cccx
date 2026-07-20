@@ -380,6 +380,12 @@ pub struct ArtifactProvenance {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_sequence_digest: Option<String>,
+    /// Terminal status observed by the cccx stream consumer. This is separate
+    /// from the tool-call digest so a stream outcome is never represented as a
+    /// synthetic digest.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_termination_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -984,6 +990,7 @@ mod tests {
                 input_digest: "sha256:input".to_string(),
                 output_digest: "sha256:output".to_string(),
                 tool_call_sequence_digest: Some("sha256:tool-seq".to_string()),
+                stream_termination_status: Some("completed".to_string()),
             }),
             verification: Some(VerificationRecord {
                 schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),

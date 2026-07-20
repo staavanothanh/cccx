@@ -2382,6 +2382,7 @@ async fn websocket_harness_with_provider_options(
         /*auth_manager*/ None,
         AgentIdentityAuthPolicy::JwtOnly,
         thread_id,
+        config.cwd.clone(),
         provider.clone(),
         SessionSource::Exec,
         "test_originator".to_string(),

@@ -38,6 +38,7 @@ mod agent_communication;
 pub mod artifact_collector;
 mod attestation;
 pub mod cccx_agent_model_routes;
+mod cccx_gateway_provenance_state;
 mod cccx_runtime;
 pub mod cccx_spawn;
 pub mod cccx_task_graph_state;

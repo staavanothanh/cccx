@@ -106,6 +106,7 @@ fn test_model_client_with_thread_id(
         /*auth_manager*/ None,
         AgentIdentityAuthPolicy::JwtOnly,
         thread_id,
+        std::env::temp_dir(),
         provider,
         session_source,
         "test_originator".to_string(),
@@ -152,6 +153,7 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
         Some(auth_manager),
         AgentIdentityAuthPolicy::ChatGptAuth,
         thread_id,
+        codex_home.path().to_path_buf(),
         provider,
         SessionSource::Cli,
         "test_originator".to_string(),
@@ -599,6 +601,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        None,
     );
 
     let observed = stream
@@ -649,6 +652,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        None,
     );
 
     while stream.next().await.is_some() {}
@@ -680,6 +684,7 @@ async fn response_stream_eof_after_completed_is_clean_terminal() -> anyhow::Resu
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        None,
     );
 
     let mut saw_completed = false;
@@ -694,6 +699,45 @@ async fn response_stream_eof_after_completed_is_clean_terminal() -> anyhow::Resu
     }
 
     assert!(saw_completed, "mapped stream should forward response.completed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn cccx_gateway_provenance_is_persisted_only_after_stream_terminal() -> anyhow::Result<()> {
+    let project = TempDir::new()?;
+    let mut provenance = cccx_provider_gateway::provenance::GatewayProvenance::new(
+        "oc/deepseek-v4-flash-free".to_string(),
+    );
+    provenance.record_wire_api("chat_completions");
+    let recorder = super::CccxGatewayAttemptRecorder {
+        project_root: project.path().to_path_buf(),
+        thread_id: "child-terminal".to_string(),
+        provenance,
+    };
+    let api_stream = futures::stream::iter([Ok(ResponseEvent::Completed {
+        response_id: "resp-terminal".to_string(),
+        token_usage: None,
+        end_turn: Some(true),
+    })]);
+    let (mut stream, _) = super::map_response_events(
+        None,
+        api_stream,
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        Some(recorder),
+    );
+
+    while stream.next().await.is_some() {}
+
+    let stored = super::super::cccx_gateway_provenance_state::load_gateway_provenance(
+        project.path(),
+        "child-terminal",
+    )
+    .await?
+    .expect("terminal stream should persist provenance");
+    assert_eq!(stored.stream_termination_status.as_deref(), Some("completed"));
+    assert_eq!(stored.wire_api.as_deref(), Some("chat_completions"));
     Ok(())
 }
 
@@ -713,6 +757,7 @@ async fn response_stream_error_after_completed_is_ignored() -> anyhow::Result<()
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        None,
     );
 
     let mut events = Vec::new();
@@ -785,6 +830,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        None,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
@@ -888,6 +934,7 @@ fn model_client_with_counting_attestation(
         auth_manager,
         AgentIdentityAuthPolicy::JwtOnly,
         ThreadId::new(),
+        std::env::temp_dir(),
         provider,
         SessionSource::Exec,
         "test_originator".to_string(),

@@ -1129,6 +1129,7 @@ impl Session {
                         AgentIdentityAuthPolicy::JwtOnly
                     },
                     thread_id,
+                    config.cwd.clone().to_path_buf(),
                     session_configuration.provider.clone(),
                     session_configuration.session_source.clone(),
                     session_configuration.originator.clone(),

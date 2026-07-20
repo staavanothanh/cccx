@@ -2733,3 +2733,36 @@ Remaining Phase 7 work:
   attempt/resume state instead of only a non-retryable error.
 - Live gateway provenance persistence into Artifact/TaskGraph/headless events.
 - Full local mock 9router stream through `stream_chat_completions_api`.
+
+## 2026-07-20 — Phase 7E: terminal gateway provenance hand-off
+
+- Added a project-local, atomically-written gateway-provenance hand-off keyed
+  by the real Codex thread/worker attempt id. It is an internal core state
+  boundary; no router metadata is injected into prompts or interpreted as a
+  provider-specific route by cccx.
+- The Chat Completions and Responses stream consumers now persist provenance
+  only when they observe `completed`, `truncated`, `error`, or `cancelled`.
+  Opening an HTTP/SSE stream is no longer treated as proof of a completed
+  gateway attempt.
+- `CccxRuntimeRegistry` loads that terminal snapshot when it finalizes an
+  Artifact, so request id, requested/effective model data where reported,
+  retry/fallback metadata and stream termination travel into TaskGraph-backed
+  Artifact state for the same worker attempt.
+- Added `stream_termination_status` as an explicit optional provenance field.
+  Stream status is no longer incorrectly encoded as `tool_call_sequence_digest`.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 check -p cccx-protocol -p cccx-task-graph -p codex-core -j 1
+cargo +1.95.0 test -p cccx-protocol --lib -j 1
+cargo +1.95.0 test -p cccx-provider-gateway --lib -j 1
+cargo +1.95.0 test -p cccx-task-graph --lib -j 1
+```
+
+Remaining Phase 7 work:
+
+- Run the new core terminal-stream provenance regression in the complete core
+  test binary, then add the local mock multi-turn 9router tool-loop coverage.
+- Aggregate per-worker tool-call sequence digests rather than leaving the
+  optional field empty when a completed worker used tools.
