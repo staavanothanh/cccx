@@ -2821,3 +2821,17 @@ Validation (green):
 ```powershell
 cargo +1.95.0 check -p codex-core -p codex-tui -j 1
 ```
+
+## 2026-07-20 — Phase 8D: MCP stale-read execution gate
+
+- Reused the existing canonical MCP target-path extraction/resolution before
+  policy evaluation. When cccx has observed a target file and its digest has
+  changed, the MCP call is denied before it reaches the external server.
+- The check runs for both Main and child MCP calls; an unobserved path remains
+  valid, while a previously observed-but-changed path fails closed.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 check -p codex-core -j 1
+```

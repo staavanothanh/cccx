@@ -277,6 +277,39 @@ pub(crate) async fn handle_mcp_tool_call(
                 .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
         };
     }
+    #[allow(deprecated)]
+    let cccx_target_cwd = turn_context.cwd.to_path_buf();
+    let cccx_target_paths = cccx_resolve_target_paths(
+        arguments_value
+            .as_ref()
+            .map(cccx_extract_mcp_target_paths)
+            .unwrap_or_default(),
+        &cccx_target_cwd,
+    );
+    if codex_features::cccx_mvp::provider_boundary_active() {
+        for path in &cccx_target_paths {
+            if let Err(reason) = turn_context
+                .verify_cccx_read_fresh(std::path::Path::new(path))
+                .await
+            {
+                let result = notify_mcp_tool_call_skip(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    &call_id,
+                    invocation,
+                    item_metadata.clone(),
+                    format!("cccx stale-read gate denied MCP tool call: {reason}"),
+                    /*already_started*/ false,
+                )
+                .await;
+                return HandledMcpToolCall {
+                    result: CallToolResult::from_result(result),
+                    tool_input: arguments_value
+                        .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
+                };
+            }
+        }
+    }
     let cccx_requirement = if let Some(work_spec) = sess
         .services
         .agent_control
@@ -294,20 +327,12 @@ pub(crate) async fn handle_mcp_tool_call(
         };
         let input_schema =
             serde_json::to_value(&live_tool.tool.input_schema).unwrap_or(JsonValue::Null);
-        #[allow(deprecated)]
-        let cccx_target_cwd = turn_context.cwd.to_path_buf();
         cccx_subagent_mcp_requirement(
             &work_spec,
             &server,
             &tool_name,
             &input_schema,
-            cccx_resolve_target_paths(
-                arguments_value
-                    .as_ref()
-                    .map(cccx_extract_mcp_target_paths)
-                    .unwrap_or_default(),
-                &cccx_target_cwd,
-            ),
+            cccx_target_paths,
         )
     } else {
         sess.services
