@@ -1273,6 +1273,11 @@ impl MessageProcessor {
                     .turn_interrupt(&request_id, params)
                     .await
             }
+            ClientRequest::CccxWorkerCancel { params, .. } => {
+                self.turn_processor
+                    .cccx_worker_cancel(&request_id, params)
+                    .await
+            }
             ClientRequest::ThreadRealtimeStart { params, .. } => {
                 self.turn_processor
                     .thread_realtime_start(&request_id, params)

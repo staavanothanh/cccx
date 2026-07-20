@@ -819,6 +819,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::TurnInterruptResponse,
     },
+    CccxWorkerCancel => "cccx/worker/cancel" {
+        params: v2::CccxWorkerCancelParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::CccxWorkerCancelResponse,
+    },
     #[experimental("thread/realtime/start")]
     ThreadRealtimeStart => "thread/realtime/start" {
         params: v2::ThreadRealtimeStartParams,
@@ -1778,6 +1783,37 @@ mod tests {
     fn request_id() -> RequestId {
         const REQUEST_ID: i64 = 1;
         RequestId::Integer(REQUEST_ID)
+    }
+
+    #[test]
+    fn cccx_worker_cancel_is_scoped_to_requesting_thread_and_carries_target() {
+        let request = ClientRequest::CccxWorkerCancel {
+            request_id: request_id(),
+            params: v2::CccxWorkerCancelParams {
+                thread_id: "root-thread".to_string(),
+                agent_id: "worker-thread".to_string(),
+                reason: Some("user requested cancellation".to_string()),
+            },
+        };
+
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "root-thread".to_string(),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "method": "cccx/worker/cancel",
+                "id": 1,
+                "params": {
+                    "threadId": "root-thread",
+                    "agentId": "worker-thread",
+                    "reason": "user requested cancellation",
+                }
+            })
+        );
     }
 
     #[test]

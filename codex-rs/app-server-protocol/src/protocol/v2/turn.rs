@@ -216,6 +216,28 @@ pub struct TurnInterruptParams {
 #[ts(export_to = "v2/")]
 pub struct TurnInterruptResponse {}
 
+/// Request a terminal cancellation of one CCCX worker.
+///
+/// `thread_id` identifies the requesting/root thread for request ordering;
+/// `agent_id` identifies the worker that will receive the terminal operation.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerCancelParams {
+    pub thread_id: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxWorkerCancelResponse {
+    /// The terminal operation was accepted for delivery to the target worker.
+    pub accepted: bool,
+}
+
 // User input types
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

@@ -16,6 +16,7 @@ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use serde::Serialize;
@@ -25,6 +26,9 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) enum AppCommand {
     Interrupt,
+    CancelCccxWorker {
+        agent_id: ThreadId,
+    },
     CleanBackgroundTerminals,
     RunUserShellCommand {
         command: String,

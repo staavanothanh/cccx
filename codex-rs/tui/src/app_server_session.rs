@@ -100,6 +100,8 @@ use codex_app_server_protocol::ThreadUnarchiveResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::Turn;
+use codex_app_server_protocol::CccxWorkerCancelParams;
+use codex_app_server_protocol::CccxWorkerCancelResponse;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -909,6 +911,26 @@ impl AppServerSession {
                 params: TurnInterruptParams {
                     thread_id: thread_id.to_string(),
                     turn_id,
+                },
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn cccx_worker_cancel(
+        &mut self,
+        thread_id: ThreadId,
+        agent_id: ThreadId,
+    ) -> std::result::Result<(), TypedRequestError> {
+        let request_id = self.next_request_id();
+        let _: CccxWorkerCancelResponse = self
+            .client
+            .request_typed(ClientRequest::CccxWorkerCancel {
+                request_id,
+                params: CccxWorkerCancelParams {
+                    thread_id: thread_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    reason: None,
                 },
             })
             .await?;

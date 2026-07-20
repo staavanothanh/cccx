@@ -553,6 +553,10 @@ impl App {
                 }
                 Ok(true)
             }
+            AppCommand::CancelCccxWorker { agent_id } => {
+                app_server.cccx_worker_cancel(thread_id, *agent_id).await?;
+                Ok(true)
+            }
             AppCommand::UserTurn {
                 items,
                 cwd,

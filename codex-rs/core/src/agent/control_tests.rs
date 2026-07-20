@@ -442,6 +442,19 @@ async fn on_event_updates_status_from_turn_aborted() {
 }
 
 #[tokio::test]
+async fn cancelled_turn_is_terminal_not_resumable() {
+    let status = agent_status_from_event(&EventMsg::TurnAborted(TurnAbortedEvent {
+        turn_id: Some("turn-1".to_string()),
+        started_at: None,
+        reason: TurnAbortReason::Cancelled,
+        completed_at: None,
+        duration_ms: None,
+    }));
+
+    assert_eq!(status, Some(AgentStatus::Errored("Cancelled".to_string())));
+}
+
+#[tokio::test]
 async fn on_event_updates_status_from_shutdown_complete() {
     let status = agent_status_from_event(&EventMsg::ShutdownComplete);
     assert_eq!(status, Some(AgentStatus::Shutdown));

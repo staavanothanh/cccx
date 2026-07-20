@@ -527,6 +527,13 @@ pub enum Op {
     /// This server sends [`EventMsg::TurnAborted`] in response.
     Interrupt,
 
+    /// Terminally cancel the current CCCX worker attempt.
+    ///
+    /// Unlike [`Self::Interrupt`], this revokes the worker's pending
+    /// permission requests and records a non-resumable cancelled artifact.
+    /// This operation must only be sent to the worker thread being cancelled.
+    CancelCccxWorker { reason: String },
+
     /// Terminate all running background terminal processes for this thread.
     /// Use this when callers intentionally want to stop long-lived background shells.
     CleanBackgroundTerminals,
@@ -861,6 +868,7 @@ impl Op {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Interrupt => "interrupt",
+            Self::CancelCccxWorker { .. } => "cancel_cccx_worker",
             Self::CleanBackgroundTerminals => "clean_background_terminals",
             Self::RealtimeConversationStart(_) => "realtime_conversation_start",
             Self::RealtimeConversationAudio(_) => "realtime_conversation_audio",
@@ -4164,6 +4172,7 @@ pub struct TurnAbortedEvent {
 #[serde(rename_all = "snake_case")]
 pub enum TurnAbortReason {
     Interrupted,
+    Cancelled,
     Replaced,
     ReviewEnded,
     BudgetLimited,

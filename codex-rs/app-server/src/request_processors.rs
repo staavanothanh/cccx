@@ -279,6 +279,8 @@ use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::ThreadUnsubscribeStatus;
 use codex_app_server_protocol::Turn;
+use codex_app_server_protocol::CccxWorkerCancelParams;
+use codex_app_server_protocol::CccxWorkerCancelResponse;
 use codex_app_server_protocol::TurnEnvironmentParams;
 use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnInterruptParams;

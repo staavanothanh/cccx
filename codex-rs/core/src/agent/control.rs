@@ -161,6 +161,35 @@ impl AgentControl {
         }
     }
 
+    /// Record the terminal cancellation of one CCCX worker attempt.
+    ///
+    /// The worker session performs this immediately before it aborts itself,
+    /// which prevents the ordinary unsuccessful-completion path from writing
+    /// a resumable checkpoint for an explicitly cancelled task.
+    pub(crate) async fn cancel_cccx_worker_runtime(
+        &self,
+        child_thread_id: ThreadId,
+        reason: String,
+    ) -> Result<bool, String> {
+        self.cccx_permission_queue
+            .cancel_agent_requests(&child_thread_id.to_string())
+            .await;
+        let cancelled = self
+            .cccx_runtime
+            .lock()
+            .await
+            .cancel_spawn(child_thread_id, reason)
+            .await?;
+        if cancelled {
+            let _ = self.cccx_runtime_active.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |count| count.checked_sub(1),
+            );
+        }
+        Ok(cancelled)
+    }
+
     pub(crate) fn has_active_cccx_runtime(&self) -> bool {
         self.cccx_runtime_active.load(Ordering::Relaxed) > 0
     }

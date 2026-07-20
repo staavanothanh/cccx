@@ -219,6 +219,29 @@ impl TurnRequestProcessor {
             .map(|response| response.map(Into::into))
     }
 
+    pub(crate) async fn cccx_worker_cancel(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: CccxWorkerCancelParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let CccxWorkerCancelParams {
+            thread_id: _,
+            agent_id,
+            reason,
+        } = params;
+        let (_, worker) = self.load_thread(&agent_id).await?;
+        self.submit_core_op(
+            request_id,
+            worker.as_ref(),
+            Op::CancelCccxWorker {
+                reason: reason.unwrap_or_else(|| "cancelled by user".to_string()),
+            },
+        )
+        .await
+        .map_err(|error| internal_error(format!("failed to cancel cccx worker: {error}")))?;
+        Ok(Some(CccxWorkerCancelResponse { accepted: true }.into()))
+    }
+
     pub(crate) async fn thread_realtime_start(
         &self,
         request_id: &ConnectionRequestId,

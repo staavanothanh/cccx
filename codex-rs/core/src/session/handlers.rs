@@ -67,6 +67,23 @@ pub async fn interrupt(sess: &Arc<Session>) {
     sess.interrupt_task().await;
 }
 
+/// Terminal CCCX cancellation is intentionally distinct from an interrupt:
+/// an interrupted worker can be checkpointed and resumed, while an explicitly
+/// cancelled worker is recorded as terminal and its queued approvals are
+/// revoked before the turn is aborted.
+pub async fn cancel_cccx_worker(sess: &Arc<Session>, reason: String) {
+    match sess
+        .services
+        .agent_control
+        .cancel_cccx_worker_runtime(sess.thread_id, reason)
+        .await
+    {
+        Ok(true) => sess.abort_all_tasks(TurnAbortReason::Cancelled).await,
+        Ok(false) => warn!(thread_id = %sess.thread_id, "cccx: ignored terminal cancellation for an unknown worker"),
+        Err(error) => warn!(%error, thread_id = %sess.thread_id, "cccx: failed to record terminal worker cancellation"),
+    }
+}
+
 pub async fn clean_background_terminals(sess: &Arc<Session>) {
     sess.close_unified_exec_processes().await;
 }
@@ -816,6 +833,10 @@ pub(super) async fn submission_loop(
             match sub.op.clone() {
                 Op::Interrupt => {
                     interrupt(&sess).await;
+                    false
+                }
+                Op::CancelCccxWorker { reason } => {
+                    cancel_cccx_worker(&sess, reason).await;
                     false
                 }
                 Op::CleanBackgroundTerminals => {
