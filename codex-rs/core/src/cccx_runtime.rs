@@ -209,8 +209,8 @@ impl CccxRuntimeRegistry {
             state
                 .register_work_spec(
                     runtime.work_spec.clone(),
-                    runtime.logical_session_id.clone(),
                     child_thread_id.to_string(),
+                    runtime.logical_session_id.clone(),
                     runtime.display_name.clone(),
                     runtime.model_route_summary.clone(),
                 )
@@ -681,6 +681,29 @@ mod tests {
             checkpoint.last_completed_step,
             "apply_patch completed (call-1)"
         );
+    }
+
+    #[tokio::test]
+    async fn register_spawn_preserves_logical_identity_and_incarnation_separately() {
+        let project = tempfile::TempDir::new().unwrap();
+        let child_thread_id = ThreadId::new();
+        let runtime = CccxSpawnRuntime {
+            project_root: project.path().to_path_buf(),
+            logical_session_id: "logical-worker-a1".to_string(),
+            work_spec: work_spec(),
+            display_name: "a1-worker".to_string(),
+            model_route_summary: "9router/test".to_string(),
+        };
+        let mut registry = CccxRuntimeRegistry::default();
+        registry.register_spawn(child_thread_id, runtime).await.unwrap();
+
+        let graph = cccx_task_graph_state::load_task_graph(project.path())
+            .await
+            .unwrap()
+            .expect("spawn must persist TaskGraph state");
+        let attempt = &graph.tasks["T1"].attempts[0];
+        assert_eq!(attempt.attempt_id, child_thread_id.to_string());
+        assert_eq!(attempt.worker.logical_session_id, "logical-worker-a1");
     }
 
     #[tokio::test]
