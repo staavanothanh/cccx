@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -10,14 +11,27 @@ pub struct ProjectMemory {
 }
 
 impl ProjectMemory {
-    pub fn new(project_root: &Path) -> Self {
+    /// Create the durable, project-scoped memory store. CCCX_HOME is the
+    /// ownership boundary; the workspace only contributes a stable hash, so
+    /// project memory is never written into the checked-out repository.
+    pub fn new(cccx_home: &Path, project_root: &Path) -> Self {
+        let canonical_root = dunce::canonicalize(project_root)
+            .unwrap_or_else(|_| project_root.to_path_buf());
+        let project_hash = format!("{:x}", Sha256::digest(canonical_root.as_os_str().as_encoded_bytes()));
         Self {
-            base_path: project_root.join(".cccx").join("memory"),
+            base_path: cccx_home
+                .join("projects")
+                .join(project_hash)
+                .join("memory"),
         }
     }
 
+    pub(crate) fn memory_file_path(&self) -> PathBuf {
+        self.base_path.join(MEMORY_FILE)
+    }
+
     pub async fn load_context(&self) -> Result<String, std::io::Error> {
-        let path = self.base_path.join(MEMORY_FILE);
+        let path = self.memory_file_path();
         match fs::read_to_string(&path).await {
             Ok(content) => {
                 let lines: Vec<&str> = content.lines().take(MAX_LINES).collect();
@@ -30,7 +44,7 @@ impl ProjectMemory {
 
     pub async fn remember(&self, note: &str) -> Result<(), std::io::Error> {
         fs::create_dir_all(&self.base_path).await?;
-        let path = self.base_path.join(MEMORY_FILE);
+        let path = self.memory_file_path();
         let timestamp = chrono::Utc::now().to_rfc3339();
         let entry = format!("\n## {timestamp}\n\n{note}\n");
         let mut file = fs::OpenOptions::new()
@@ -63,15 +77,16 @@ mod tests {
     #[tokio::test]
     async fn missing_project_memory_loads_as_empty_context() {
         let dir = TempDir::new().unwrap();
-        let memory = ProjectMemory::new(dir.path());
+        let memory = ProjectMemory::new(dir.path(), dir.path());
 
         assert_eq!(memory.load_context().await.unwrap(), "");
     }
 
     #[tokio::test]
-    async fn remember_appends_explicit_notes_under_project_cccx_memory() {
-        let dir = TempDir::new().unwrap();
-        let memory = ProjectMemory::new(dir.path());
+    async fn remember_appends_explicit_notes_under_cccx_home_project_memory() {
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let memory = ProjectMemory::new(home.path(), project.path());
 
         memory
             .remember("User prefers 9router-only routing.")
@@ -86,19 +101,17 @@ mod tests {
         assert!(context.contains("User prefers 9router-only routing."));
         assert!(context.contains("Do not use direct provider credentials."));
         assert!(
-            dir.path()
-                .join(".cccx")
-                .join("memory")
-                .join(MEMORY_FILE)
+            memory.memory_file_path()
                 .exists()
         );
     }
 
     #[tokio::test]
     async fn loaded_memory_context_is_bounded_to_prevent_raw_context_dump() {
-        let dir = TempDir::new().unwrap();
-        let memory = ProjectMemory::new(dir.path());
-        let path = dir.path().join(".cccx").join("memory").join(MEMORY_FILE);
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let memory = ProjectMemory::new(home.path(), project.path());
+        let path = memory.memory_file_path();
         fs::create_dir_all(path.parent().unwrap()).await.unwrap();
         let content = (0..(MAX_LINES + 20))
             .map(|idx| format!("line-{idx}"))
@@ -120,10 +133,11 @@ mod tests {
     /// task.md: "`/remember` survives restart and loads into Main CC context."
     #[tokio::test]
     async fn p9_project_memory_survives_restart() {
-        let dir = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
 
         // Session 1: remember two facts
-        let memory1 = ProjectMemory::new(dir.path());
+        let memory1 = ProjectMemory::new(home.path(), project.path());
         memory1.remember("Use 9router-only routing.").await.unwrap();
         memory1
             .remember("Do not use direct provider keys.")
@@ -132,7 +146,7 @@ mod tests {
         drop(memory1);
 
         // Session 2 (fresh ProjectMemory for same project): load context
-        let memory2 = ProjectMemory::new(dir.path());
+        let memory2 = ProjectMemory::new(home.path(), project.path());
         let context = memory2.load_context().await.unwrap();
 
         assert!(
@@ -145,18 +159,19 @@ mod tests {
         );
     }
 
-    /// Phase 9: verify memory file is created under .cccx/memory/
+    /// Phase 8: verify memory file is created under CCCX_HOME/projects/<hash>/memory/
     /// when remember() is called. Proves storage location contract.
     #[tokio::test]
-    async fn p9_project_memory_creates_file_under_cccx_memory_dir() {
-        let dir = TempDir::new().unwrap();
-        let memory = ProjectMemory::new(dir.path());
+    async fn p8_project_memory_creates_file_under_cccx_home() {
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let memory = ProjectMemory::new(home.path(), project.path());
         memory.remember("phase-9-test").await.unwrap();
 
-        let expected_file = dir.path().join(".cccx").join("memory").join(MEMORY_FILE);
+        let expected_file = memory.memory_file_path();
         assert!(
             expected_file.exists(),
-            "Phase 9: memory file must exist under .cccx/memory/ after remember"
+            "Phase 8: memory file must exist under CCCX_HOME after remember"
         );
         let content = tokio::fs::read_to_string(&expected_file).await.unwrap();
         assert!(

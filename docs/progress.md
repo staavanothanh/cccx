@@ -2766,3 +2766,25 @@ Remaining Phase 7 work:
   test binary, then add the local mock multi-turn 9router tool-loop coverage.
 - Aggregate per-worker tool-call sequence digests rather than leaving the
   optional field empty when a completed worker used tools.
+
+## 2026-07-20 — Phase 8A: CCCX_HOME Project Memory boundary
+
+- Project Memory now lives at
+  `CCCX_HOME/projects/<sha256(canonical-project-root)>/memory/MEMORY.md`, not
+  inside the project checkout. The project root is canonicalized before
+  hashing, so equivalent paths resolve to the same durable memory scope.
+- Main CC loads at most 200 lines into its initial context. The injection is
+  explicitly restricted to the `MainCc` + `CC` actor/harness combination;
+  children do not receive the raw durable memory blob.
+- `/remember` storage remains explicit-only. Artifact output is not promoted to
+  Project Memory by this change.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 check -p codex-core -j 1
+```
+
+Remaining Phase 8 work: add a session-level injection/isolation regression,
+extend compaction survivor state beyond TaskGraph, and complete ADR/MCP
+authority and stale-write runtime proof.

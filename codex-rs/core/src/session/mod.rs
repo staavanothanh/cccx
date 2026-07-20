@@ -3333,6 +3333,8 @@ impl Session {
             base_instructions,
             session_source,
             auto_compact_window_ids,
+            codex_home,
+            session_cwd,
         ) = {
             let state = self.state.lock().await;
             (
@@ -3342,6 +3344,8 @@ impl Session {
                 state.session_configuration.base_instructions.clone(),
                 state.session_configuration.session_source.clone(),
                 state.auto_compact_window_ids(),
+                state.session_configuration.codex_home.to_path_buf(),
+                state.session_configuration.cwd().to_path_buf(),
             )
         };
         if let Some(model_switch_message) =
@@ -3403,6 +3407,22 @@ impl Session {
             && matches!(turn_context.cccx_harness(), cccx_protocol::HarnessKind::Cc)
         {
             developer_sections.push(cccx_harness_cc::main_system_prompt_fragment().to_string());
+            let memory = crate::project_memory::ProjectMemory::new(
+                &codex_home,
+                turn_context
+                    .environments
+                    .primary()
+                    .and_then(|environment| environment.cwd().to_abs_path().ok())
+                    .as_deref()
+                    .unwrap_or(&session_cwd),
+            );
+            match memory.load_context().await {
+                Ok(memory_context) if !memory_context.is_empty() => developer_sections.push(format!(
+                    "<cccx_project_memory>\n{memory_context}\n</cccx_project_memory>"
+                )),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "cccx: failed to load project memory"),
+            }
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         if turn_context.config.include_collaboration_mode_instructions
