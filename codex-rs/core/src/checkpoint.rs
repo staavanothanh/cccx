@@ -24,6 +24,11 @@ pub struct SubagentCheckpoint {
     /// detect resume-from-checkpoint on a different tree state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_commit: Option<String>,
+    /// Working tree digest pinned by WorkSpec.base_revision. When present,
+    /// resume must revalidate if the current tree digest differs or cannot be
+    /// computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_working_tree_digest: Option<String>,
 }
 
 #[derive(Debug)]
@@ -90,6 +95,7 @@ pub async fn delete_checkpoint(
 pub fn validate_checkpoint(
     checkpoint: &SubagentCheckpoint,
     current_git_head: &str,
+    current_working_tree_digest: Option<&str>,
     max_age_minutes: u32,
 ) -> CheckpointValidation {
     // Old-format checkpoints (no base_commit) cannot be automatically
@@ -110,6 +116,23 @@ pub fn validate_checkpoint(
             };
         }
         _ => {}
+    }
+    if let Some(base_digest) = &checkpoint.base_working_tree_digest {
+        match current_working_tree_digest {
+            Some(current_digest) if current_digest == base_digest => {}
+            Some(current_digest) => {
+                return CheckpointValidation::NeedsRevalidation {
+                    base_commit: format!("working-tree:{base_digest}"),
+                    current_head: format!("working-tree:{current_digest}"),
+                };
+            }
+            None => {
+                return CheckpointValidation::NeedsRevalidation {
+                    base_commit: format!("working-tree:{base_digest}"),
+                    current_head: "working-tree:<unavailable>".to_string(),
+                };
+            }
+        }
     }
     let checkpoint_time = chrono::DateTime::parse_from_rfc3339(&checkpoint.checkpointed_at)
         .ok()
@@ -160,6 +183,7 @@ mod tests {
             pending_steps: vec!["run tests".into(), "review diff".into()],
             checkpointed_at: "2026-07-18T12:00:00Z".into(),
             base_commit: None,
+            base_working_tree_digest: None,
         };
         save_checkpoint(dir.path(), &ck).await.unwrap();
         let loaded = load_checkpoint(dir.path(), "a1-sess")
@@ -191,10 +215,11 @@ mod tests {
             pending_steps: vec!["run tests".into()],
             checkpointed_at: chrono::Utc::now().to_rfc3339(),
             base_commit: Some("head-1".to_string()),
+            base_working_tree_digest: None,
         };
 
         assert!(matches!(
-            validate_checkpoint(&ck, "head-1", 60),
+            validate_checkpoint(&ck, "head-1", None, 60),
             CheckpointValidation::Stale { reason, .. }
                 if reason == "no steps completed — nothing to resume"
         ));
@@ -214,10 +239,11 @@ mod tests {
             pending_steps: vec!["run tests".into()],
             checkpointed_at: chrono::Utc::now().to_rfc3339(),
             base_commit: Some("old-head".to_string()),
+            base_working_tree_digest: None,
         };
 
         assert!(matches!(
-            validate_checkpoint(&ck, "new-head", 60),
+            validate_checkpoint(&ck, "new-head", None, 60),
             CheckpointValidation::NeedsRevalidation { .. }
         ));
     }
@@ -242,6 +268,7 @@ mod tests {
             pending_steps: vec!["commit".into()],
             checkpointed_at: chrono::Utc::now().to_rfc3339(),
             base_commit: Some("abc1234".to_string()),
+            base_working_tree_digest: Some("sha256:tree".to_string()),
         };
         save_checkpoint(dir.path(), &ck).await.unwrap();
 
@@ -255,6 +282,10 @@ mod tests {
         assert_eq!(loaded.task_id, "T-root");
         assert_eq!(loaded.attempt_id, "attempt-3");
         assert_eq!(loaded.base_commit.as_deref(), Some("abc1234"));
+        assert_eq!(
+            loaded.base_working_tree_digest.as_deref(),
+            Some("sha256:tree")
+        );
         assert_eq!(loaded.pending_steps, vec!["commit"]);
     }
 
@@ -274,11 +305,12 @@ mod tests {
             pending_steps: vec![],
             checkpointed_at: "2026-01-01T00:00:00Z".into(), // months stale
             base_commit: Some("same-head".to_string()),
+            base_working_tree_digest: None,
         };
 
         // Even with matching base_commit, a 6+ month old checkpoint is stale
         assert!(matches!(
-            validate_checkpoint(&ck, "same-head", 30),
+            validate_checkpoint(&ck, "same-head", None, 30),
             CheckpointValidation::Stale { .. }
         ));
     }
@@ -299,11 +331,39 @@ mod tests {
             pending_steps: vec!["review".into()],
             checkpointed_at: chrono::Utc::now().to_rfc3339(), // just now
             base_commit: Some("head-abc".to_string()),
+            base_working_tree_digest: Some("sha256:tree-a".to_string()),
         };
 
         assert!(matches!(
-            validate_checkpoint(&ck, "head-abc", 60),
+            validate_checkpoint(&ck, "head-abc", Some("sha256:tree-a"), 60),
             CheckpointValidation::Valid
+        ));
+    }
+
+    #[test]
+    fn p8_checkpoint_working_tree_digest_drift_requires_revalidation() {
+        let ck = SubagentCheckpoint {
+            logical_session_id: "sess".into(),
+            worker_incarnation_id: "inc".into(),
+            task_id: "T1".into(),
+            attempt_id: "att-1".into(),
+            work_spec: None,
+            display_name: None,
+            last_completed_step: "tests passing".into(),
+            partial_diff: "diff".into(),
+            pending_steps: vec!["review".into()],
+            checkpointed_at: chrono::Utc::now().to_rfc3339(),
+            base_commit: Some("head-abc".to_string()),
+            base_working_tree_digest: Some("sha256:tree-a".to_string()),
+        };
+
+        assert!(matches!(
+            validate_checkpoint(&ck, "head-abc", Some("sha256:tree-b"), 60),
+            CheckpointValidation::NeedsRevalidation { .. }
+        ));
+        assert!(matches!(
+            validate_checkpoint(&ck, "head-abc", None, 60),
+            CheckpointValidation::NeedsRevalidation { .. }
         ));
     }
 
@@ -323,10 +383,11 @@ mod tests {
             pending_steps: vec![],
             checkpointed_at: chrono::Utc::now().to_rfc3339(),
             base_commit: None, // old format
+            base_working_tree_digest: None,
         };
 
         assert!(matches!(
-            validate_checkpoint(&ck, "any-head", 60),
+            validate_checkpoint(&ck, "any-head", None, 60),
             CheckpointValidation::NeedsRevalidation { .. }
         ));
     }

@@ -379,10 +379,12 @@ impl CodexThread {
             .await
             .map(|sha| sha.0)
             .unwrap_or_default();
+        let current_working_tree_digest = cccx_current_working_tree_digest(config.cwd.as_path()).await;
         let checkpoint = CccxRuntimeRegistry::prepare_resume(
             &config.cwd,
             worker_identifier,
             &current_head,
+            current_working_tree_digest.as_deref(),
             60,
             revalidate,
         )
@@ -978,4 +980,36 @@ impl CodexThread {
         }
         Ok(elicitations.count)
     }
+}
+
+async fn cccx_current_working_tree_digest(cwd: &std::path::Path) -> Option<String> {
+    use sha2::Digest;
+    let diff = tokio::process::Command::new("git")
+        .arg("diff")
+        .arg("--no-ext-diff")
+        .arg("--binary")
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()?;
+    if !diff.status.success() {
+        return None;
+    }
+    let status = tokio::process::Command::new("git")
+        .arg("status")
+        .arg("--porcelain=v1")
+        .arg("-z")
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()?;
+    if !status.status.success() {
+        return None;
+    }
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"git-diff-binary\0");
+    hasher.update(&diff.stdout);
+    hasher.update(b"\0git-status-porcelain-z\0");
+    hasher.update(&status.stdout);
+    Some(format!("sha256:{:x}", hasher.finalize()))
 }

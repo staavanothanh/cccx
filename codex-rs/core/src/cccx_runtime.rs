@@ -201,6 +201,7 @@ impl CccxRuntimeRegistry {
         project_root: &Path,
         worker_identifier: &str,
         current_git_head: &str,
+        current_working_tree_digest: Option<&str>,
         max_age_minutes: u32,
         revalidate: bool,
     ) -> Result<SubagentCheckpoint, String> {
@@ -240,7 +241,12 @@ impl CccxRuntimeRegistry {
         if checkpoint.work_spec.is_none() || checkpoint.display_name.is_none() {
             return Err("checkpoint predates resumable CCCX worker metadata; create a new WorkSpec attempt instead".to_string());
         }
-        match crate::checkpoint::validate_checkpoint(&checkpoint, current_git_head, max_age_minutes) {
+        match crate::checkpoint::validate_checkpoint(
+            &checkpoint,
+            current_git_head,
+            current_working_tree_digest,
+            max_age_minutes,
+        ) {
             CheckpointValidation::Valid => Ok(checkpoint),
             CheckpointValidation::NeedsRevalidation { .. } if revalidate => Ok(checkpoint),
             CheckpointValidation::NeedsRevalidation { .. } => Err("checkpoint requires --revalidate because the base revision changed".to_string()),
@@ -308,6 +314,7 @@ impl CccxRuntimeRegistry {
             pending_steps: vec![runtime.work_spec.objective.clone()],
             checkpointed_at: chrono::Utc::now().to_rfc3339(),
             base_commit: runtime.work_spec.base_revision.git_head.clone(),
+            base_working_tree_digest: runtime.work_spec.base_revision.working_tree_digest.clone(),
         };
         crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
             .await
@@ -337,6 +344,11 @@ impl CccxRuntimeRegistry {
                 pending_steps: vec![runtime.work_spec.objective.clone()],
                 checkpointed_at: chrono::Utc::now().to_rfc3339(),
                 base_commit: runtime.work_spec.base_revision.git_head.clone(),
+                base_working_tree_digest: runtime
+                    .work_spec
+                    .base_revision
+                    .working_tree_digest
+                    .clone(),
             };
             crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
                 .await
@@ -759,10 +771,10 @@ mod tests {
             .await
             .unwrap();
         assert!(CccxRuntimeRegistry::prepare_resume(
-            project.path(), "logical-resume", "head", 60, true
+            project.path(), "logical-resume", "head", None, 60, true
         ).await.is_ok());
         assert!(CccxRuntimeRegistry::prepare_resume(
-            project.path(), "a1-worker", "head", 60, true
+            project.path(), "a1-worker", "head", None, 60, true
         ).await.is_ok());
     }
 
