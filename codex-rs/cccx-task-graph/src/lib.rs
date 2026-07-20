@@ -238,6 +238,13 @@ impl TaskGraph {
             .artifact_ids
             .push(artifact.artifact_id.clone());
 
+        task.attempts[attempt_index].worker.status = match artifact.status {
+            ArtifactStatus::Success => WorkerStatus::Completed,
+            ArtifactStatus::Blocked | ArtifactStatus::Failed => WorkerStatus::Failed,
+            ArtifactStatus::Interrupted => WorkerStatus::Resumable,
+            ArtifactStatus::Cancelled => WorkerStatus::Cancelled,
+        };
+
         task.status = match artifact.status {
             ArtifactStatus::Success => TaskStatus::Blocked,
             ArtifactStatus::Blocked => TaskStatus::Blocked,
@@ -561,6 +568,29 @@ mod tests {
         assert_eq!(task.status, TaskStatus::Blocked);
         assert!(!task.is_verified());
         assert!(!graph.can_stop());
+    }
+
+    #[test]
+    fn terminal_artifact_updates_worker_status_for_resume_policy() {
+        let mut graph = graph_with_one_started_task();
+        graph
+            .apply_artifact("T1", success_artifact())
+            .expect("apply success artifact");
+        assert_eq!(
+            graph.tasks["T1"].attempts[0].worker.status,
+            WorkerStatus::Completed
+        );
+
+        let mut graph = graph_with_one_started_task();
+        let mut cancelled = success_artifact();
+        cancelled.status = ArtifactStatus::Cancelled;
+        graph
+            .apply_artifact("T1", cancelled)
+            .expect("apply cancelled artifact");
+        assert_eq!(
+            graph.tasks["T1"].attempts[0].worker.status,
+            WorkerStatus::Cancelled
+        );
     }
 
     #[test]
