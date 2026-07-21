@@ -423,6 +423,7 @@ impl CodexThread {
             logical_session_id: checkpoint.logical_session_id.clone(),
             display_name,
             model_route_summary,
+            model_route_selection_source: checkpoint.model_route_selection_source.clone(),
             gateway_provenance: None,
             tool_call_sequence_digest: checkpoint.tool_call_sequence_digest.clone(),
             parent_capabilities: Some(parent),

@@ -1,6 +1,4 @@
-use crate::cccx_runtime::{
-    CccxSpawnRuntime, model_route_summary, parent_capability_set_for_work_spec,
-};
+use crate::cccx_runtime::{CccxSpawnRuntime, parent_capability_set_for_work_spec};
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
@@ -257,6 +255,7 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
     turn: &TurnContext,
     work_spec: Option<cccx_protocol::WorkSpec>,
     task_name: Option<&str>,
+    agent_model_suggestion: Option<&str>,
 ) -> Result<Option<Arc<CccxSpawnRuntime>>, FunctionCallError> {
     if !codex_features::cccx_mvp::surface_gate_enabled() {
         return Ok(None);
@@ -284,10 +283,29 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
         crate::cccx_agent_model_routes::route_for_work_role(&config.codex_home, &work_spec.role)
             .await
             .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
-    work_spec.model_route = crate::cccx_agent_model_routes::apply_role_preset(
-        work_spec.model_route.clone(),
-        role_preset,
-    );
+    let configured_model_catalog =
+        cccx_provider_gateway::LocalConfigCatalog::load_from_home_or_current(
+            &config.codex_home,
+            &turn.model_info.slug,
+        )
+        .map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "cccx could not load the configured 9router model catalog before spawn: {error}"
+            ))
+        })?;
+    let resolved_model_route =
+        crate::cccx_agent_model_routes::resolve_spawn_model_route_with_agent_suggestion(
+            &configured_model_catalog,
+            &turn.model_info.slug,
+            &work_spec.model_route,
+            role_preset,
+            agent_model_suggestion,
+        )
+        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+    work_spec.model_route = cccx_protocol::ModelRouteSelection::Explicit {
+        route_id: resolved_model_route.route_id.clone(),
+    };
+    work_spec.fallback_policy_id = resolved_model_route.fallback_policy_id.clone();
 
     #[allow(deprecated)]
     let project_root = turn.cwd.clone().to_path_buf();
@@ -316,18 +334,11 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
             ]
         })
         .collect();
-    let parent_model_routes = cccx_provider_gateway::LocalConfigCatalog::load_from_home_or_current(
-        &config.codex_home,
-        &turn.model_info.slug,
-    )
-    .map_err(|error| {
-        FunctionCallError::RespondToModel(format!(
-            "cccx could not load the configured 9router model catalog before spawn: {error}"
-        ))
-    })?
-    .available_models
-    .into_iter()
-    .collect();
+    let parent_model_routes = configured_model_catalog
+        .available_models
+        .iter()
+        .cloned()
+        .collect();
 
     // Parent capability is captured from the live turn registry, never from
     // the child's requested WorkSpec. A child can only receive the strict
@@ -341,7 +352,7 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
     );
     crate::cccx_spawn::apply_cccx_harness_to_config(config, &parent, &work_spec)
         .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
-    let route_summary = model_route_summary(&work_spec, &turn.model_info.slug);
+    let route_summary = resolved_model_route.route_id.clone();
     let display_name = task_name
         .map(str::to_string)
         .unwrap_or_else(|| format!("{}-{:?}", work_spec.task_id, work_spec.role));
@@ -352,6 +363,7 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
         work_spec,
         display_name,
         model_route_summary: route_summary,
+        model_route_selection_source: Some(resolved_model_route.selection_source),
         gateway_provenance: None,
         tool_call_sequence_digest: None,
         parent_capabilities: Some(parent),

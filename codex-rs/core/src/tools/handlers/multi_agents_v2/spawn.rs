@@ -102,6 +102,7 @@ async fn handle_spawn_agent(
         turn.as_ref(),
         args.work_spec.clone(),
         Some(args.task_name.as_str()),
+        args.model.as_deref(),
     )
     .await?;
     let cccx_runtime_update = cccx_runtime.clone();
@@ -149,10 +150,12 @@ async fn handle_spawn_agent(
         session
             .send_event(
                 &turn,
-                codex_protocol::protocol::EventMsg::CccxRuntimeAgentUpdate(runtime.agent_update_event(
-                    crate::cccx_runtime::cccx_agent_status_label(&spawned_agent.status),
-                    None,
-                )),
+                codex_protocol::protocol::EventMsg::CccxRuntimeAgentUpdate(
+                    runtime.agent_update_event(
+                        crate::cccx_runtime::cccx_agent_status_label(&spawned_agent.status),
+                        None,
+                    ),
+                ),
             )
             .await;
     }

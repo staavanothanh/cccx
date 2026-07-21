@@ -44,6 +44,9 @@ pub(crate) struct CccxSpawnRuntime {
     pub(crate) logical_session_id: String,
     pub(crate) display_name: String,
     pub(crate) model_route_summary: String,
+    /// Resolver provenance pinned at the Main CC spawn boundary. This remains
+    /// distinct from the later factual 9router effective-route provenance.
+    pub(crate) model_route_selection_source: Option<String>,
     pub(crate) gateway_provenance: Option<GatewayProvenance>,
     /// Rolling digest of successful tool completions for this worker attempt.
     /// It deliberately contains only stable tool identity and call id, never
@@ -69,6 +72,7 @@ impl CccxSpawnRuntime {
             model_route: runtime_agent_model_route(
                 &self.work_spec,
                 &self.model_route_summary,
+                self.model_route_selection_source.as_deref(),
                 self.gateway_provenance.as_ref(),
             ),
             permission_request_id,
@@ -395,6 +399,7 @@ impl CccxRuntimeRegistry {
             base_commit: runtime.work_spec.base_revision.git_head.clone(),
             base_working_tree_digest: runtime.work_spec.base_revision.working_tree_digest.clone(),
             parent_capabilities: runtime.parent_capabilities.clone(),
+            model_route_selection_source: runtime.model_route_selection_source.clone(),
             tool_call_sequence_digest: runtime.tool_call_sequence_digest.clone(),
         };
         crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
@@ -431,6 +436,7 @@ impl CccxRuntimeRegistry {
                     .working_tree_digest
                     .clone(),
                 parent_capabilities: runtime.parent_capabilities.clone(),
+                model_route_selection_source: runtime.model_route_selection_source.clone(),
                 tool_call_sequence_digest: runtime.tool_call_sequence_digest.clone(),
             };
             crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
@@ -615,6 +621,7 @@ fn task_status_label(status: &TaskStatus) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn model_route_summary(work_spec: &WorkSpec, main_model_slug: &str) -> String {
     match &work_spec.model_route {
         ModelRouteSelection::Explicit { route_id } => route_id.clone(),
@@ -627,10 +634,13 @@ pub(crate) fn model_route_summary(work_spec: &WorkSpec, main_model_slug: &str) -
 fn runtime_agent_model_route(
     work_spec: &WorkSpec,
     route_id: &str,
+    resolved_selection_source: Option<&str>,
     gateway: Option<&GatewayProvenance>,
 ) -> CccxRuntimeAgentModelRoute {
     CccxRuntimeAgentModelRoute {
-        selection_source: model_route_selection_source(&work_spec.model_route).to_string(),
+        selection_source: resolved_selection_source
+            .unwrap_or_else(|| model_route_selection_source(&work_spec.model_route))
+            .to_string(),
         requested_route_id: gateway
             .map(|gateway| gateway.requested_route_id.clone())
             .unwrap_or_else(|| route_id.to_string()),
@@ -896,6 +906,7 @@ mod tests {
             work_spec,
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            model_route_selection_source: None,
             gateway_provenance: None,
             tool_call_sequence_digest: None,
             parent_capabilities: None,
@@ -936,6 +947,7 @@ mod tests {
             work_spec: work_spec(),
             display_name: "worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            model_route_selection_source: Some("agent_suggested".to_string()),
             gateway_provenance: None,
             tool_call_sequence_digest: None,
             parent_capabilities: None,
@@ -967,6 +979,10 @@ mod tests {
             checkpoint.last_completed_step,
             "apply_patch completed (call-1)"
         );
+        assert_eq!(
+            checkpoint.model_route_selection_source.as_deref(),
+            Some("agent_suggested")
+        );
     }
 
     #[tokio::test]
@@ -979,6 +995,7 @@ mod tests {
             work_spec: work_spec(),
             display_name: "worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            model_route_selection_source: None,
             gateway_provenance: None,
             tool_call_sequence_digest: None,
             parent_capabilities: None,
@@ -1023,6 +1040,7 @@ mod tests {
             work_spec: work_spec(),
             display_name: "a1-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            model_route_selection_source: None,
             gateway_provenance: None,
             tool_call_sequence_digest: None,
             parent_capabilities: None,
@@ -1072,6 +1090,7 @@ mod tests {
             work_spec: work_spec(),
             display_name: "a1-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            model_route_selection_source: None,
             gateway_provenance: None,
             tool_call_sequence_digest: None,
             parent_capabilities: None,
@@ -1115,6 +1134,7 @@ mod tests {
             work_spec,
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            model_route_selection_source: None,
             gateway_provenance: None,
             tool_call_sequence_digest: None,
             parent_capabilities: None,
@@ -1158,6 +1178,7 @@ mod tests {
             work_spec,
             display_name: "interrupted-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            model_route_selection_source: None,
             gateway_provenance: None,
             tool_call_sequence_digest: None,
             parent_capabilities: None,
@@ -1199,6 +1220,7 @@ mod tests {
             work_spec: work_spec(),
             display_name: "cancelled-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
+            model_route_selection_source: None,
             gateway_provenance: None,
             tool_call_sequence_digest: None,
             parent_capabilities: None,
@@ -1675,6 +1697,7 @@ mod tests {
             logical_session_id: "ws-typed".to_string(),
             display_name: "task-implementer".to_string(),
             model_route_summary: "9router/cx-implementer".to_string(),
+            model_route_selection_source: Some("role_preset".to_string()),
             gateway_provenance: None,
             tool_call_sequence_digest: None,
             parent_capabilities: None,
@@ -1687,7 +1710,7 @@ mod tests {
         assert_eq!(update.role, "implementer");
         assert_eq!(update.status, "running");
         assert_eq!(update.permission_request_id.as_deref(), Some("approval-7"));
-        assert_eq!(update.model_route.selection_source, "explicit");
+        assert_eq!(update.model_route.selection_source, "role_preset");
         assert_eq!(
             update.model_route.requested_route_id,
             "9router/cx-implementer"
@@ -1715,6 +1738,7 @@ mod tests {
             logical_session_id: "ws-gateway".to_string(),
             display_name: "task-tester".to_string(),
             model_route_summary: "parent-main".to_string(),
+            model_route_selection_source: None,
             gateway_provenance: Some(gateway),
             tool_call_sequence_digest: None,
             parent_capabilities: None,
