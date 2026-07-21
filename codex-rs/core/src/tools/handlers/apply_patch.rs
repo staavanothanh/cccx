@@ -463,7 +463,6 @@ impl ApplyPatchHandler {
                             )
                             .await
                             .map(|result| result.output);
-                        let succeeded = out.is_ok();
                         let (out, delta) = match out {
                             Ok(output) => (Ok(output.exec_output), Some(output.delta)),
                             Err(error) => (Err(error), Some(runtime.committed_delta().clone())),
@@ -475,18 +474,6 @@ impl ApplyPatchHandler {
                             Some(&tracker),
                         );
                         let content = emitter.finish(event_ctx, out, delta.as_ref()).await?;
-                        if succeeded
-                            && let Err(error) = session
-                                .services
-                                .agent_control
-                                .checkpoint_cccx_worker(
-                                    session.thread_id,
-                                    format!("apply_patch completed ({call_id})"),
-                                )
-                                .await
-                        {
-                            tracing::warn!(%error, "cccx: could not checkpoint successful apply_patch");
-                        }
                         Ok(boxed_tool_output(ApplyPatchToolOutput::from_text(content)))
                     }
                 }

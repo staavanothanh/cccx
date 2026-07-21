@@ -11,6 +11,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::tests::make_session_and_context_with_rx;
+use crate::permission_queue_bridge::NativeApproval;
 use crate::state::ActiveTurn;
 
 async fn wait_until_held(pause_state: &mut watch::Receiver<bool>) {
@@ -58,6 +59,14 @@ async fn command_approval_holds_an_elicitation_until_response() {
     });
 
     events.recv().await.expect("approval event");
+    assert!(matches!(
+        session
+            .services
+            .cccx_permission_queue
+            .native_approval("pr-0")
+            .await,
+        Some(NativeApproval::Exec { approval_id, .. }) if approval_id == "call-1"
+    ));
     wait_until_held(&mut pause_state).await;
     session
         .notify_approval("call-1", ReviewDecision::Approved)
@@ -89,6 +98,14 @@ async fn patch_approval_holds_an_elicitation_until_response() {
     });
 
     events.recv().await.expect("approval event");
+    assert!(matches!(
+        session
+            .services
+            .cccx_permission_queue
+            .native_approval("pr-0")
+            .await,
+        Some(NativeApproval::Patch { approval_id, .. }) if approval_id == "call-1"
+    ));
     wait_until_held(&mut pause_state).await;
     session
         .notify_approval("call-1", ReviewDecision::Approved)

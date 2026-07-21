@@ -707,6 +707,22 @@ impl ToolRegistry {
                         invocation.turn.record_cccx_read(path, &bytes).await;
                     }
                 }
+                // A resumable CCCX worker checkpoints after every successful
+                // bounded tool step, not only edits. The registry is the one
+                // common PostToolUse boundary for shell, MCP, and file tools;
+                // non-CCCX sessions simply return `false` here.
+                if let Err(error) = invocation
+                    .session
+                    .services
+                    .agent_control
+                    .checkpoint_cccx_worker(
+                        invocation.session.thread_id,
+                        format!("tool completed ({})", result.call_id),
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, call_id = %result.call_id, "cccx: could not checkpoint successful tool");
+                }
                 dispatch_trace.record_completed(
                     &invocation,
                     &result.call_id,

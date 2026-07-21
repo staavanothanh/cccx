@@ -2245,16 +2245,6 @@ impl Session {
                 },
             )
             .await;
-        self.services
-            .cccx_permission_queue
-            .register_native_approval(
-                cccx_request_id.clone(),
-                NativeApproval::Patch {
-                    thread_id: self.thread_id.to_string(),
-                    approval_id: approval_id.clone().unwrap_or_else(|| call_id.clone()),
-                },
-            )
-            .await;
         tracing::trace!(
             %cccx_request_id,
             approval_id = %effective_approval_id,
@@ -2369,6 +2359,16 @@ impl Session {
                 reason
                     .clone()
                     .unwrap_or_else(|| "patch approval requested".to_string()),
+            )
+            .await;
+        self.services
+            .cccx_permission_queue
+            .register_native_approval(
+                cccx_request_id.clone(),
+                NativeApproval::Patch {
+                    thread_id: self.thread_id.to_string(),
+                    approval_id: approval_id.clone(),
+                },
             )
             .await;
         tracing::trace!(

@@ -343,6 +343,29 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
     })))
 }
 
+/// A WorkSpec is the cross-harness boundary.  A child governed by
+/// `work_spec_only` must not also receive a fork of its parent's transcript,
+/// including a partial fork: that would bypass the structured projection.
+pub(crate) fn enforce_cccx_fork_policy(
+    work_spec: Option<&cccx_protocol::WorkSpec>,
+    includes_parent_context: bool,
+) -> Result<(), FunctionCallError> {
+    if !codex_features::cccx_mvp::surface_gate_enabled() {
+        return Ok(());
+    }
+    let Some(work_spec) = work_spec else {
+        return Ok(());
+    };
+    if matches!(work_spec.fork_policy, cccx_protocol::ForkPolicy::WorkSpecOnly)
+        && includes_parent_context
+    {
+        return Err(FunctionCallError::RespondToModel(
+            "cccx work_spec_only workers cannot fork parent history; use fork_turns=none and pass bounded state through WorkSpec/Artifact".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     session: &Session,
     turn: &TurnContext,

@@ -2954,3 +2954,23 @@ Validation (green):
 cargo +1.95.0 test -p cccx-mode shift_tab_cycle_only_visits_the_four_safe_modes -j 1
 cargo +1.95.0 test -p codex-tui cccx_shift_tab_cycles_only_safe_modes_without_requesting_risky_modes --lib -j 1
 ```
+
+## 2026-07-21 — Runtime hardening follow-up: approval, fork, checkpoint
+
+- Fixed the native approval correlation used by the centralized CCCX permission
+  queue: shell requests now retain `NativeApproval::Exec`; patch requests
+  register their own `NativeApproval::Patch`. A `/permissions` decision can no
+  longer dispatch the wrong native operation or fail because no waiter exists.
+- Enforced `WorkSpec.fork_policy = work_spec_only` in both multi-agent spawn
+  surfaces. Full and partial transcript forks are rejected before the child is
+  created; WorkSpec/Artifact is the only cross-harness context channel.
+- Moved resumable-worker checkpointing to the common successful PostToolUse
+  boundary. Shell, MCP and file-tool progress now checkpoint just like edits;
+  the old apply-patch-only checkpoint is removed to avoid duplicate writes.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 check -p codex-core -j 1
+cargo +1.95.0 test -p codex-core elicitation_holders_tests --lib -j 1 -- --test-threads=1
+```

@@ -56,6 +56,7 @@ async fn handle_spawn_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+    enforce_cccx_fork_policy(args.work_spec.as_ref(), args.fork_context)?;
     let role_name = args
         .agent_type
         .as_deref()
