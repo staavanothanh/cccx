@@ -3100,6 +3100,23 @@ Validation (green):
 cargo +1.95.0 test -p codex-core cccx_agent_model_routes::tests:: --lib -j 1 -- --test-threads=1
 ```
 
+### 2026-07-21 — CCCX owns opaque spawn model resolution
+
+- Both MultiAgent v1 and v2 now bypass Codex's upstream model-manager
+  override path for a structured CCCX WorkSpec spawn. The `model` tool field
+  remains an agent suggestion, but it reaches the CCCX scheduler resolver and
+  is validated against the owner 9router catalog before the child config is
+  pinned.
+- Non-CCCX spawns retain the upstream model/role/service-tier path unchanged.
+  A CCCX `service_tier` override is rejected rather than being validated
+  against unrelated upstream GPT metadata or silently sent through 9router.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 check -p codex-core -j 1
+```
+
 ### 2026-07-21 — Turn-scoped gateway retry and transport-fallback provenance
 
 - Gateway provenance now has a `ModelClientSession` scope in addition to its

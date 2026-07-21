@@ -100,7 +100,7 @@ async fn handle_spawn_agent(
             args.model.as_deref(),
             args.reasoning_effort.clone(),
         )?;
-    } else {
+    } else if !cccx_owns_spawn_model_resolution(args.work_spec.as_ref()) {
         apply_requested_spawn_agent_model_overrides(
             &session,
             turn.as_ref(),
@@ -113,13 +113,20 @@ async fn handle_spawn_agent(
             .await
             .map_err(FunctionCallError::RespondToModel)?;
     }
-    apply_spawn_agent_service_tier(
-        &session,
-        &mut config,
-        turn.config.service_tier.as_deref(),
-        args.service_tier.as_deref(),
-    )
-    .await?;
+    if !cccx_owns_spawn_model_resolution(args.work_spec.as_ref()) {
+        apply_spawn_agent_service_tier(
+            &session,
+            &mut config,
+            turn.config.service_tier.as_deref(),
+            args.service_tier.as_deref(),
+        )
+        .await?;
+    } else if args.service_tier.is_some() {
+        return Err(FunctionCallError::RespondToModel(
+            "cccx spawn does not accept service_tier overrides: 9router route capabilities are owner-catalog controlled"
+                .to_string(),
+        ));
+    }
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
     let cccx_runtime = apply_cccx_work_spec_to_spawn_config(
         session.as_ref(),

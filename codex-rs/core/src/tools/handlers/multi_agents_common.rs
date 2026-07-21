@@ -385,6 +385,15 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
     })))
 }
 
+/// A structured CCCX spawn resolves opaque 9router model IDs at the scheduler
+/// boundary. Sending those IDs through Codex's upstream model manager first
+/// would reject valid owner-catalog routes before CCCX can validate them.
+pub(crate) fn cccx_owns_spawn_model_resolution(
+    work_spec: Option<&cccx_protocol::WorkSpec>,
+) -> bool {
+    codex_features::cccx_mvp::surface_gate_enabled() && work_spec.is_some()
+}
+
 /// A WorkSpec is the cross-harness boundary.  A child governed by
 /// `work_spec_only` must not also receive a fork of its parent's transcript,
 /// including a partial fork: that would bypass the structured projection.
