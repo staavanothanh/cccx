@@ -2994,3 +2994,19 @@ Validation (green):
 ```powershell
 cargo +1.95.0 test -p codex-exec p11_permission_request_precedes_headless_denial_with_typed_payload -j 1 --lib -- --test-threads=1
 ```
+
+## 2026-07-21 — MCP catalog/executor identity normalization
+
+- Fixed a Phase 4 projection inconsistency: the child-facing MCP catalog had
+  accepted server and callable aliases while the execution gate only accepted
+  a stable tool ID. A model could therefore see a tool that execution denied.
+- CCCX now uses `mcp:{server}.{tool}` at the catalog projection boundary, the
+  same identity used by the executor and WorkSpec grants. Server-wide aliases
+  fail closed; they do not accidentally expose every tool from that server.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_mcp_projection -j 1 --lib -- --test-threads=1
+cargo +1.95.0 test -p codex-core cccx_tool_projection_filters_mcp_runtime_tools -j 1 --lib -- --test-threads=1
+```

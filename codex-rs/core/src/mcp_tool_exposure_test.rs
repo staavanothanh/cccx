@@ -204,7 +204,7 @@ async fn cccx_tool_projection_filters_mcp_runtime_tools() {
     let mut config = test_config().await;
     config
         .cccx_child_allowed_mcp_tools
-        .insert("allowed_server".to_string());
+        .insert("mcp:allowed_server.read_graph".to_string());
     let allowed_tool = make_mcp_tool(
         "allowed_server",
         "read_graph",
@@ -230,6 +230,36 @@ async fn cccx_tool_projection_filters_mcp_runtime_tools() {
     assert_eq!(
         runtimes_by_name(&runtimes),
         expected_runtimes(&[allowed_tool], ToolExposure::Direct)
+    );
+}
+
+#[tokio::test]
+async fn cccx_mcp_projection_rejects_server_wide_aliases() {
+    let mut config = test_config().await;
+    // A server id is not a grant: executor policy only accepts the same
+    // canonical `mcp:{server}.{tool}` identity used by the visible catalog.
+    config
+        .cccx_child_allowed_mcp_tools
+        .insert("allowed_server".to_string());
+    let tool = make_mcp_tool(
+        "allowed_server",
+        "read_graph",
+        "mcp__allowed_server",
+        "read_graph",
+        /*connector_id*/ None,
+        /*connector_name*/ None,
+    );
+
+    let runtimes = build_mcp_tool_runtimes(
+        &[tool],
+        /*connectors*/ None,
+        &config,
+        /*search_tool_enabled*/ false,
+    );
+
+    assert!(
+        runtimes.is_empty(),
+        "a non-canonical alias must not expose a tool the executor would deny"
     );
 }
 

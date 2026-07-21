@@ -64,12 +64,17 @@ fn cccx_mcp_tool_allowed(config: &Config, tool: &McpToolInfo) -> bool {
         return true;
     }
 
-    let canonical = tool.canonical_tool_name();
-    allowed.contains(&tool.server_name)
-        || allowed.contains(&tool.callable_namespace)
-        || allowed.contains(&tool.callable_name)
-        || allowed.contains(&canonical.to_string())
-        || allowed.contains(tool.tool.name.as_ref())
+    // A child WorkSpec grants the CCCX stable MCP identity rather than a
+    // server-wide or upstream callable alias. The executor derives the same
+    // `mcp:{server}.{tool}` value before its permission check.
+    allowed.contains(&cccx_mcp_stable_tool_id(
+        &tool.server_name,
+        tool.tool.name.as_ref(),
+    ))
+}
+
+fn cccx_mcp_stable_tool_id(server_id: &str, tool_name: &str) -> String {
+    format!("mcp:{server_id}.{tool_name}")
 }
 
 fn filter_non_codex_apps_mcp_tools_only(mcp_tools: &[McpToolInfo]) -> Vec<McpToolInfo> {
