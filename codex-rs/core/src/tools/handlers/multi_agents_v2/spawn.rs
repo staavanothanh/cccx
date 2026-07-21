@@ -103,6 +103,7 @@ async fn handle_spawn_agent(
         Some(args.task_name.as_str()),
     )
     .await?;
+    let cccx_runtime_update = cccx_runtime.clone();
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -143,6 +144,17 @@ async fn handle_spawn_agent(
     .await
     .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
+    if let Some(runtime) = &cccx_runtime_update {
+        session
+            .send_event(
+                &turn,
+                codex_protocol::protocol::EventMsg::CccxRuntimeAgentUpdate(runtime.agent_update_event(
+                    crate::cccx_runtime::cccx_agent_status_label(&spawned_agent.status),
+                    None,
+                )),
+            )
+            .await;
+    }
     let agent_snapshot = session
         .services
         .agent_control

@@ -1366,7 +1366,7 @@ async fn collab_mode_shift_tab_cycles_only_when_idle() {
 }
 
 #[tokio::test]
-async fn cccx_shift_tab_cycles_safe_modes_and_emits_typed_core_updates() {
+async fn cccx_shift_tab_cycles_all_modes_and_requests_risky_modes_without_optimistic_local_mode() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
@@ -1374,19 +1374,55 @@ async fn cccx_shift_tab_cycles_safe_modes_and_emits_typed_core_updates() {
         .expect("expected plan collaboration mask");
     chat.set_collaboration_mask(plan_mask);
 
-    for expected in [
-        ModeKind::Default,
-        ModeKind::AcceptEdits,
-        ModeKind::Auto,
-        ModeKind::Plan,
-        ModeKind::Default,
-    ] {
+    for expected in [ModeKind::Default, ModeKind::AcceptEdits, ModeKind::Auto] {
         chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
         assert_eq!(chat.active_collaboration_mode_kind(), expected);
         assert_eq!(next_thread_collaboration_mode_update(&mut rx), expected);
-        assert_ne!(chat.active_collaboration_mode_kind(), ModeKind::DontAsk);
-        assert_ne!(chat.active_collaboration_mode_kind(), ModeKind::Bypass);
     }
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Auto);
+    assert_eq!(
+        next_thread_collaboration_mode_update(&mut rx),
+        ModeKind::DontAsk
+    );
+    let dont_ask_mask =
+        collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::DontAsk)
+            .expect("expected DontAsk collaboration mask");
+    chat.set_collaboration_mask(dont_ask_mask);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::DontAsk);
+    assert_eq!(
+        next_thread_collaboration_mode_update(&mut rx),
+        ModeKind::Bypass
+    );
+    let bypass_mask =
+        collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Bypass)
+            .expect("expected Bypass collaboration mask");
+    chat.set_collaboration_mask(bypass_mask);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    assert_eq!(next_thread_collaboration_mode_update(&mut rx), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn cccx_dont_ask_slash_command_requests_core_without_optimistic_local_mode() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    let plan_mask = collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Plan)
+        .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+
+    chat.dispatch_command(SlashCommand::DontAsk);
+
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    assert_eq!(
+        next_thread_collaboration_mode_update(&mut rx),
+        ModeKind::DontAsk
+    );
 }
 
 #[tokio::test]

@@ -3,10 +3,14 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use cccx_headless::AgentUpdatePayload;
 use cccx_headless::AnswerPayload;
+use cccx_headless::ApprovalDeniedPayload;
 use cccx_headless::ErrorPayload;
 use cccx_headless::HeadlessEvent;
 use cccx_headless::HeadlessEventEnvelope;
+use cccx_headless::ModelRoutePayload;
+use cccx_headless::TaskUpdatePayload;
 use cccx_headless::TerminalPayload;
 use cccx_headless::TerminalStatus;
 use codex_app_server_protocol::CollabAgentTool;
@@ -28,6 +32,7 @@ pub use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
 use crate::exec_events::AgentMessageItem;
+use crate::exec_events::AgentUpdateEvent;
 use crate::exec_events::CollabAgentState;
 use crate::exec_events::CollabAgentStatus;
 use crate::exec_events::CollabTool;
@@ -117,7 +122,7 @@ impl EventProcessorWithJsonOutput {
 
     #[allow(clippy::print_stdout)]
     fn emit(&self, thread_event: ThreadEvent) {
-        if let Some(envelope) = self.map_thread_event_to_envelope(thread_event) {
+        for envelope in self.map_thread_event_to_envelopes(thread_event) {
             let line = serde_json::to_string(&envelope).unwrap_or_else(|err| {
                 json!({
                     "schemaVersion": cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION,
@@ -134,31 +139,86 @@ impl EventProcessorWithJsonOutput {
         }
     }
 
-    fn map_thread_event_to_envelope(&self, event: ThreadEvent) -> Option<HeadlessEventEnvelope> {
-        let headless_event = match event {
+    fn map_thread_event_to_envelopes(&self, event: ThreadEvent) -> Vec<HeadlessEventEnvelope> {
+        let headless_events: Vec<HeadlessEvent> = match event {
+            ThreadEvent::ItemStarted(ref item) => {
+                self.map_started_or_updated_item_to_headless_events(&item.item, "running")
+            }
+            ThreadEvent::ItemUpdated(ref item) => {
+                self.map_started_or_updated_item_to_headless_events(&item.item, "updated")
+            }
             ThreadEvent::ItemCompleted(ref item) => match &item.item.details {
                 ThreadItemDetails::AgentMessage(msg) => {
-                    Some(HeadlessEvent::Answer(AnswerPayload {
+                    vec![HeadlessEvent::Answer(AnswerPayload {
                         text: msg.text.clone(),
-                    }))
+                    })]
                 }
-                ThreadItemDetails::Error(err) => Some(HeadlessEvent::Error(ErrorPayload {
+                ThreadItemDetails::Error(err) => vec![HeadlessEvent::Error(ErrorPayload {
                     message: err.message.clone(),
                     recoverable: true,
-                })),
-                _ => None,
+                })],
+                ThreadItemDetails::TodoList(_) => {
+                    vec![HeadlessEvent::TaskUpdate(TaskUpdatePayload {
+                        task_id: item.item.id.clone(),
+                        status: "completed".to_string(),
+                        verified: true,
+                    })]
+                }
+                ThreadItemDetails::CollabToolCall(_) => Vec::new(),
+                _ => Vec::new(),
             },
-            ThreadEvent::Error(ref err) => Some(HeadlessEvent::Error(ErrorPayload {
+            ThreadEvent::Error(ref err) => vec![HeadlessEvent::Error(ErrorPayload {
                 message: err.message.clone(),
                 recoverable: false,
-            })),
-            // ThreadStarted, TurnStarted, TurnCompleted, TurnFailed,
-            // ItemStarted, ItemUpdated, and non-mapped ItemCompleted types
-            // are execution details; not mapped in headless contract.
-            _ => None,
+            })],
+            ThreadEvent::AgentUpdate(ref update) => {
+                vec![HeadlessEvent::AgentUpdate(Self::agent_update_payload(update))]
+            }
+            // ThreadStarted, TurnStarted, TurnCompleted, TurnFailed, and
+            // non-mapped items are execution details; terminal is emitted
+            // once during shutdown.
+            _ => Vec::new(),
         };
 
-        headless_event.map(|event| HeadlessEventEnvelope {
+        headless_events
+            .into_iter()
+            .map(|event| self.envelope(event))
+            .collect()
+    }
+
+    fn map_started_or_updated_item_to_headless_events(
+        &self,
+        item: &ExecThreadItem,
+        status: &str,
+    ) -> Vec<HeadlessEvent> {
+        match &item.details {
+            ThreadItemDetails::TodoList(_) => vec![HeadlessEvent::TaskUpdate(TaskUpdatePayload {
+                task_id: item.id.clone(),
+                status: status.to_string(),
+                verified: false,
+            })],
+            ThreadItemDetails::CollabToolCall(_) => Vec::new(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn agent_update_payload(update: &AgentUpdateEvent) -> AgentUpdatePayload {
+        AgentUpdatePayload {
+            logical_session_id: update.logical_session_id.clone(),
+            display_name: update.display_name.clone(),
+            role: update.role.clone(),
+            status: update.status.clone(),
+            model_route: ModelRoutePayload {
+                selection_source: update.model_route.selection_source.clone(),
+                requested_route_id: update.model_route.requested_route_id.clone(),
+                effective_route_id: update.model_route.effective_route_id.clone(),
+                fallback_chain: update.model_route.fallback_chain.clone(),
+            },
+        }
+    }
+
+    fn envelope(&self, event: HeadlessEvent) -> HeadlessEventEnvelope {
+        HeadlessEventEnvelope {
             schema_version: cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION.to_string(),
             seq: self.cccx_seq.fetch_add(1, Ordering::SeqCst) + 1,
             session_id: self
@@ -170,13 +230,17 @@ impl EventProcessorWithJsonOutput {
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string()),
             event,
-        })
+        }
     }
 
-    /// Emit a cccx-headless Terminal event on shutdown.
-    /// Called from print_final_output after the exec loop completes.
-    #[allow(clippy::print_stdout)]
-    fn emit_terminal_event(&self) {
+    fn approval_denied_envelope(&self, request_id: String) -> HeadlessEventEnvelope {
+        self.envelope(HeadlessEvent::ApprovalDenied(ApprovalDeniedPayload {
+            request_id,
+            reason: "headless approval default is deny".to_string(),
+        }))
+    }
+
+    fn terminal_event_envelope(&self) -> HeadlessEventEnvelope {
         let status = match self.cccx_exit_code {
             0 => TerminalStatus::Success,
             3 => TerminalStatus::Cancelled,
@@ -184,20 +248,17 @@ impl EventProcessorWithJsonOutput {
         };
         let exit_code = Some(self.cccx_exit_code);
 
-        let envelope = HeadlessEventEnvelope {
-            schema_version: cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION.to_string(),
-            seq: self.cccx_seq.fetch_add(1, Ordering::SeqCst) + 1,
-            session_id: self
-                .cccx_session_id
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
-            turn_id: self
-                .cccx_turn_id
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
-            event: HeadlessEvent::Terminal(TerminalPayload { status, exit_code }),
-        };
+        self.envelope(HeadlessEvent::Terminal(TerminalPayload {
+            status,
+            exit_code,
+        }))
+    }
 
+    /// Emit a cccx-headless Terminal event on shutdown.
+    /// Called from print_final_output after the exec loop completes.
+    #[allow(clippy::print_stdout)]
+    fn emit_terminal_event(&self) {
+        let envelope = self.terminal_event_envelope();
         let line = serde_json::to_string(&envelope).unwrap_or_else(|err| {
             json!({
                 "schemaVersion": cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION,
@@ -594,6 +655,22 @@ impl EventProcessorWithJsonOutput {
                 CodexStatus::Running
             }
             ServerNotification::ModelVerification(_) => CodexStatus::Running,
+            ServerNotification::CccxRuntimeAgentUpdate(notification) => {
+                events.push(ThreadEvent::AgentUpdate(AgentUpdateEvent {
+                    logical_session_id: notification.logical_session_id,
+                    display_name: notification.display_name,
+                    role: notification.role,
+                    status: notification.status,
+                    model_route: crate::exec_events::AgentUpdateModelRoute {
+                        selection_source: notification.model_route.selection_source,
+                        requested_route_id: notification.model_route.requested_route_id,
+                        effective_route_id: notification.model_route.effective_route_id,
+                        fallback_chain: notification.model_route.fallback_chain,
+                    },
+                    permission_request_id: notification.permission_request_id,
+                }));
+                CodexStatus::Running
+            }
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
                 self.last_total_token_usage = Some(notification.token_usage);
                 CodexStatus::Running
@@ -723,8 +800,22 @@ impl EventProcessor for EventProcessorWithJsonOutput {
     }
 
     /// Override: headless mode auto-denies approvals → exit_code=2.
-    fn on_approval_denied(&mut self) {
+    #[allow(clippy::print_stdout)]
+    fn on_approval_denied(&mut self, request_id: String) {
         self.cccx_exit_code = 2;
+        let line = serde_json::to_string(&self.approval_denied_envelope(request_id)).unwrap_or_else(|err| {
+            json!({
+                "schemaVersion": cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION,
+                "type": "error",
+                "payload": {
+                    "message": format!("failed to serialize approval denial: {err}"),
+                    "recoverable": false,
+                },
+            })
+            .to_string()
+        });
+        debug_assert!(cccx_headless::assert_stdout_lines_are_json(&line).is_ok());
+        println!("{line}");
     }
 
     fn print_final_output(&mut self) {

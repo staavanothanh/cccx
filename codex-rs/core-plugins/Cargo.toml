@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 codex-analytics = { workspace = true }
+cccx-protocol = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-config = { workspace = true }
 codex-connectors = { workspace = true }
@@ -35,6 +36,7 @@ codex-utils-path-uri = { workspace = true }
 codex-utils-plugins = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
+dunce = { workspace = true }
 flate2 = { workspace = true }
 reqwest = { workspace = true }
 regex = { workspace = true }

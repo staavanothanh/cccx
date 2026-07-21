@@ -2867,6 +2867,147 @@ async fn raw_slash_command_reports_usage_for_invalid_arg() {
 }
 
 #[tokio::test]
+async fn cccx_parser_mode_dispatch_uses_runtime_mode_handler() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_cccx_command_with_args(SlashCommand::Auto, "");
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::SubmitThreadOp {
+                op: Op::OverrideTurnContext { .. },
+                ..
+            }
+        )),
+        "expected cccx /auto parse to use mode runtime handler; events: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn cccx_parser_review_dispatch_opens_runtime_popup() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_cccx_command_with_args(SlashCommand::Review, "");
+
+    assert!(chat.bottom_pane.has_active_view());
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Select a review preset"),
+        "expected review popup, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
+async fn cccx_parser_theme_dispatch_opens_runtime_picker() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_cccx_command_with_args(SlashCommand::Theme, "");
+
+    assert!(chat.bottom_pane.has_active_view());
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Theme"),
+        "expected theme picker, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
+async fn cccx_parser_theme_arg_reports_unsupported_runtime_arg() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_cccx_command_with_args(SlashCommand::Theme, "dark");
+
+    assert!(!chat.bottom_pane.has_active_view());
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Usage: /theme"),
+        "expected theme usage error, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn cccx_parser_skills_dispatch_opens_runtime_menu() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_cccx_command_with_args(SlashCommand::Skills, "");
+
+    assert!(chat.bottom_pane.has_active_view());
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Skills") && popup.contains("Enable/Disable Skills"),
+        "expected skills menu, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
+async fn cccx_parser_plugins_fails_closed_while_upstream_marketplace_is_disabled() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Plugins, /*enabled*/ true);
+
+    chat.dispatch_cccx_command_with_args(SlashCommand::Plugins, "");
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("cccx MVP disables plugins"),
+        "expected fail-closed marketplace boundary, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn cccx_parser_mcp_dispatch_uses_runtime_inventory_loader() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_cccx_command_with_args(SlashCommand::Mcp, "");
+
+    let active = active_blob(&chat);
+    assert!(
+        active.contains("Loading MCP") || active.contains("/mcp"),
+        "expected MCP loading active cell, got {active:?}"
+    );
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::FetchMcpInventory {
+            detail: McpServerStatusDetail::ToolsAndAuthOnly,
+            ..
+        })
+    );
+}
+
+#[tokio::test]
+async fn cccx_parser_help_renders_a_real_command_reference() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_cccx_command_with_args(SlashCommand::Help, "--shortcuts");
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("CCCX shortcuts") && rendered.contains("Shift+Tab"),
+        "expected CCCX shortcut reference, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
 async fn compact_queues_user_messages_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());

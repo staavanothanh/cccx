@@ -125,15 +125,19 @@ impl CccxModeState {
         Ok(())
     }
 
-    /// Shift+Tab cycle: Plan → Default → AcceptEdits → Auto → Plan...
-    /// Excludes DontAsk and Bypass per design.md §8.
+    /// Shift+Tab cycle: Plan → Default → AcceptEdits → Auto → DontAsk
+    /// → Bypass → Plan...
+    ///
+    /// Risky targets still require the dedicated transition entry points:
+    /// [`confirm_mode`] for DontAsk and [`attest_mode`] for Bypass.
     pub fn next_in_cycle(&self) -> MainMode {
         match self.current.clone() {
             MainMode::Plan => MainMode::Default,
             MainMode::Default => MainMode::AcceptEdits,
             MainMode::AcceptEdits => MainMode::Auto,
-            MainMode::Auto => MainMode::Plan,
-            MainMode::DontAsk | MainMode::Bypass => MainMode::Plan,
+            MainMode::Auto => MainMode::DontAsk,
+            MainMode::DontAsk => MainMode::Bypass,
+            MainMode::Bypass => MainMode::Plan,
         }
     }
 
@@ -228,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_cycle_excludes_dont_ask_and_bypass() {
+    fn shift_tab_cycle_includes_all_six_modes_with_risky_transition_gates() {
         let mut state = CccxModeState::new(MainMode::Plan);
         assert_eq!(state.next_in_cycle(), MainMode::Default);
         state.change_mode(MainMode::Default).unwrap();
@@ -236,16 +240,22 @@ mod tests {
         state.change_mode(MainMode::AcceptEdits).unwrap();
         assert_eq!(state.next_in_cycle(), MainMode::Auto);
         state.change_mode(MainMode::Auto).unwrap();
+        assert_eq!(state.next_in_cycle(), MainMode::DontAsk);
+        let dont_ask = state.next_in_cycle();
+        assert!(matches!(
+            state.change_mode(dont_ask),
+            Err(ModeTransitionError::DontAskRequiresConfirm)
+        ));
+        state.confirm_mode().unwrap();
+        assert_eq!(state.next_in_cycle(), MainMode::Bypass);
+        let bypass = state.next_in_cycle();
+        assert!(matches!(
+            state.change_mode(bypass),
+            Err(ModeTransitionError::BypassRequiresAttestation)
+        ));
+        let attestation = BypassModeAttestation::backend_sandbox_isolation();
+        state.attest_mode(&attestation).unwrap();
         assert_eq!(state.next_in_cycle(), MainMode::Plan);
-
-        assert_eq!(
-            CccxModeState::new(MainMode::DontAsk).next_in_cycle(),
-            MainMode::Plan
-        );
-        assert_eq!(
-            CccxModeState::new(MainMode::Bypass).next_in_cycle(),
-            MainMode::Plan
-        );
     }
 
     #[test]

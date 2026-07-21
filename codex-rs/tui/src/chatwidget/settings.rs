@@ -674,7 +674,14 @@ impl ChatWidget {
             self.model_catalog.as_ref(),
             self.active_collaboration_mask.as_ref(),
         ) {
-            self.set_collaboration_mask_from_user_action(next_mask);
+            if next_mask
+                .mode
+                .is_some_and(|mode| matches!(mode, ModeKind::DontAsk | ModeKind::Bypass))
+            {
+                self.request_collaboration_mode_from_user_action(next_mask);
+            } else {
+                self.set_collaboration_mask_from_user_action(next_mask);
+            }
         }
     }
 

@@ -3492,6 +3492,19 @@ impl Session {
             .plugins_manager
             .plugins_for_config(&turn_context.config.plugins_config_input())
             .await;
+        if codex_features::cccx_mvp::provider_boundary_active()
+            && matches!(
+                turn_context.cccx_actor_identity(),
+                cccx_protocol::ActorIdentity::MainCc
+            )
+            && matches!(turn_context.cccx_harness(), cccx_protocol::HarnessKind::Cc)
+        {
+            for extension in
+                codex_core_plugins::cccx_extension::active_cccx_extensions(&loaded_plugins)
+            {
+                developer_sections.extend(extension.main_cc_context_fragments());
+            }
+        }
         let recommended_plugin_candidates =
             if crate::tools::spec_plan::tool_suggest_enabled(turn_context) {
                 let auth = self.services.auth_manager.auth().await;

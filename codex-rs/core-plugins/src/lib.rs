@@ -1,4 +1,5 @@
 mod app_mcp_routing;
+pub mod cccx_extension;
 mod command_migration;
 mod discoverable;
 pub mod installed_marketplaces;

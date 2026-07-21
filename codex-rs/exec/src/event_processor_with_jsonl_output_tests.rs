@@ -1,6 +1,7 @@
 use super::*;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::collections::HashMap;
 use tempfile::tempdir;
 
 #[test]
@@ -148,22 +149,32 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
 /// Phase 11: An Answer event emitted through the processor must become a
 /// cccx_headless::HeadlessEvent::Answer envelope.
 #[test]
-fn p11_processor_wiring_includes_cccx_headless_import() {
-    // Prove compile-time wiring: the exec crate imports cccx_headless types.
-    // If this test compiles, the import is active (the mapping code path
-    // won't compile without cccx_headless in scope).
-    let _answer = cccx_headless::HeadlessEvent::Answer(cccx_headless::AnswerPayload {
-        text: "test".into(),
-    });
-    let _terminal = cccx_headless::HeadlessEvent::Terminal(cccx_headless::TerminalPayload {
-        status: cccx_headless::TerminalStatus::Success,
-        exit_code: Some(0),
-    });
+fn p11_agent_message_maps_to_answer_envelope() {
+    let processor = EventProcessorWithJsonOutput::new(None);
 
+    let envelopes =
+        processor.map_thread_event_to_envelopes(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ExecThreadItem {
+                id: "item_0".to_string(),
+                details: ThreadItemDetails::AgentMessage(AgentMessageItem {
+                    text: "The answer is 42.".to_string(),
+                }),
+            },
+        }));
+
+    assert_eq!(envelopes.len(), 1);
     assert_eq!(
-        cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION,
-        "cccx.exec_event.v1"
+        envelopes[0].schema_version,
+        cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION
     );
+    assert_eq!(envelopes[0].seq, 1);
+    assert_eq!(envelopes[0].session_id, "unknown");
+    assert_eq!(envelopes[0].turn_id, "unknown");
+
+    let cccx_headless::HeadlessEvent::Answer(payload) = &envelopes[0].event else {
+        panic!("expected answer envelope, got {:?}", envelopes[0].event);
+    };
+    assert_eq!(payload.text, "The answer is 42.");
 }
 
 /// Phase 11: An AgentMessage ThreadItemCompleted maps to Answer HeadlessEvent.
@@ -200,19 +211,213 @@ fn p11_agent_message_maps_to_answer_event() {
 
 /// Phase 11: Error ThreadEvents map to Error HeadlessEvent with recoverable=false.
 #[test]
-fn p11_error_event_maps_to_headless_error() {
-    let mut processor = EventProcessorWithJsonOutput::new(None);
+fn p11_error_event_maps_to_headless_error_envelope() {
+    let processor = EventProcessorWithJsonOutput::new(None);
 
-    let collected = processor.collect_warning("something went wrong".to_string());
+    let envelopes = processor.map_thread_event_to_envelopes(ThreadEvent::Error(ThreadErrorEvent {
+        message: "something went wrong".to_string(),
+    }));
 
-    assert_eq!(collected.events.len(), 1);
-    let ThreadEvent::ItemCompleted(ref completed) = collected.events[0] else {
-        panic!("expected item.completed event");
-    };
-    let ThreadItemDetails::Error(ref err) = completed.item.details else {
-        panic!("expected error item");
+    assert_eq!(envelopes.len(), 1);
+    let cccx_headless::HeadlessEvent::Error(err) = &envelopes[0].event else {
+        panic!("expected error envelope");
     };
     assert_eq!(err.message, "something went wrong");
+    assert!(!err.recoverable);
+}
+
+#[test]
+fn p11_task_update_maps_todo_runtime_events() {
+    let processor = EventProcessorWithJsonOutput::new(None);
+
+    let started =
+        processor.map_thread_event_to_envelopes(ThreadEvent::ItemStarted(ItemStartedEvent {
+            item: ExecThreadItem {
+                id: "task-list-1".to_string(),
+                details: ThreadItemDetails::TodoList(TodoListItem {
+                    items: vec![TodoItem {
+                        text: "write tests".to_string(),
+                        completed: false,
+                    }],
+                }),
+            },
+        }));
+    let completed =
+        processor.map_thread_event_to_envelopes(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ExecThreadItem {
+                id: "task-list-1".to_string(),
+                details: ThreadItemDetails::TodoList(TodoListItem { items: Vec::new() }),
+            },
+        }));
+
+    let cccx_headless::HeadlessEvent::TaskUpdate(start_payload) = &started[0].event else {
+        panic!("expected task-update, got {:?}", started[0].event);
+    };
+    assert_eq!(start_payload.task_id, "task-list-1");
+    assert_eq!(start_payload.status, "running");
+    assert!(!start_payload.verified);
+
+    let cccx_headless::HeadlessEvent::TaskUpdate(done_payload) = &completed[0].event else {
+        panic!("expected task-update, got {:?}", completed[0].event);
+    };
+    assert_eq!(done_payload.task_id, "task-list-1");
+    assert_eq!(done_payload.status, "completed");
+    assert!(done_payload.verified);
+}
+
+#[test]
+fn p11_collab_runtime_state_does_not_emit_unknown_agent_update() {
+    let processor = EventProcessorWithJsonOutput::new(None);
+    let mut agents_states = HashMap::new();
+    agents_states.insert(
+        "ls-a1".to_string(),
+        CollabAgentState {
+            status: CollabAgentStatus::Running,
+            message: Some("working".to_string()),
+        },
+    );
+
+    let envelopes =
+        processor.map_thread_event_to_envelopes(ThreadEvent::ItemStarted(ItemStartedEvent {
+            item: ExecThreadItem {
+                id: "collab-1".to_string(),
+                details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
+                    tool: CollabTool::SpawnAgent,
+                    sender_thread_id: "main".to_string(),
+                    receiver_thread_ids: vec!["ls-a1".to_string()],
+                    prompt: Some("fix scoped issue".to_string()),
+                    agents_states,
+                    status: CollabToolCallStatus::InProgress,
+                }),
+            },
+        }));
+
+    assert!(envelopes.is_empty());
+}
+
+#[test]
+fn p11_agent_update_maps_typed_cccx_runtime_notification_with_model_route() {
+    let mut processor = EventProcessorWithJsonOutput::new(None);
+
+    let collected = processor.collect_thread_events(ServerNotification::CccxRuntimeAgentUpdate(
+        codex_app_server_protocol::CccxRuntimeAgentUpdateNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            logical_session_id: "ws-a1".to_string(),
+            display_name: "implement-auth".to_string(),
+            role: "implementer".to_string(),
+            status: "running".to_string(),
+            model_route: codex_app_server_protocol::CccxRuntimeAgentModelRoute {
+                selection_source: "explicit".to_string(),
+                requested_route_id: "9router/requested".to_string(),
+                effective_route_id: "unknown".to_string(),
+                fallback_chain: vec!["provider:model".to_string()],
+            },
+            permission_request_id: Some("approval-7".to_string()),
+        },
+    ));
+
+    assert_eq!(collected.status, CodexStatus::Running);
+    assert_eq!(collected.events.len(), 1);
+    let envelopes = processor.map_thread_event_to_envelopes(collected.events[0].clone());
+    assert_eq!(envelopes.len(), 1);
+    let cccx_headless::HeadlessEvent::AgentUpdate(payload) = &envelopes[0].event else {
+        panic!("expected agent-update, got {:?}", envelopes[0].event);
+    };
+    assert_eq!(payload.logical_session_id, "ws-a1");
+    assert_eq!(payload.display_name, "implement-auth");
+    assert_eq!(payload.role, "implementer");
+    assert_eq!(payload.status, "running");
+    assert_eq!(payload.model_route.selection_source, "explicit");
+    assert_eq!(payload.model_route.requested_route_id, "9router/requested");
+    assert_eq!(payload.model_route.effective_route_id, "unknown");
+    assert_eq!(
+        payload.model_route.fallback_chain,
+        vec!["provider:model".to_string()]
+    );
+}
+
+#[test]
+fn p11_permission_denial_emits_approval_denied_envelope_and_exit_code_2() {
+    let mut processor = EventProcessorWithJsonOutput::new(None);
+
+    EventProcessor::on_approval_denied(&mut processor, "approval-2".to_string());
+    assert_eq!(processor.cccx_exit_code, 2);
+
+    let envelope = processor.approval_denied_envelope("approval-2".to_string());
+    let cccx_headless::HeadlessEvent::ApprovalDenied(payload) = envelope.event else {
+        panic!("expected approval-denied envelope");
+    };
+    assert_eq!(payload.request_id, "approval-2");
+    assert!(payload.reason.contains("deny"));
+}
+
+#[test]
+fn p11_cancel_terminal_event_uses_cancelled_status_and_exit_code_3() {
+    let mut processor = EventProcessorWithJsonOutput::new(None);
+
+    processor.collect_thread_events(ServerNotification::TurnCompleted(
+        codex_app_server_protocol::TurnCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: codex_app_server_protocol::Turn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: TurnStatus::Interrupted,
+                error: None,
+                started_at: None,
+                completed_at: Some(0),
+                duration_ms: None,
+            },
+        },
+    ));
+
+    let terminal = processor.terminal_event_envelope();
+    let cccx_headless::HeadlessEvent::Terminal(payload) = terminal.event else {
+        panic!("expected terminal envelope");
+    };
+    assert_eq!(payload.status, cccx_headless::TerminalStatus::Cancelled);
+    assert_eq!(payload.exit_code, Some(3));
+}
+
+#[test]
+fn p11_stdout_jsonl_and_one_final_terminal_semantics() {
+    let processor = EventProcessorWithJsonOutput::new(None);
+
+    let mut envelopes =
+        processor.map_thread_event_to_envelopes(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ExecThreadItem {
+                id: "item_0".to_string(),
+                details: ThreadItemDetails::AgentMessage(AgentMessageItem {
+                    text: "done".to_string(),
+                }),
+            },
+        }));
+    envelopes.extend(
+        processor.map_thread_event_to_envelopes(ThreadEvent::TurnCompleted(TurnCompletedEvent {
+            usage: Usage::default(),
+        })),
+    );
+    envelopes.push(processor.terminal_event_envelope());
+
+    assert_eq!(
+        envelopes
+            .iter()
+            .filter(|envelope| matches!(envelope.event, cccx_headless::HeadlessEvent::Terminal(_)))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        envelopes.last().map(|envelope| &envelope.event),
+        Some(cccx_headless::HeadlessEvent::Terminal(_))
+    ));
+
+    let jsonl = cccx_headless::render_jsonl(&envelopes).expect("render headless jsonl");
+    cccx_headless::assert_stdout_is_jsonl_only(&jsonl).expect("stdout is cccx jsonl only");
+    for line in jsonl.lines() {
+        let value: serde_json::Value = serde_json::from_str(line).expect("json line");
+        assert_eq!(value["schemaVersion"], "cccx.exec_event.v1");
+    }
 }
 
 /// Phase 11: Turn completed produces exit_code=0; turn failed exit_code=1;
@@ -341,7 +546,7 @@ fn p11_audit_approval_denied_sets_exit_code_2() {
     assert_eq!(processor.cccx_exit_code, 0);
 
     // Direct call to on_approval_denied (called from handle_server_request in lib.rs)
-    EventProcessor::on_approval_denied(&mut processor);
+    EventProcessor::on_approval_denied(&mut processor, "approval-3".to_string());
     assert_eq!(
         processor.cccx_exit_code, 2,
         "Phase 11: headless approval denial must produce exit_code=2 per task.md line 813"
@@ -357,17 +562,13 @@ fn p11_audit_approval_denied_sets_exit_code_2() {
     );
 }
 
-/// Phase 11 audit: AgentUpdate with model route is deferred.
-/// task.md line 815 requires agent-update includes model route.
-/// CollabToolCall from app-server has agents_states but no model_route.
-/// Model route IS tracked in WorkSpec at spawn time but not propagated
-/// through the ThreadEvent stream by the upstream app-server protocol.
-/// Fix requires cross-cutting change to spawn tracking + event enrichment.
+/// Phase 11 audit: AgentUpdate includes the required model route shape.
+/// The current ThreadEvent stream has collab agent state but not WorkSpec model
+/// provenance, so Phase 11 emits a complete shape with unknown route values.
+/// Later WorkSpec enrichment can replace those values without changing the
+/// cccx.exec_event.v1 envelope shape.
 #[test]
-fn p11_audit_agent_update_model_route_is_deferred() {
-    // Document the structural limitation: AgentUpdate headless event exists
-    // in cccx-headless schema but is not yet wired because
-    // CollabToolCall/ThreadEvent lacks model_route from WorkSpec.
+fn p11_audit_agent_update_model_route_shape_is_present() {
     let _agent_update =
         cccx_headless::HeadlessEvent::AgentUpdate(cccx_headless::AgentUpdatePayload {
             logical_session_id: "ls-1".into(),
@@ -378,7 +579,7 @@ fn p11_audit_agent_update_model_route_is_deferred() {
                 selection_source: "inherit_main_requested".into(),
                 requested_route_id: "9router/main".into(),
                 effective_route_id: "9router/main".into(),
+                fallback_chain: Vec::new(),
             },
         });
-    // Schema is complete. Wiring deferred to post-Phase 11.
 }

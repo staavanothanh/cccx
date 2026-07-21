@@ -53,12 +53,14 @@ pub struct AnswerPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApprovalDeniedPayload {
     pub request_id: String,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskUpdatePayload {
     pub task_id: String,
     pub status: String,
@@ -66,6 +68,7 @@ pub struct TaskUpdatePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentUpdatePayload {
     pub logical_session_id: String,
     pub display_name: String,
@@ -75,13 +78,16 @@ pub struct AgentUpdatePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelRoutePayload {
     pub selection_source: String,
     pub requested_route_id: String,
     pub effective_route_id: String,
+    pub fallback_chain: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionRequestPayload {
     pub request_id: String,
     pub agent_display_name: String,
@@ -261,6 +267,7 @@ mod tests {
                     selection_source: "inherit_main_requested".to_string(),
                     requested_route_id: "9router/main".to_string(),
                     effective_route_id: "9router/main".to_string(),
+                    fallback_chain: Vec::new(),
                 },
             }),
         );
@@ -269,7 +276,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "{\"schemaVersion\":\"cccx.exec_event.v1\",\"seq\":1,\"sessionId\":\"mock-session\",\"turnId\":\"mock-turn\",\"type\":\"agent-update\",\"payload\":{\"logical_session_id\":\"ls-a1\",\"display_name\":\"a1-auth-fix\",\"role\":\"cx:implementer\",\"status\":\"running\",\"model_route\":{\"selection_source\":\"inherit_main_requested\",\"requested_route_id\":\"9router/main\",\"effective_route_id\":\"9router/main\"}}}\n"
+            "{\"schemaVersion\":\"cccx.exec_event.v1\",\"seq\":1,\"sessionId\":\"mock-session\",\"turnId\":\"mock-turn\",\"type\":\"agent-update\",\"payload\":{\"logicalSessionId\":\"ls-a1\",\"displayName\":\"a1-auth-fix\",\"role\":\"cx:implementer\",\"status\":\"running\",\"modelRoute\":{\"selectionSource\":\"inherit_main_requested\",\"requestedRouteId\":\"9router/main\",\"effectiveRouteId\":\"9router/main\",\"fallbackChain\":[]}}}\n"
         );
     }
 
@@ -451,6 +458,7 @@ mod tests {
                 selection_source: "x".into(),
                 requested_route_id: "x".into(),
                 effective_route_id: "x".into(),
+                fallback_chain: Vec::new(),
             },
         });
         let _task_update = HeadlessEvent::TaskUpdate(TaskUpdatePayload {

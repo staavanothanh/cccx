@@ -19,6 +19,7 @@ use crate::store::PluginStore;
 use crate::store::plugin_version_for_source;
 use crate::store::plugin_version_for_source_with_fallback_manifest;
 use codex_config::ConfigLayerStack;
+use cccx_protocol::plugin::CccxPluginManifest;
 use codex_config::HooksFile;
 use codex_config::types::McpServerConfig;
 use codex_config::types::PluginConfig;
@@ -64,6 +65,7 @@ const DEFAULT_MCP_CONFIG_FILE: &str = ".mcp.json";
 const DEFAULT_APP_CONFIG_FILE: &str = ".app.json";
 const CONFIG_TOML_FILE: &str = "config.toml";
 const CURATED_PLUGIN_CACHE_VERSION_SHA_PREFIX_LEN: usize = 8;
+const CCCX_PLUGIN_MANIFEST_FILE: &str = "cccx-plugin.json";
 
 /// Hook declarations and warnings resolved without loading other plugin capabilities.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -110,6 +112,60 @@ pub(crate) fn log_plugin_load_errors(plugins: &[LoadedPlugin<McpServerConfig>]) 
             );
         }
     }
+}
+
+/// Validates the CCCX extension which may accompany a native `plugin.json`.
+///
+/// The native manifest remains the only source used to load skills, MCP
+/// servers, apps and hooks.  This deliberately keeps hook materialization in
+/// Codex's existing hash/trust pipeline instead of adding a second loader
+/// which could accidentally run an untrusted hook.
+fn load_cccx_extension(plugin_root: &Path) -> Result<Vec<String>, String> {
+    let extension_path = plugin_root.join(CCCX_PLUGIN_MANIFEST_FILE);
+    if !extension_path.is_file() {
+        return Ok(Vec::new());
+    }
+
+    let raw = fs::read_to_string(&extension_path).map_err(|err| {
+        format!(
+            "could not read {}: {err}",
+            extension_path.display()
+        )
+    })?;
+    let value: JsonValue = serde_json::from_str(&raw).map_err(|err| {
+        format!(
+            "invalid {} JSON: {err}",
+            extension_path.display()
+        )
+    })?;
+    let missing_harness = value.get("harness").is_none();
+    let manifest: CccxPluginManifest = serde_json::from_value(value).map_err(|err| {
+        format!(
+            "invalid {} schema: {err}",
+            extension_path.display()
+        )
+    })?;
+    manifest.validate().map_err(|err| {
+        format!(
+            "invalid {}: {err}",
+            extension_path.display()
+        )
+    })?;
+
+    let mut warnings = Vec::new();
+    if missing_harness {
+        warnings.push(format!(
+            "{} omits harness; defaulting to CC only (never both)",
+            CCCX_PLUGIN_MANIFEST_FILE
+        ));
+    }
+    if !manifest.rules.is_empty() || !manifest.agents.is_empty() || !manifest.mcp_tools.is_empty() {
+        warnings.push(format!(
+            "{} extended rules, agent presets, and MCP stable-id grants are validated for CCCX; native plugin.json remains the capability and hook loader",
+            CCCX_PLUGIN_MANIFEST_FILE
+        ));
+    }
+    Ok(warnings)
 }
 
 /// Load configured plugins without applying auth-dependent runtime policies.
@@ -807,6 +863,14 @@ async fn load_plugin(
         return loaded_plugin;
     };
 
+    let cccx_extension_warnings = match load_cccx_extension(plugin_root.as_path()) {
+        Ok(warnings) => warnings,
+        Err(err) => {
+            loaded_plugin.error = Some(err);
+            return loaded_plugin;
+        }
+    };
+
     let manifest_paths = &manifest.paths;
     loaded_plugin.plugin_namespace = Some(manifest.name.clone());
     match scope {
@@ -849,7 +913,8 @@ async fn load_plugin(
         manifest_paths,
     );
     loaded_plugin.hook_sources = hook_sources;
-    loaded_plugin.hook_load_warnings = hook_load_warnings;
+    loaded_plugin.hook_load_warnings = cccx_extension_warnings;
+    loaded_plugin.hook_load_warnings.extend(hook_load_warnings);
     loaded_plugin
 }
 

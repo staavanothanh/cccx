@@ -144,6 +144,11 @@ impl ChatWidget {
                 self.refresh_skills_for_current_cwd(/*force_reload*/ true);
             }
             ServerNotification::ModelRerouted(_) => {}
+            // Main-thread TUI state is refreshed from the CCCX runtime worker
+            // registry. This notification carries a logical worker id rather
+            // than a thread id, so it must not be treated as a thread-local
+            // transcript item here.
+            ServerNotification::CccxRuntimeAgentUpdate(_) => {}
             ServerNotification::ModelVerification(notification) => {
                 self.on_app_server_model_verification(&notification.verifications)
             }

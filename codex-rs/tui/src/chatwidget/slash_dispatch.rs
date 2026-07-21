@@ -102,8 +102,13 @@ impl ChatWidget {
             return false;
         }
         if let Some(mask) = collaboration_modes::mask_for_kind(self.model_catalog.as_ref(), kind) {
-            self.set_collaboration_mask_from_user_action(mask);
-            true
+            if matches!(kind, ModeKind::DontAsk | ModeKind::Bypass) {
+                self.request_collaboration_mode_from_user_action(mask);
+                false
+            } else {
+                self.set_collaboration_mask_from_user_action(mask);
+                true
+            }
         } else {
             self.add_info_message(unavailable_message.to_string(), /*hint*/ None);
             false
@@ -366,24 +371,11 @@ impl ChatWidget {
                 );
             }
             SlashCommand::Bypass => {
-                if !self.collaboration_modes_enabled() {
-                    self.add_info_message(
-                        "Collaboration modes are disabled.".to_string(),
-                        Some("Enable collaboration modes to use /bypass.".to_string()),
-                    );
-                    return;
-                }
-                if let Some(mask) = collaboration_modes::mask_for_kind(
-                    self.model_catalog.as_ref(),
+                self.apply_collaboration_mode_slash_command(
                     ModeKind::Bypass,
-                ) {
-                    self.request_collaboration_mode_from_user_action(mask);
-                } else {
-                    self.add_info_message(
-                        "Bypass mode unavailable right now.".to_string(),
-                        /*hint*/ None,
-                    );
-                }
+                    "bypass",
+                    "Bypass mode unavailable right now.",
+                );
             }
             SlashCommand::Goal => {
                 if !self.config.features.enabled(Feature::Goals) {
@@ -586,6 +578,9 @@ impl ChatWidget {
             SlashCommand::Theme => {
                 self.open_theme_picker();
             }
+            SlashCommand::Help => {
+                self.dispatch_cccx_command_with_args(cmd, "");
+            }
             SlashCommand::Pets => {
                 self.open_pets_picker();
             }
@@ -738,7 +733,7 @@ impl ChatWidget {
         );
     }
 
-    fn dispatch_cccx_command_with_args(&mut self, cmd: SlashCommand, args: &str) {
+    pub(super) fn dispatch_cccx_command_with_args(&mut self, cmd: SlashCommand, args: &str) {
         let input = format!("/{} {}", cmd.command(), args);
         match parse_cccx_command(&input) {
             Ok(Some(CccxCommand::Agents(AgentsCommand::List))) => {
@@ -968,18 +963,15 @@ impl ChatWidget {
                 }
             }
             Ok(Some(CccxCommand::Mode(mode))) => {
-                let label = match mode {
-                    cccx_ux::MainModeKind::Plan => "Plan",
-                    cccx_ux::MainModeKind::Default => "Default",
-                    cccx_ux::MainModeKind::AcceptEdits => "AcceptEdits",
-                    cccx_ux::MainModeKind::Auto => "Auto",
-                    cccx_ux::MainModeKind::DontAsk => "DontAsk",
-                    cccx_ux::MainModeKind::Bypass => "Bypass",
+                let slash_command = match mode {
+                    cccx_ux::MainModeKind::Plan => SlashCommand::Plan,
+                    cccx_ux::MainModeKind::Default => SlashCommand::Default,
+                    cccx_ux::MainModeKind::AcceptEdits => SlashCommand::AcceptEdits,
+                    cccx_ux::MainModeKind::Auto => SlashCommand::Auto,
+                    cccx_ux::MainModeKind::DontAsk => SlashCommand::DontAsk,
+                    cccx_ux::MainModeKind::Bypass => SlashCommand::Bypass,
                 };
-                self.add_info_message(
-                    format!("/{label} — mode command parsed by cccx-ux; transition wired through cccx-mode state machine."),
-                    /*hint*/ None,
-                );
+                self.dispatch_command(slash_command);
             }
             Ok(Some(CccxCommand::Goal { expression })) => {
                 let mut parts = expression.splitn(2, char::is_whitespace);
@@ -998,52 +990,41 @@ impl ChatWidget {
                 }
             }
             Ok(Some(CccxCommand::Review)) => {
-                self.add_info_message(
-                    "/review — wired through codex built-in review popup.".to_string(),
-                    /*hint*/ None,
-                );
+                self.dispatch_command(SlashCommand::Review);
             }
             Ok(Some(CccxCommand::Theme(theme))) => {
-                self.add_info_message(
-                    format!(
-                        "/theme {} — theme command parsed by cccx-ux.",
-                        theme.unwrap_or_default()
-                    ),
-                    /*hint*/ None,
-                );
+                if theme.is_some() {
+                    self.add_error_message("Usage: /theme".to_string());
+                } else {
+                    self.dispatch_command(SlashCommand::Theme);
+                }
             }
             Ok(Some(CccxCommand::Skills)) => {
-                self.add_info_message(
-                    "/skills — wired through codex built-in skills popup.".to_string(),
-                    /*hint*/ None,
-                );
+                self.dispatch_command(SlashCommand::Skills);
             }
             Ok(Some(CccxCommand::Plugins)) => {
-                self.add_info_message(
-                    "/plugins — wired through codex built-in plugins popup.".to_string(),
-                    /*hint*/ None,
-                );
+                self.dispatch_command(SlashCommand::Plugins);
             }
             Ok(Some(CccxCommand::Mcp)) => {
-                self.add_info_message(
-                    "/mcp — wired through codex built-in MCP diagnostics. \
-                     cccx auto-configures two global defaults: \
-                     codebase-memory-mcp and sequential-thinking (see architecture.md §10)."
-                        .to_string(),
-                    Some(
-                        "Use /mcp to inspect server status. WorkSpec projection limits MCP for subagents."
-                            .to_string(),
-                    ),
-                );
+                self.dispatch_command(SlashCommand::Mcp);
             }
             Ok(Some(CccxCommand::Help { section })) => {
-                self.add_info_message(
-                    format!(
-                        "/help {} — help command parsed by cccx-ux.",
-                        section.unwrap_or_default()
-                    ),
-                    Some("Built-in /help is also available.".to_string()),
-                );
+                let help = match section.as_deref() {
+                    Some("--shortcuts") => {
+                        "CCCX shortcuts: Shift+Tab cycles safe modes; /model changes route; /cancel stops the current worker."
+                    }
+                    Some("/agents") => {
+                        "CCCX agents: /agents list | view <id> | logs <id> | resume <id> | cancel <id> | model <preset> <route>."
+                    }
+                    Some(section) => {
+                        self.add_error_message(format!("No CCCX help section named `{section}`."));
+                        return;
+                    }
+                    None => {
+                        "CCCX commands: /plan /default /accept-edits /auto /dont-ask /bypass; /tasks; /agents; /permissions; /remember; /mcp; /skills; /plugins; /help --shortcuts."
+                    }
+                };
+                self.add_info_message(help.to_string(), None);
             }
             Ok(None) => {
                 self.add_error_message(format!("Invalid cccx command: {input}"));
@@ -1626,6 +1607,7 @@ impl ChatWidget {
             | SlashCommand::Title
             | SlashCommand::Statusline
             | SlashCommand::Theme
+            | SlashCommand::Help
             | SlashCommand::Pets => QueueDrain::Stop,
         }
     }

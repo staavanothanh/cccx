@@ -184,7 +184,10 @@ pub(super) fn server_notification_thread_target(
         | ServerNotification::FsChanged(_)
         | ServerNotification::WindowsWorldWritableWarning(_)
         | ServerNotification::WindowsSandboxSetupCompleted(_)
-        | ServerNotification::AccountLoginCompleted(_) => None,
+        | ServerNotification::AccountLoginCompleted(_)
+        // The CCCX update is forwarded to the headless/app event consumers
+        // with a logical worker id, not an upstream ThreadId.
+        | ServerNotification::CccxRuntimeAgentUpdate(_) => None,
     };
 
     match thread_id {

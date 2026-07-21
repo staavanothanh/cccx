@@ -30,7 +30,7 @@ pub(crate) trait EventProcessor {
     /// cccx: headless mode auto-denies all approval requests.
     /// Called from handle_server_request when exec rejects an approval.
     /// EventProcessorWithJsonOutput overrides to track exit_code=2.
-    fn on_approval_denied(&mut self) {}
+    fn on_approval_denied(&mut self, _request_id: String) {}
 }
 
 pub(crate) fn handle_last_message(last_agent_message: Option<&str>, output_file: &Path) {

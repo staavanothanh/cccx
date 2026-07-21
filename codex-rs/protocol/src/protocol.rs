@@ -1440,6 +1440,11 @@ pub enum EventMsg {
     /// Notification that a patch application has finished.
     PatchApplyEnd(PatchApplyEndEvent),
 
+    /// CCCX runtime-owned worker metadata for clients that need provenance.
+    /// This event is emitted from the runtime registry, not inferred from
+    /// collab prompts, thread ids, or UI display strings.
+    CccxRuntimeAgentUpdate(CccxRuntimeAgentUpdateEvent),
+
     TurnDiff(TurnDiffEvent),
 
     /// List of voices supported by realtime conversation streams.
@@ -4303,6 +4308,28 @@ pub struct SubAgentActivityEvent {
     /// Canonical v2 path of the affected sub-agent.
     pub agent_path: AgentPath,
     pub kind: SubAgentActivityKind,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CccxRuntimeAgentModelRoute {
+    pub selection_source: String,
+    pub requested_route_id: String,
+    pub effective_route_id: String,
+    #[serde(default)]
+    pub fallback_chain: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CccxRuntimeAgentUpdateEvent {
+    pub logical_session_id: String,
+    pub display_name: String,
+    pub role: String,
+    pub status: String,
+    pub model_route: CccxRuntimeAgentModelRoute,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

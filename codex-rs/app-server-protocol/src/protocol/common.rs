@@ -1713,6 +1713,7 @@ server_notification_definitions! {
     FileChangeOutputDelta => "item/fileChange/outputDelta" (v2::FileChangeOutputDeltaNotification),
     FileChangePatchUpdated => "item/fileChange/patchUpdated" (v2::FileChangePatchUpdatedNotification),
     ServerRequestResolved => "serverRequest/resolved" (v2::ServerRequestResolvedNotification),
+    CccxRuntimeAgentUpdate => "cccx/runtime/agentUpdate" (v2::CccxRuntimeAgentUpdateNotification),
     McpToolCallProgress => "item/mcpToolCall/progress" (v2::McpToolCallProgressNotification),
     McpServerOauthLoginCompleted => "mcpServer/oauthLogin/completed" (v2::McpServerOauthLoginCompletedNotification),
     McpServerStatusUpdated => "mcpServer/startupStatus/updated" (v2::McpServerStatusUpdatedNotification),

@@ -246,6 +246,34 @@ fn write_manifest(plugin_root: &AbsolutePathBuf, manifest: &str) {
     fs::write(plugin_root.join(".codex-plugin/plugin.json"), manifest).expect("write manifest");
 }
 
+#[test]
+fn cccx_plugin_extension_defaults_missing_harness_to_cc_with_warning() {
+    let (_tmp, plugin_root) = plugin_root();
+    fs::write(
+        plugin_root.join(CCCX_PLUGIN_MANIFEST_FILE),
+        r#"{"cccxSchemaVersion":"1","rules":["rules.md"],"agents":[],"mcpTools":[],"skills":[],"mcp_servers":[],"hooks":[],"apps":[]}"#,
+    )
+    .expect("write cccx extension");
+
+    let warnings = load_cccx_extension(plugin_root.as_path()).expect("valid extension");
+
+    assert!(warnings.iter().any(|warning| warning.contains("CC only")));
+}
+
+#[test]
+fn cccx_plugin_extension_fails_closed_for_unknown_fields_and_schema_versions() {
+    let (_tmp, plugin_root) = plugin_root();
+    fs::write(
+        plugin_root.join(CCCX_PLUGIN_MANIFEST_FILE),
+        r#"{"cccxSchemaVersion":"2","unknown":true}"#,
+    )
+    .expect("write invalid cccx extension");
+
+    let error = load_cccx_extension(plugin_root.as_path()).expect_err("must fail closed");
+
+    assert!(error.contains("schema") || error.contains("unsupported"));
+}
+
 fn write_hook_file(plugin_root: &AbsolutePathBuf, relative_path: &str, event: &str, command: &str) {
     fs::write(
         plugin_root.join(relative_path),

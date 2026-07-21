@@ -2835,3 +2835,91 @@ Validation (green):
 ```powershell
 cargo +1.95.0 check -p codex-core -j 1
 ```
+
+## 2026-07-20 — Phases 9–11: extension isolation, mode/command runtime, and headless events
+
+### Phase 9 — extended plugin loader
+
+- Added the strict `cccx-plugin.json` schema for extension metadata (skills,
+  MCP identifiers, hooks, apps, harness defaults) beside the native plugin
+  manifest. Invalid or unknown schema fields make the extension inactive; they
+  never become silently trusted.
+- Native Codex plugin activation remains the runtime authority. CCCX reads
+  only the matching active plugin roots, canonicalizes rule paths, bounds the
+  injected Main-CC rules text, and hides CX-only manifests from Main CC.
+- The extension catalog is injected only for the `MainCc + CC` actor at the
+  9router boundary. A child cannot acquire an extension's raw rules or expand
+  its own MCP/tool scope from metadata.
+
+### Phase 10 — mode and command surface
+
+- Shift+Tab follows the complete safe order: Plan → Default → AcceptEdits →
+  Auto → DontAsk → Bypass → Plan. Risky modes require confirmation/attestation
+  before their state is reflected in the TUI.
+- CCCX slash command dispatch now executes the registered runtime handlers
+  for mode, review, theme, skills, MCP and the new `/help`; it no longer
+  presents parser-only success text as a completed action.
+- `/plugins` remains deliberately fail-closed for the personal MVP rather
+  than opening the upstream remote marketplace. Configured native plugins
+  still traverse their normal local activation path.
+
+### Phase 11 — typed headless runtime events
+
+- Added a typed runtime-agent update protocol/event path through core,
+  app-server, exec JSONL, rollout and MCP forwarding. Agent updates carry
+  logical identity, display name, role, status, requested route, and an
+  effective route only when real gateway provenance exists.
+- Headless approval denial uses the real JSON-RPC request id and returns the
+  documented exit code. JSONL keeps stdout machine-only and guarantees one
+  final terminal event.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p codex-core-plugins cccx_extension --lib -j 1
+cargo +1.95.0 test -p codex-tui cccx_parser_ --lib -j 1
+cargo +1.95.0 test -p cccx-headless -p codex-exec -j 1
+cargo +1.95.0 test -p codex-exec --test all -j 1 -- --test-threads=1
+```
+
+The first broad Phase 11 run exposed 11 failing `codex-exec` integration
+tests. Root cause: their shared fixture isolated only `CODEX_HOME` and
+`CODEX_API_KEY`; cccx correctly prioritizes `CCCX_HOME`/`CCCX_API_KEY` and
+therefore routed to the real 9router default instead of the local mock.
+The fixture now creates a per-test provider named `9router` pointing to the
+mock server and supplies `CCCX_API_KEY`. The full integration suite is green
+without weakening the production 9router-only gate.
+
+## 2026-07-21 — Phase 12: release-gate regression closure
+
+- Ran the complete test set for all cccx-owned crates, then the cross-crate
+  runtime seams in `codex-core`, TUI, and non-interactive exec. The core seam
+  gate initially exposed two stale test fixtures after the Phase 8
+  `ModelClient::new` project-root type change; both now pass an explicit
+  `PathBuf` and the complete cccx filter is green.
+- `core/tests/common/test_codex_exec.rs` now isolates `CCCX_HOME` as well as
+  the legacy alias and defines a test-only provider named `9router` that
+  points to the local wiremock server. This makes integration proof exercise
+  the same 9router-only admission boundary as production.
+- CLI smoke found remaining public upstream labels in `exec --help`. The
+  public descriptions now use `cccx` and `$CCCX_HOME`; `.cccx/` runtime state
+  is ignored so locally generated gateway/mode state cannot be committed.
+
+Validation (green, shared `D:\\cargo-targets\\cccx`):
+
+```powershell
+cargo +1.95.0 test -p cccx-protocol -p cccx-harness-cc -p cccx-harness-cx -p cccx-mode -p cccx-policy -p cccx-provider-gateway -p cccx-task-graph -p cccx-ux -p cccx-headless -j 1
+cargo +1.95.0 test -p codex-exec --test all -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-core cccx --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-tui cccx -j 1
+cargo +1.95.0 build -p cccx-cli --bin cccx -j 1
+& "D:\\cargo-targets\\cccx\\debug\\cccx.exe" --version
+& "D:\\cargo-targets\\cccx\\debug\\cccx.exe" exec --help
+```
+
+Results: cccx-owned crates green; `codex-exec` integration 42/42; core cccx
+seam 103/103; TUI cccx seam 13/13; binary smoke green. The only remaining
+build diagnostic is an existing `codex-tui` dead-code warning in
+`bottom_pane`, outside the cccx change surface. Coverage collection remains a
+separate disk-heavy release activity because the `llvm-cov` target directory
+has not been provisioned in this run.

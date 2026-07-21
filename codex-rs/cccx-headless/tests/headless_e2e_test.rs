@@ -4,7 +4,7 @@
 //! sequence monotonic, every event has schemaVersion/sessionId/turnId/seq).
 
 use cccx_headless::{
-    AgentUpdatePayload, AnswerPayload, ApprovalDeniedPayload, ErrorPayload, HeadlessEvent,
+    AgentUpdatePayload, AnswerPayload, ErrorPayload, HeadlessEvent,
     HeadlessEventEnvelope, ModelRoutePayload, PermissionRequestPayload, TaskUpdatePayload,
     TerminalPayload, TerminalStatus, assert_stdout_is_jsonl_only, deny_permission_by_default,
     render_jsonl, split_headless_streams,
@@ -40,6 +40,7 @@ fn headless_full_stream_renders_and_validates() {
                     selection_source: "inherit_main_requested".to_string(),
                     requested_route_id: "9router/main".to_string(),
                     effective_route_id: "9router/main".to_string(),
+                    fallback_chain: Vec::new(),
                 },
             }),
         ),

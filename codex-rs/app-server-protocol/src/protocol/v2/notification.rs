@@ -54,3 +54,30 @@ pub struct ServerRequestResolvedNotification {
     pub thread_id: String,
     pub request_id: RequestId,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxRuntimeAgentModelRoute {
+    pub selection_source: String,
+    pub requested_route_id: String,
+    pub effective_route_id: String,
+    #[serde(default)]
+    pub fallback_chain: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxRuntimeAgentUpdateNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub logical_session_id: String,
+    pub display_name: String,
+    pub role: String,
+    pub status: String,
+    pub model_route: CccxRuntimeAgentModelRoute,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub permission_request_id: Option<String>,
+}

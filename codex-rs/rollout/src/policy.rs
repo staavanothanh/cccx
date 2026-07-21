@@ -178,6 +178,10 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::CollabAgentInteractionBegin(_)
         | EventMsg::CollabWaitingBegin(_)
         | EventMsg::CollabCloseBegin(_)
-        | EventMsg::CollabResumeBegin(_) => false,
+        | EventMsg::CollabResumeBegin(_)
+        // CCCX worker state is persisted in its TaskGraph/runtime store; this
+        // event is a live UI/headless update and must not duplicate it in a
+        // rollout transcript.
+        | EventMsg::CccxRuntimeAgentUpdate(_) => false,
     }
 }

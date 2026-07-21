@@ -992,11 +992,16 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                let mut approval_denied = false;
-                handle_server_request(&client, request, &mut error_seen, &mut approval_denied)
+                let mut approval_denied_request_id = None;
+                handle_server_request(
+                    &client,
+                    request,
+                    &mut error_seen,
+                    &mut approval_denied_request_id,
+                )
                     .await;
-                if approval_denied {
-                    event_processor.on_approval_denied();
+                if let Some(request_id) = approval_denied_request_id {
+                    event_processor.on_approval_denied(request_id);
                 }
             }
             InProcessServerEvent::ServerNotification(mut notification) => {
@@ -1330,6 +1335,9 @@ fn should_process_notification(
         ServerNotification::ModelVerification(notification) => {
             notification.thread_id == thread_id && notification.turn_id == turn_id
         }
+        ServerNotification::CccxRuntimeAgentUpdate(notification) => {
+            notification.thread_id == thread_id && notification.turn_id == turn_id
+        }
         ServerNotification::ThreadTokenUsageUpdated(notification) => {
             notification.thread_id == thread_id && notification.turn_id == turn_id
         }
@@ -1661,7 +1669,7 @@ async fn handle_server_request(
     client: &InProcessAppServerClient,
     request: ServerRequest,
     error_seen: &mut bool,
-    approval_denied: &mut bool,
+    approval_denied_request_id: &mut Option<String>,
 ) {
     let method = server_request_method_name(&request);
     let handle_result = match request {
@@ -1683,7 +1691,7 @@ async fn handle_server_request(
             }
         }
         ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
-            *approval_denied = true;
+            *approval_denied_request_id = Some(request_id.to_string());
             reject_server_request(
                 client,
                 request_id,
@@ -1696,7 +1704,7 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::FileChangeRequestApproval { request_id, params } => {
-            *approval_denied = true;
+            *approval_denied_request_id = Some(request_id.to_string());
             reject_server_request(
                 client,
                 request_id,
@@ -1760,7 +1768,7 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::ApplyPatchApproval { request_id, params } => {
-            *approval_denied = true;
+            *approval_denied_request_id = Some(request_id.to_string());
             reject_server_request(
                 client,
                 request_id,
@@ -1773,7 +1781,7 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::ExecCommandApproval { request_id, params } => {
-            *approval_denied = true;
+            *approval_denied_request_id = Some(request_id.to_string());
             reject_server_request(
                 client,
                 request_id,
@@ -1786,6 +1794,7 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::PermissionsRequestApproval { request_id, params } => {
+            *approval_denied_request_id = Some(request_id.to_string());
             reject_server_request(
                 client,
                 request_id,

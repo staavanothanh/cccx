@@ -130,6 +130,7 @@ async fn handle_spawn_agent(
         role_name,
     )
     .await?;
+    let cccx_runtime_update = cccx_runtime.clone();
 
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
@@ -204,6 +205,17 @@ async fn handle_spawn_agent(
     let agents_states = new_thread_id
         .map(|thread_id| [(thread_id, status.clone())].into_iter().collect())
         .unwrap_or_default();
+    if let (Some(runtime), Ok(_)) = (&cccx_runtime_update, &result) {
+        session
+            .send_event(
+                &turn,
+                codex_protocol::protocol::EventMsg::CccxRuntimeAgentUpdate(runtime.agent_update_event(
+                    crate::cccx_runtime::cccx_agent_status_label(&status),
+                    None,
+                )),
+            )
+            .await;
+    }
     session
         .emit_turn_item_completed(
             &turn,

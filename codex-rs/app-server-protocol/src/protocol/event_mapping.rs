@@ -6,6 +6,8 @@ use crate::protocol::v2::AgentMessageDeltaNotification;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
+use crate::protocol::v2::CccxRuntimeAgentModelRoute;
+use crate::protocol::v2::CccxRuntimeAgentUpdateNotification;
 use crate::protocol::v2::CommandExecutionOutputDeltaNotification;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
@@ -190,6 +192,23 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item,
                 completed_at_ms: activity.occurred_at_ms,
+            })
+        }
+        EventMsg::CccxRuntimeAgentUpdate(update) => {
+            ServerNotification::CccxRuntimeAgentUpdate(CccxRuntimeAgentUpdateNotification {
+                thread_id,
+                turn_id,
+                logical_session_id: update.logical_session_id,
+                display_name: update.display_name,
+                role: update.role,
+                status: update.status,
+                model_route: CccxRuntimeAgentModelRoute {
+                    selection_source: update.model_route.selection_source,
+                    requested_route_id: update.model_route.requested_route_id,
+                    effective_route_id: update.model_route.effective_route_id,
+                    fallback_chain: update.model_route.fallback_chain,
+                },
+                permission_request_id: update.permission_request_id,
             })
         }
         EventMsg::CollabWaitingBegin(begin_event) => {
@@ -467,6 +486,8 @@ pub fn item_event_to_server_notification(
 mod tests {
     use super::*;
     use codex_protocol::ThreadId;
+    use codex_protocol::protocol::CccxRuntimeAgentModelRoute as CoreCccxRuntimeAgentModelRoute;
+    use codex_protocol::protocol::CccxRuntimeAgentUpdateEvent;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
@@ -607,5 +628,40 @@ mod tests {
                 delta: "hello".to_string(),
             },
         );
+    }
+
+    #[test]
+    fn cccx_runtime_agent_update_maps_to_typed_server_notification() {
+        let notification = item_event_to_server_notification(
+            EventMsg::CccxRuntimeAgentUpdate(CccxRuntimeAgentUpdateEvent {
+                logical_session_id: "ws-1".to_string(),
+                display_name: "implement-auth".to_string(),
+                role: "implementer".to_string(),
+                status: "running".to_string(),
+                model_route: CoreCccxRuntimeAgentModelRoute {
+                    selection_source: "explicit".to_string(),
+                    requested_route_id: "9router/requested".to_string(),
+                    effective_route_id: "unknown".to_string(),
+                    fallback_chain: Vec::new(),
+                },
+                permission_request_id: Some("approval-9".to_string()),
+            }),
+            "thread-1",
+            "turn-1",
+        );
+
+        let ServerNotification::CccxRuntimeAgentUpdate(payload) = notification else {
+            panic!("expected cccx runtime agent update notification");
+        };
+        assert_eq!(payload.thread_id, "thread-1");
+        assert_eq!(payload.turn_id, "turn-1");
+        assert_eq!(payload.logical_session_id, "ws-1");
+        assert_eq!(payload.display_name, "implement-auth");
+        assert_eq!(payload.role, "implementer");
+        assert_eq!(payload.status, "running");
+        assert_eq!(payload.permission_request_id.as_deref(), Some("approval-9"));
+        assert_eq!(payload.model_route.selection_source, "explicit");
+        assert_eq!(payload.model_route.requested_route_id, "9router/requested");
+        assert_eq!(payload.model_route.effective_route_id, "unknown");
     }
 }

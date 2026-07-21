@@ -26,6 +26,27 @@ pub struct CccxPluginManifest {
     /// schema digests for WorkSpec gating.
     #[serde(default, rename = "mcpTools")]
     pub mcp_tools: Vec<McpToolEntry>,
+
+    /// Skill declarations inherited from the native plugin surface.  CCCX does
+    /// not interpret their content; the native plugin loader remains the sole
+    /// authority for resolving skill roots and trust.
+    #[serde(default)]
+    pub skills: Vec<serde_json::Value>,
+
+    /// Native MCP-server declarations bundled by the plugin.  The extended
+    /// manifest records them explicitly so unknown fields still fail closed;
+    /// native loader code owns their connection and health lifecycle.
+    #[serde(default, rename = "mcp_servers")]
+    pub mcp_servers: Vec<serde_json::Value>,
+
+    /// Native hook declarations.  Trust is deliberately not represented by
+    /// this manifest: hook hashes must pass the native Codex trust flow.
+    #[serde(default)]
+    pub hooks: Vec<serde_json::Value>,
+
+    /// Native app declarations bundled by the plugin.
+    #[serde(default)]
+    pub apps: Vec<serde_json::Value>,
 }
 
 /// MCP tool entry with stable id and schema digest.
@@ -133,7 +154,11 @@ mod tests {
                 "allowedModelRoutes": ["oc/deepseek-v4-flash-free"],
                 "fallbackPolicyId": "compatible",
                 "constraints": ["no-out-of-scope-edits"]
-            }]
+            }],
+            "skills": [{"path": "skills"}],
+            "mcp_servers": [{"name": "codebase", "command": "server"}],
+            "hooks": [{"event": "PreToolUse"}],
+            "apps": [{"name": "example"}]
         }))
         .expect("design manifest should deserialize");
 
@@ -165,6 +190,10 @@ mod tests {
             rules: Vec::new(),
             agents: Vec::new(),
             mcp_tools: Vec::new(),
+            skills: Vec::new(),
+            mcp_servers: Vec::new(),
+            hooks: Vec::new(),
+            apps: Vec::new(),
         };
 
         assert!(
@@ -187,6 +216,10 @@ mod tests {
                 ..default_agent_preset()
             }],
             mcp_tools: Vec::new(),
+            skills: Vec::new(),
+            mcp_servers: Vec::new(),
+            hooks: Vec::new(),
+            apps: Vec::new(),
         };
         manifest.validate().expect("valid cx manifest");
 
@@ -206,6 +239,10 @@ mod tests {
                 ..default_agent_preset()
             }],
             mcp_tools: Vec::new(),
+            skills: Vec::new(),
+            mcp_servers: Vec::new(),
+            hooks: Vec::new(),
+            apps: Vec::new(),
         };
         manifest.validate().expect("valid cc manifest");
 
@@ -221,6 +258,10 @@ mod tests {
             rules: Vec::new(),
             agents: Vec::new(),
             mcp_tools: Vec::new(),
+            skills: Vec::new(),
+            mcp_servers: Vec::new(),
+            hooks: Vec::new(),
+            apps: Vec::new(),
         };
         manifest.validate().expect("valid both manifest");
 
@@ -245,6 +286,10 @@ mod tests {
                     schema_digest: "sha256:def456".to_string(),
                 },
             ],
+            skills: Vec::new(),
+            mcp_servers: Vec::new(),
+            hooks: Vec::new(),
+            apps: Vec::new(),
         };
         manifest.validate().expect("valid mcp plugin");
 
@@ -265,6 +310,10 @@ mod tests {
                 stable_id: String::new(),
                 schema_digest: "sha256:abc".to_string(),
             }],
+            skills: Vec::new(),
+            mcp_servers: Vec::new(),
+            hooks: Vec::new(),
+            apps: Vec::new(),
         };
         assert!(
             manifest

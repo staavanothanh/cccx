@@ -34,6 +34,9 @@ pub enum ThreadEvent {
     /// Represents an unrecoverable error emitted directly by the event stream.
     #[serde(rename = "error")]
     Error(ThreadErrorEvent),
+    /// CCCX runtime-owned worker metadata, emitted from WorkSpec/runtime state.
+    #[serde(rename = "agent.update")]
+    AgentUpdate(AgentUpdateEvent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -256,6 +259,24 @@ pub struct CollabToolCallItem {
     pub prompt: Option<String>,
     pub agents_states: HashMap<String, CollabAgentState>,
     pub status: CollabToolCallStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AgentUpdateEvent {
+    pub logical_session_id: String,
+    pub display_name: String,
+    pub role: String,
+    pub status: String,
+    pub model_route: AgentUpdateModelRoute,
+    pub permission_request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AgentUpdateModelRoute {
+    pub selection_source: String,
+    pub requested_route_id: String,
+    pub effective_route_id: String,
+    pub fallback_chain: Vec<String>,
 }
 
 /// Result payload produced by an MCP tool invocation.

@@ -2888,6 +2888,7 @@ name = "codex-core-plugins"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cccx-protocol",
  "chrono",
  "codex-analytics",
  "codex-app-server-protocol",
@@ -2909,6 +2910,7 @@ dependencies = [
  "codex-utils-path-uri",
  "codex-utils-plugins",
  "dirs",
+ "dunce",
  "flate2",
  "libc",
  "pretty_assertions",

@@ -1,4 +1,4 @@
-use codex_login::CODEX_API_KEY_ENV_VAR;
+use codex_model_provider_info::NINE_ROUTER_API_KEY_ENV;
 use std::path::Path;
 use tempfile::TempDir;
 use wiremock::MockServer;
@@ -15,16 +15,37 @@ impl TestCodexExecBuilder {
                 .expect("should find binary for codex-exec"),
         );
         cmd.current_dir(self.cwd.path())
+            // cccx resolves this ahead of the legacy CODEX_HOME alias, so every
+            // child process must receive the isolated home explicitly.
+            .env("CCCX_HOME", self.home.path())
             .env("CODEX_HOME", self.home.path())
             .env("CODEX_SQLITE_HOME", self.home.path())
-            .env(CODEX_API_KEY_ENV_VAR, "dummy");
+            .env(NINE_ROUTER_API_KEY_ENV, "dummy");
         cmd
     }
     pub fn cmd_with_server(&self, server: &MockServer) -> assert_cmd::Command {
-        let mut cmd = self.cmd();
+        // The production boundary accepts only providers identified as
+        // 9router. Point such a provider at the per-test mock instead of
+        // bypassing that boundary with the legacy OpenAI base-url override.
         let base = format!("{}/v1", server.uri());
+        let config = format!(
+            r#"model_provider = "9router-test"
+
+[model_providers.9router-test]
+name = "9router"
+base_url = {}
+env_key = "{}"
+wire_api = "responses"
+"#,
+            toml_string_literal(&base),
+            NINE_ROUTER_API_KEY_ENV,
+        );
+        std::fs::write(self.home.path().join("config.toml"), config)
+            .expect("write isolated 9router test provider config");
+
+        let mut cmd = self.cmd();
         cmd.arg("-c")
-            .arg(format!("openai_base_url={}", toml_string_literal(&base)));
+            .arg("model_provider=\"9router-test\"");
         cmd
     }
 

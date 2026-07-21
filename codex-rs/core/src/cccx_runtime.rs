@@ -18,6 +18,9 @@ use cccx_task_graph::{
     AttemptRecord, TaskGraph, TaskNode, VerificationSpec, WorkerRecord, WorkerStatus,
 };
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::CccxRuntimeAgentModelRoute;
+use codex_protocol::protocol::CccxRuntimeAgentUpdateEvent;
 
 use crate::artifact_collector::ArtifactCollector;
 use crate::cccx_task_graph_state;
@@ -41,6 +44,27 @@ pub(crate) struct CccxSpawnRuntime {
     pub(crate) display_name: String,
     pub(crate) model_route_summary: String,
     pub(crate) gateway_provenance: Option<GatewayProvenance>,
+}
+
+impl CccxSpawnRuntime {
+    pub(crate) fn agent_update_event(
+        &self,
+        status: impl Into<String>,
+        permission_request_id: Option<String>,
+    ) -> CccxRuntimeAgentUpdateEvent {
+        CccxRuntimeAgentUpdateEvent {
+            logical_session_id: self.logical_session_id.clone(),
+            display_name: self.display_name.clone(),
+            role: format_work_role(&self.work_spec.role),
+            status: status.into(),
+            model_route: runtime_agent_model_route(
+                &self.work_spec,
+                &self.model_route_summary,
+                self.gateway_provenance.as_ref(),
+            ),
+            permission_request_id,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -506,6 +530,48 @@ pub(crate) fn model_route_summary(work_spec: &WorkSpec, main_model_slug: &str) -
         ModelRouteSelection::InheritMainRequested | ModelRouteSelection::InheritMainEffective => {
             main_model_slug.to_string()
         }
+    }
+}
+
+fn runtime_agent_model_route(
+    work_spec: &WorkSpec,
+    route_id: &str,
+    gateway: Option<&GatewayProvenance>,
+) -> CccxRuntimeAgentModelRoute {
+    CccxRuntimeAgentModelRoute {
+        selection_source: model_route_selection_source(&work_spec.model_route).to_string(),
+        requested_route_id: gateway
+            .map(|gateway| gateway.requested_route_id.clone())
+            .unwrap_or_else(|| route_id.to_string()),
+        effective_route_id: gateway
+            .and_then(|gateway| gateway.effective_route_id.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        fallback_chain: gateway
+            .map(|gateway| gateway.fallback_chain.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn model_route_selection_source(selection: &ModelRouteSelection) -> &'static str {
+    match selection {
+        ModelRouteSelection::InheritMainRequested => "inherit_main_requested",
+        ModelRouteSelection::InheritMainEffective => "inherit_main_effective",
+        ModelRouteSelection::Explicit { .. } => "explicit",
+    }
+}
+
+fn format_work_role(role: &cccx_protocol::WorkRole) -> String {
+    format!("{role:?}").to_ascii_lowercase()
+}
+
+pub(crate) fn cccx_agent_status_label(status: &AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::PendingInit => "waiting",
+        AgentStatus::Running => "running",
+        AgentStatus::Interrupted => "interrupted",
+        AgentStatus::Completed(_) => "completed",
+        AgentStatus::Errored(_) | AgentStatus::NotFound => "failed",
+        AgentStatus::Shutdown => "cancelled",
     }
 }
 
@@ -1384,6 +1450,68 @@ mod tests {
         assert_ne!(
             ws_strict.fallback_policy_id,
             ws_compatible.fallback_policy_id
+        );
+    }
+
+    #[test]
+    fn p11_runtime_agent_update_uses_work_spec_identity_without_gateway_inference() {
+        let mut ws = work_spec();
+        ws.role = WorkRole::Implementer;
+        ws.model_route = ModelRouteSelection::Explicit {
+            route_id: "9router/cx-implementer".to_string(),
+        };
+        let runtime = CccxSpawnRuntime {
+            project_root: PathBuf::from("D:/repo"),
+            work_spec: ws,
+            logical_session_id: "ws-typed".to_string(),
+            display_name: "task-implementer".to_string(),
+            model_route_summary: "9router/cx-implementer".to_string(),
+            gateway_provenance: None,
+        };
+
+        let update = runtime.agent_update_event("running", Some("approval-7".to_string()));
+
+        assert_eq!(update.logical_session_id, "ws-typed");
+        assert_eq!(update.display_name, "task-implementer");
+        assert_eq!(update.role, "implementer");
+        assert_eq!(update.status, "running");
+        assert_eq!(update.permission_request_id.as_deref(), Some("approval-7"));
+        assert_eq!(update.model_route.selection_source, "explicit");
+        assert_eq!(update.model_route.requested_route_id, "9router/cx-implementer");
+        assert_eq!(update.model_route.effective_route_id, "unknown");
+        assert!(update.model_route.fallback_chain.is_empty());
+    }
+
+    #[test]
+    fn p11_runtime_agent_update_uses_gateway_effective_route_when_present() {
+        let mut gateway = GatewayProvenance::new("9router/requested".to_string());
+        gateway.record_effective(
+            "9router/effective".to_string(),
+            "provider".to_string(),
+            "model".to_string(),
+        );
+        gateway.record_effective(
+            "9router/fallback".to_string(),
+            "fallback-provider".to_string(),
+            "fallback-model".to_string(),
+        );
+        let runtime = CccxSpawnRuntime {
+            project_root: PathBuf::from("D:/repo"),
+            work_spec: work_spec(),
+            logical_session_id: "ws-gateway".to_string(),
+            display_name: "task-tester".to_string(),
+            model_route_summary: "parent-main".to_string(),
+            gateway_provenance: Some(gateway),
+        };
+
+        let update = runtime.agent_update_event("completed", None);
+
+        assert_eq!(update.model_route.selection_source, "inherit_main_effective");
+        assert_eq!(update.model_route.requested_route_id, "9router/requested");
+        assert_eq!(update.model_route.effective_route_id, "9router/effective");
+        assert_eq!(
+            update.model_route.fallback_chain,
+            vec!["fallback-provider:fallback-model".to_string()]
         );
     }
 
