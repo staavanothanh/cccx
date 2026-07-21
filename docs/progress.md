@@ -3025,3 +3025,14 @@ Validation (green):
 cargo +1.95.0 check -p codex-core -j 1
 cargo +1.95.0 test -p codex-core prepare_resume_rejects_completed_and_accepts_interrupted_worker --lib -j 1 -- --test-threads=1
 ```
+
+### Open Phase 7 evidence boundary
+
+- Verified that effective model metadata can originate in raw Responses SSE
+  headers, but `codex_api::ResponseStream` normalizes it away before
+  `core::map_response_stream`; `finalize_gateway_provenance` consequently
+  cannot truthfully record it today. CCCX correctly keeps provider/route/model
+  `unknown` rather than inferring them from requested route strings.
+- Completing this item needs a typed cross-crate stream metadata carrier plus
+  a local 9router SSE contract test. Do not claim factual effective provenance
+  until that carrier reaches the terminal gateway recorder.
