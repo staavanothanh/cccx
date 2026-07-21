@@ -47,7 +47,12 @@ pub(crate) enum AppCommand {
         approve: bool,
     },
     ListCccxPermissions,
-    BeginCccxSafePermissionBatch,
+    InspectCccxPermission {
+        request_id: String,
+    },
+    BeginCccxSafePermissionBatch {
+        request_ids: Vec<String>,
+    },
     CleanBackgroundTerminals,
     RunUserShellCommand {
         command: String,

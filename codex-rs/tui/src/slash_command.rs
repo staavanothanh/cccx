@@ -45,6 +45,7 @@ pub enum SlashCommand {
     Auto,
     DontAsk,
     Bypass,
+    Config,
     Goal,
     Agents,
     Agent,
@@ -136,6 +137,7 @@ impl SlashCommand {
             SlashCommand::Auto => "switch to Auto mode",
             SlashCommand::DontAsk => "switch to DontAsk mode",
             SlashCommand::Bypass => "switch to Bypass mode",
+            SlashCommand::Config => "securely configure the CCCX 9router API key",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agents => "list and control cccx subagents",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
@@ -182,6 +184,7 @@ impl SlashCommand {
                 | SlashCommand::Auto
                 | SlashCommand::DontAsk
                 | SlashCommand::Bypass
+                | SlashCommand::Config
                 | SlashCommand::Goal
                 | SlashCommand::Agents
                 | SlashCommand::Permissions
@@ -237,6 +240,7 @@ impl SlashCommand {
             | SlashCommand::Auto
             | SlashCommand::DontAsk
             | SlashCommand::Bypass
+            | SlashCommand::Config
             | SlashCommand::Clear
             | SlashCommand::Logout
             | SlashCommand::MemoryDrop
@@ -364,6 +368,8 @@ mod tests {
             Ok(SlashCommand::DontAsk)
         );
         assert_eq!(SlashCommand::from_str("bypass"), Ok(SlashCommand::Bypass));
+        assert_eq!(SlashCommand::from_str("config"), Ok(SlashCommand::Config));
+        assert!(SlashCommand::Config.supports_inline_args());
     }
 
     #[test]

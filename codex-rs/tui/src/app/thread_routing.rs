@@ -688,12 +688,41 @@ impl App {
                 self.chat_widget.add_info_message(text, None);
                 Ok(true)
             }
-            AppCommand::BeginCccxSafePermissionBatch => {
-                let started = app_server.cccx_permission_batch_approve(thread_id).await?;
+            AppCommand::InspectCccxPermission { request_id } => {
+                let response = app_server.cccx_permission_list(thread_id).await?;
+                let Some(request) = response
+                    .requests
+                    .into_iter()
+                    .find(|request| request.request_id == *request_id)
+                else {
+                    self.chat_widget.add_error_message(format!(
+                        "CCCX permission request `{request_id}` is not in the current queue."
+                    ));
+                    return Ok(true);
+                };
+                self.chat_widget.add_info_message(
+                    format!(
+                        "{} [{}]\nagent: {}\ntask: {}\nrisk: {}\naction: {}\nreason: {}",
+                        request.request_id,
+                        request.status,
+                        request.agent_display_name,
+                        request.task_id,
+                        request.risk,
+                        request.action_summary,
+                        request.reason,
+                    ),
+                    None,
+                );
+                Ok(true)
+            }
+            AppCommand::BeginCccxSafePermissionBatch { request_ids } => {
+                let started = app_server
+                    .cccx_permission_batch_approve(thread_id, request_ids.clone())
+                    .await?;
                 let text = if started {
-                    "CCCX safe batch approval started; requests advance one at a time."
+                    "CCCX safe batch approval started for the selected request IDs; requests advance one at a time."
                 } else {
-                    "No active low/medium-risk CCCX permission is eligible; high-risk and circuit-breaker requests remain queued."
+                    "No selected low/medium-risk CCCX permission is eligible right now; high-risk and circuit-breaker requests remain queued."
                 };
                 self.chat_widget.add_info_message(text.to_string(), None);
                 Ok(true)

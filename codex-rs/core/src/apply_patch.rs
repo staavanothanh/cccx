@@ -43,14 +43,17 @@ pub(crate) async fn apply_patch(
     action: ApplyPatchAction,
     cccx_target_paths: Vec<String>,
 ) -> InternalApplyPatchInvocation {
-    if let Err(reason) =
+    if !matches!(
+        turn_context.cccx_actor_identity(),
+        cccx_protocol::ActorIdentity::MainCc
+    ) && let Err(reason) =
         cccx_validate_write_scope(&turn_context.config.cccx_child_writable_scope, &action)
     {
         return InternalApplyPatchInvocation::Output(Err(FunctionCallError::RespondToModel(
             format!("patch rejected by cccx child scope: {reason}"),
         )));
     }
-    for target in action.changes().keys() {
+    for target in cccx_action_required_fresh_read_targets(&action) {
         let target = match resolve_path_for_scope(&target.to_path_buf(), &action.cwd.to_path_buf())
         {
             Ok(target) => target,
@@ -62,7 +65,7 @@ pub(crate) async fn apply_patch(
                 ));
             }
         };
-        if let Err(reason) = turn_context.verify_cccx_read_fresh(&target).await {
+        if let Err(reason) = turn_context.verify_cccx_read_observed_fresh(&target).await {
             return InternalApplyPatchInvocation::Output(Err(FunctionCallError::RespondToModel(
                 format!("patch rejected by cccx stale-read gate: {reason}"),
             )));
@@ -166,7 +169,7 @@ fn cccx_validate_write_scope(
     action: &ApplyPatchAction,
 ) -> Result<(), String> {
     if writable_roots.is_empty() {
-        return Ok(());
+        return Err("projected writable scope is empty".to_string());
     }
 
     let cwd = action.cwd.to_path_buf();
@@ -197,6 +200,19 @@ fn cccx_action_write_targets(action: &ApplyPatchAction) -> Vec<PathBuf> {
         } = change
         {
             targets.push(move_path.to_path_buf());
+        }
+    }
+    targets
+}
+
+fn cccx_action_required_fresh_read_targets(action: &ApplyPatchAction) -> Vec<PathBuf> {
+    let mut targets = Vec::new();
+    for (path, change) in action.changes() {
+        match change {
+            ApplyPatchFileChange::Add { .. } => {}
+            ApplyPatchFileChange::Delete { .. } | ApplyPatchFileChange::Update { .. } => {
+                targets.push(path.to_path_buf());
+            }
         }
     }
     targets

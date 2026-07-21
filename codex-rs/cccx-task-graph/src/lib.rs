@@ -228,11 +228,25 @@ impl TaskGraph {
             .get_mut(task_id)
             .ok_or_else(|| TaskGraphError::UnknownTask(task_id.to_string()))?;
 
+        if artifact.task_id != task_id {
+            return Err(TaskGraphError::ArtifactTaskMismatch {
+                expected: task_id.to_string(),
+                actual: artifact.task_id,
+            });
+        }
+
         let attempt_index = task
             .attempts
             .iter()
             .position(|attempt| attempt.attempt_id == artifact.attempt_id)
             .ok_or_else(|| TaskGraphError::UnknownAttempt(artifact.attempt_id.clone()))?;
+
+        if artifact.work_spec_id != task.attempts[attempt_index].work_spec_id {
+            return Err(TaskGraphError::ArtifactWorkSpecMismatch {
+                expected: task.attempts[attempt_index].work_spec_id.clone(),
+                actual: artifact.work_spec_id,
+            });
+        }
 
         task.attempts[attempt_index]
             .artifact_ids
@@ -437,6 +451,10 @@ pub enum TaskGraphError {
     AmbiguousWorkerDisplayName(String),
     #[error("invalid artifact: {0}")]
     InvalidArtifact(String),
+    #[error("artifact task mismatch: expected `{expected}`, got `{actual}`")]
+    ArtifactTaskMismatch { expected: String, actual: String },
+    #[error("artifact WorkSpec mismatch: expected `{expected}`, got `{actual}`")]
+    ArtifactWorkSpecMismatch { expected: String, actual: String },
     #[error("invalid verification record: {0}")]
     InvalidVerification(String),
     #[error("verification spec changed for task `{0}`")]
@@ -598,6 +616,25 @@ mod tests {
         assert_eq!(task.status, TaskStatus::Blocked);
         assert!(!task.is_verified());
         assert!(!graph.can_stop());
+    }
+
+    #[test]
+    fn artifact_must_match_the_target_task_and_active_work_spec() {
+        let mut graph = graph_with_one_started_task();
+        let mut wrong_task = success_artifact();
+        wrong_task.task_id = "T2".to_string();
+        assert!(matches!(
+            graph.apply_artifact("T1", wrong_task),
+            Err(TaskGraphError::ArtifactTaskMismatch { .. })
+        ));
+
+        let mut wrong_work_spec = success_artifact();
+        wrong_work_spec.work_spec_id = "ws-other".to_string();
+        assert!(matches!(
+            graph.apply_artifact("T1", wrong_work_spec),
+            Err(TaskGraphError::ArtifactWorkSpecMismatch { .. })
+        ));
+        assert!(graph.artifacts.is_empty());
     }
 
     #[test]

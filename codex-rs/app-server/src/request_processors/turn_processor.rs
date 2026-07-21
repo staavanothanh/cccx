@@ -399,9 +399,13 @@ impl TurnRequestProcessor {
         &self,
         params: CccxPermissionBatchApproveParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let CccxPermissionBatchApproveParams {
+            thread_id,
+            request_ids,
+        } = params;
+        let (_, thread) = self.load_thread(&thread_id).await?;
         let started = thread
-            .begin_cccx_safe_permission_batch()
+            .begin_cccx_safe_permission_batch(request_ids)
             .await
             .map_err(invalid_request)?;
         Ok(Some(CccxPermissionBatchApproveResponse { started }.into()))

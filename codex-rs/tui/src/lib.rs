@@ -100,6 +100,7 @@ mod chatwidget;
 mod cli;
 mod clipboard_copy;
 mod clipboard_paste;
+mod cccx_secure_config;
 mod collaboration_modes;
 mod color;
 mod config_update;

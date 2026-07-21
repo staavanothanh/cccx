@@ -107,7 +107,10 @@ mod tests {
             .expect("ADR proposal must be structured");
         assert_eq!(structured["schema"], ADR_PROPOSAL_SCHEMA);
         assert_eq!(structured["source_actor"], "cc_subagent");
-        assert_eq!(structured["proposed_arguments"]["title"], "Use 9router only");
+        assert_eq!(
+            structured["proposed_arguments"]["title"],
+            "Use 9router only"
+        );
     }
 
     #[test]

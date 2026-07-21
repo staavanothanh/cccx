@@ -12,6 +12,8 @@ use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
+use crate::cccx_secure_config::CCCX_API_KEY_QUESTION_ID;
+use crate::cccx_secure_config::CCCX_API_KEY_TURN_ID;
 use crate::goal_display::GOAL_USAGE;
 use crate::goal_files::GoalDraft;
 use cccx_ux::AgentsCommand;
@@ -19,6 +21,9 @@ use cccx_ux::CccxCommand;
 use cccx_ux::PermissionsCommand;
 use cccx_ux::parse_cccx_command;
 use codex_core::project_memory::ProjectMemory;
+use codex_core::cccx_secrets::CCCX_API_KEY;
+use codex_app_server_protocol::ToolRequestUserInputParams;
+use codex_app_server_protocol::ToolRequestUserInputQuestion;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -415,6 +420,9 @@ impl ChatWidget {
                     /*hint*/ None,
                 );
             }
+            SlashCommand::Config => {
+                self.dispatch_cccx_command_with_args(cmd, "");
+            }
             SlashCommand::Permissions => {
                 self.open_permissions_popup();
                 self.defer_input_until_settings_applied();
@@ -709,6 +717,7 @@ impl ChatWidget {
                 | SlashCommand::Cancel
                 | SlashCommand::Tasks
                 | SlashCommand::Goal
+                | SlashCommand::Config
         ) {
             self.dispatch_cccx_command_with_args(cmd, trimmed);
             return;
@@ -813,19 +822,29 @@ impl ChatWidget {
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::Inspect { request_id }))) => {
                 self.app_event_tx
-                    .send(AppEvent::CodexOp(AppCommand::ListCccxPermissions));
+                    .send(AppEvent::CodexOp(AppCommand::InspectCccxPermission {
+                        request_id: request_id.clone(),
+                    }));
                 self.add_info_message(
                     format!(
-                        "/permissions inspect {request_id} — requested current queue snapshot."
+                        "/permissions inspect {request_id} — requested exact queue entry."
                     ),
                     None,
                 );
             }
             Ok(Some(CccxCommand::Permissions(PermissionsCommand::BatchApprove {
-                request_ids: _,
+                request_ids,
             }))) => {
-                self.app_event_tx
-                    .send(AppEvent::CodexOp(AppCommand::BeginCccxSafePermissionBatch));
+                let count = request_ids.len();
+                self.app_event_tx.send(AppEvent::CodexOp(
+                    AppCommand::BeginCccxSafePermissionBatch { request_ids },
+                ));
+                self.add_info_message(
+                    format!(
+                        "/permissions batch-approve — requested safe batch for {count} explicit request id(s)."
+                    ),
+                    None,
+                );
             }
             Ok(Some(CccxCommand::Remember { note })) => {
                 let text = note.unwrap_or_default();
@@ -856,6 +875,32 @@ impl ChatWidget {
                         "/remember — no project directory available".to_string(),
                     );
                 }
+            }
+            Ok(Some(CccxCommand::ConfigSet { key })) => {
+                if key != CCCX_API_KEY {
+                    self.add_error_message(
+                        "Only `/config set CCCX_API_KEY` is supported; CCCX uses 9router as its sole provider boundary."
+                            .to_string(),
+                    );
+                    return;
+                }
+                self.handle_request_user_input_now(ToolRequestUserInputParams {
+                    thread_id: self
+                        .thread_id
+                        .map(|thread_id| thread_id.to_string())
+                        .unwrap_or_default(),
+                    turn_id: CCCX_API_KEY_TURN_ID.to_string(),
+                    item_id: "cccx-secure-config".to_string(),
+                    questions: vec![ToolRequestUserInputQuestion {
+                        id: CCCX_API_KEY_QUESTION_ID.to_string(),
+                        header: "9router API key".to_string(),
+                        question: "Enter the API key for 9router. It is masked and stored in CCCX's encrypted local secret store, protected by your OS keyring.".to_string(),
+                        is_other: false,
+                        is_secret: true,
+                        options: None,
+                    }],
+                    auto_resolution_ms: None,
+                });
             }
             Ok(Some(CccxCommand::Cancel { all, target })) => {
                 if all {
@@ -1590,6 +1635,7 @@ impl ChatWidget {
             | SlashCommand::Tasks
             | SlashCommand::Remember
             | SlashCommand::Cancel
+            | SlashCommand::Config
             | SlashCommand::MultiAgents
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox

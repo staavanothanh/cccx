@@ -2,6 +2,7 @@ use std::fs;
 
 use cccx_protocol::plugin::CccxPluginManifest;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use std::collections::BTreeSet;
 
 use crate::PluginLoadOutcome;
 
@@ -92,6 +93,43 @@ pub fn active_cccx_extensions(loaded_plugins: &PluginLoadOutcome) -> Vec<LoadedC
         .collect()
 }
 
+/// Stable MCP ids declared by active CCCX extension sidecars.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CccxExtensionMcpCatalog {
+    /// Every extension-provided stable MCP id from active, valid CCCX sidecars.
+    pub extension_stable_ids: BTreeSet<String>,
+    /// The subset compatible with CX subagent projection.
+    pub cx_compatible_stable_ids: BTreeSet<String>,
+}
+
+impl CccxExtensionMcpCatalog {
+    /// Gate one MCP grant through CCCX extension harness compatibility.
+    ///
+    /// Non-extension grants are left untouched: project/global MCP servers are
+    /// still governed by WorkSpec + parent live catalog projection. Extension
+    /// grants fail closed unless the declaring sidecar is CX-compatible.
+    pub fn grant_allowed_for_cx(&self, grant: &str) -> bool {
+        !self.extension_stable_ids.contains(grant) || self.cx_compatible_stable_ids.contains(grant)
+    }
+}
+
+pub fn cccx_extension_mcp_catalog(
+    loaded_plugins: &PluginLoadOutcome,
+) -> CccxExtensionMcpCatalog {
+    let mut catalog = CccxExtensionMcpCatalog::default();
+    for extension in active_cccx_extensions(loaded_plugins) {
+        for stable_id in extension.manifest.mcp_stable_ids() {
+            catalog.extension_stable_ids.insert(stable_id.to_string());
+            if extension.manifest.is_compatible_with_cx_subagent() {
+                catalog
+                    .cx_compatible_stable_ids
+                    .insert(stable_id.to_string());
+            }
+        }
+    }
+    catalog
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +214,51 @@ mod tests {
         let extensions = active_cccx_extensions(&outcome);
         assert_eq!(extensions.len(), 1);
         assert_eq!(extensions[0].config_name, "active@test");
+    }
+
+    #[test]
+    fn cx_mcp_catalog_keeps_only_cx_compatible_extension_grants() {
+        let cc_root = tempfile::tempdir().expect("cc plugin root");
+        let cx_root = tempfile::tempdir().expect("cx plugin root");
+        fs::write(
+            cc_root.path().join(CCCX_PLUGIN_MANIFEST_FILE),
+            r#"{"cccxSchemaVersion":"1","harness":"cc","mcpTools":[{"stableId":"mcp:cc.secret","schemaDigest":"sha256:cc"}]}"#,
+        )
+        .expect("write cc sidecar");
+        fs::write(
+            cx_root.path().join(CCCX_PLUGIN_MANIFEST_FILE),
+            r#"{"cccxSchemaVersion":"1","harness":"cx","mcpTools":[{"stableId":"mcp:cx.read","schemaDigest":"sha256:cx"}]}"#,
+        )
+        .expect("write cx sidecar");
+        let plugin = |name: &str, root: &std::path::Path| crate::LoadedPlugin {
+            config_name: name.to_string(),
+            manifest_name: Some(name.to_string()),
+            plugin_namespace: Some(name.to_string()),
+            manifest_description: None,
+            root: AbsolutePathBuf::try_from(root).expect("absolute plugin root"),
+            enabled: true,
+            skill_roots: Vec::new(),
+            disabled_skill_paths: HashSet::new(),
+            has_enabled_skills: false,
+            mcp_servers: HashMap::new(),
+            apps: Vec::new(),
+            hook_sources: Vec::new(),
+            hook_load_warnings: Vec::new(),
+            error: None,
+        };
+        let outcome = PluginLoadOutcome::from_plugins(vec![
+            plugin("cc@test", cc_root.path()),
+            plugin("cx@test", cx_root.path()),
+        ]);
+
+        let catalog = cccx_extension_mcp_catalog(&outcome);
+        assert!(catalog.extension_stable_ids.contains("mcp:cc.secret"));
+        assert!(catalog.extension_stable_ids.contains("mcp:cx.read"));
+        assert!(!catalog.grant_allowed_for_cx("mcp:cc.secret"));
+        assert!(catalog.grant_allowed_for_cx("mcp:cx.read"));
+        assert!(
+            catalog.grant_allowed_for_cx("mcp:project_configured.search"),
+            "non-extension MCP grants remain governed by WorkSpec and parent live catalog"
+        );
     }
 }

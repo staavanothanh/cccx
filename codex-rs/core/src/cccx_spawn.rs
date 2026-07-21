@@ -94,7 +94,11 @@ pub fn apply_cccx_harness_to_config(
 
 fn apply_child_writable_scope_to_sandbox(config: &mut Config) -> Result<(), ProtocolError> {
     if config.cccx_child_writable_scope.is_empty() {
-        return Ok(());
+        return config
+            .set_legacy_sandbox_policy(SandboxPolicy::ReadOnly {
+                network_access: false,
+            })
+            .map_err(|err| ProtocolError::RuntimeProjection(err.to_string()));
     }
 
     let writable_roots = config
@@ -400,6 +404,28 @@ mod phase0_tests {
                 exclude_slash_tmp: true,
             },
             "Projected WorkSpec writable scope must narrow child OS sandbox policy"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_projection_empty_writable_scope_sets_read_only_sandbox() {
+        let mut config = crate::config::test_config().await;
+        let ws = test_work_spec();
+        let mut parent = test_parent();
+        parent.writable_roots.clear();
+
+        apply_cccx_harness_to_config(&mut config, &parent, &ws).unwrap();
+
+        assert!(
+            config.cccx_child_writable_scope.is_empty(),
+            "empty parent/workspec intersection must remain an empty child writable scope"
+        );
+        assert_eq!(
+            config.legacy_sandbox_policy(),
+            SandboxPolicy::ReadOnly {
+                network_access: false
+            },
+            "empty child writable scope must deny inherited writes at the runtime sandbox"
         );
     }
 

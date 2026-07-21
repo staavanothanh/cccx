@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -15,14 +15,14 @@ impl ProjectMemory {
     /// ownership boundary; the workspace only contributes a stable hash, so
     /// project memory is never written into the checked-out repository.
     pub fn new(cccx_home: &Path, project_root: &Path) -> Self {
-        let canonical_root = dunce::canonicalize(project_root)
-            .unwrap_or_else(|_| project_root.to_path_buf());
-        let project_hash = format!("{:x}", Sha256::digest(canonical_root.as_os_str().as_encoded_bytes()));
+        let canonical_root =
+            dunce::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+        let project_hash = format!(
+            "{:x}",
+            Sha256::digest(canonical_root.as_os_str().as_encoded_bytes())
+        );
         Self {
-            base_path: cccx_home
-                .join("projects")
-                .join(project_hash)
-                .join("memory"),
+            base_path: cccx_home.join("projects").join(project_hash).join("memory"),
         }
     }
 
@@ -100,10 +100,7 @@ mod tests {
         let context = memory.load_context().await.unwrap();
         assert!(context.contains("User prefers 9router-only routing."));
         assert!(context.contains("Do not use direct provider credentials."));
-        assert!(
-            memory.memory_file_path()
-                .exists()
-        );
+        assert!(memory.memory_file_path().exists());
     }
 
     #[tokio::test]

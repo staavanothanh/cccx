@@ -3159,3 +3159,203 @@ cargo +1.95.0 test -p cccx-provider-gateway provenance --lib -j 1 -- --test-thre
 cargo +1.95.0 test -p codex-core cccx_gateway_provenance_ --lib -j 1 -- --test-threads=1
 cargo +1.95.0 test -p codex-core cccx_gateway_provenance_state::tests:: --lib -j 1 -- --test-threads=1
 ```
+
+## 2026-07-21 — Final completion gate re-audit (25-gate evidence matrix)
+
+The earlier phase-complete labels are not final-gate proof. A fresh
+requirement-by-requirement audit found the following status. `PARTIAL` means
+there is implementation or a seam test, but not yet the runtime/E2E evidence
+required by `docs/task.md`.
+
+| Gate | Status | Concrete remaining condition |
+|---|---|---|
+| 1 Main CC startup | PARTIAL | Add binary/session startup E2E proving MainCc + CC harness. |
+| 2 typed identity / one harness | PARTIAL | Prove spawn + resume cannot change identity/harness. |
+| 3 Main CC authority | PARTIAL | E2E deny CC/CX child spawn and ADR commit. |
+| 4 six modes | PARTIAL | E2E precedence plus tool-permission outcomes. |
+| 5 Bypass attestation | PARTIAL | Implement and prove real app-server sandbox attestation backend. |
+| 6 permission pipeline | PARTIAL | Gate native prompts through one active CCCX queue; multi-worker E2E. |
+| 7 WorkSpec / Artifact | PARTIAL | Artifact task/WorkSpec binding is enforced; add full spawn-to-artifact E2E. |
+| 8 parent capability intersection | PARTIAL | Live writable roots/approval ceiling now project; finish executor-side projected policy proof. |
+| 9 projection / sandbox | PARTIAL | Empty writable intersection is read-only/fail-closed; finish executor projection and shell target proof. |
+| 10 path/stale-read gates | PARTIAL | Canonicalize all targets and fail closed for unobserved reads. |
+| 11 cross-harness data | PARTIAL | Validate Artifact task/attempt binding at TaskGraph acceptance. |
+| 12 real verification | PASS | Verified status is set only by executed verification evidence. |
+| 13 atomic TaskGraph | PARTIAL | Add inter-process writer lease, not only process-local mutex. |
+| 14 StopHook | PASS | Stop guard blocks unverified TaskGraph tasks. |
+| 15 permission queue UX | PARTIAL | Implement exact inspect/batch-ID semantics and prove UI queue behavior. |
+| 16 lifecycle semantics | PARTIAL | E2E interrupt/checkpoint/resume logical-session behavior. |
+| 17 write-worker lease | PARTIAL | Add explicit project write-worker lease; prove read parallelism. |
+| 18 9router-only | PARTIAL | Realtime bypass fixed below; audit and test every remaining LLM path. |
+| 19 retry/stream/provenance | PARTIAL | Persist auth retry attempts and prove real gateway metadata behavior. |
+| 20 memory/ADR/MCP/compaction | PARTIAL | Preserve memory without TaskGraph; persist real ADR survivor refs. |
+| 21 plugin isolation | PARTIAL | Apply extended-plugin grants to live CX projection and prove isolation. |
+| 22 TUI/security UX | PARTIAL | Prove no parser/history/log/telemetry secret leak and network UX. |
+| 23 headless contract | PASS | Typed JSONL, terminal-last, and exit code tests exist. |
+| 24 coverage / negative tests | PARTIAL | Rerun coverage after current secure-input and final-gate changes. |
+| 25 artifacts untracked | PARTIAL | Define intentional generated-source allowlist and assert it. |
+
+### Gate 18 remediation: Realtime boundary
+
+- `ModelClient::create_realtime_call_with_headers()` now rejects a non-9router
+  configured provider before creating transport, and rejects the legacy
+  realtime provider override while the CCCX boundary is active.
+- Focused proof:
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_realtime_boundary_rejects_non_9router_provider_and_overrides -j 1 --lib -- --test-threads=1
+```
+
+- Result: `1 passed; 0 failed`. This closes the Realtime bypass only; Gate 18
+  remains PARTIAL until the complete provider-path inventory is rerun.
+
+### Gate 7/8/9 remediation: artifact binding and capability fail-closed
+
+- `ArtifactCollector` now carries distinct task, WorkSpec, and attempt IDs;
+  `TaskGraph::apply_artifact` rejects a mismatched task or WorkSpec before the
+  artifact is persisted.
+- The spawn boundary now derives parent writable roots and permission ceiling
+  from the live turn sandbox/approval state instead of synthesizing project
+  root and `Allow`.
+- An empty projected writable intersection now produces a read-only child
+  sandbox, and CCCX child `apply_patch` rejects it rather than treating it as
+  unrestricted.
+
+Focused validation (green):
+
+```powershell
+cargo +1.95.0 test -p cccx-task-graph artifact_must_match_the_target_task_and_active_work_spec -j 1 --lib -- --test-threads=1
+cargo +1.95.0 test -p codex-core p8_ -j 1 --lib -- --test-threads=1
+```
+
+### Gate 20 remediation: compaction without a Task Graph
+
+- The compaction survivor no longer treats a missing Task Graph as a reason to
+  drop CCCX state. It independently retains Project Memory and checkpoint
+  references, while emitting `"task_graph": null` when there is no graph.
+- Focused proof (green):
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_compaction_survivor_keeps_project_memory_without_a_task_graph -j 1 --lib -- --test-threads=1
+```
+
+- Result: `1 passed; 0 failed`. Gate 20 remains PARTIAL because durable ADR
+  survivor references and MCP-derived context still require their own proof.
+
+### Gate 13 remediation: inter-process state writer lease
+
+- TaskGraph and mode-state writes now acquire the existing in-process mutex
+  and a durable `.cccx/state/.writer.lock` lease created with exclusive file
+  creation. Live owners fail closed; stale owners are recovered only after a
+  platform liveness check; lock release is token-bound.
+- The focused suite launches a child test process which holds the lock and
+  proves that the parent is rejected, rather than simulating a second writer
+  only in memory.
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_task_graph_state -j 1 --lib -- --test-threads=1
+```
+
+- Result: `12 passed; 0 failed`. The state-store portion of Gate 13 has
+  runtime cross-process evidence.
+
+### Gate 6/15 remediation: one active permission prompt and exact IDs
+
+- A queued native approval now waits until its `pr-*` becomes the unique
+  active queue item before rendering. Cancellation before activation aborts
+  without rendering. Direct approve/deny requires the active request; batch
+  approval carries an explicit ordered list of low/medium-risk request IDs;
+  inspect returns only the requested queue item.
+- Focused core queue proof:
+
+```powershell
+D:\cargo-targets\cccx\debug\deps\codex_core-4f95019d05e42634.exe permission_queue_bridge::tests:: --test-threads=1
+```
+
+- Result: `10 passed; 0 failed`. App-server protocol serialization for
+  `requestIds` is also green. Gates 6 and 15 remain PARTIAL pending a real
+  multi-worker/session-to-TUI integration test.
+
+### Gate 17 remediation: project-scoped write admission
+
+- CCCX child tool calls now share a canonical-project `RwLock`: an explicit
+  allowlist of read-only tools takes a shared lease, while write-capable and
+  unknown future tools take an exclusive lease fail-closed. Main CC keeps its
+  existing upstream parallel behavior.
+
+```powershell
+D:\cargo-targets\cccx\debug\deps\codex_core-4f95019d05e42634.exe cccx_project_write_lease --test-threads=1
+```
+
+- Result: `4 passed; 0 failed`. This proves dispatch-time cross-worker write
+  admission and read parallelism. Gate 17 remains PARTIAL until a lifecycle
+  reservation (if required by the design) and a live spawned-worker proof are
+  present.
+
+### Gate 10 remediation: apply-patch canonical scope and stale-read gate
+
+- CCCX now canonicalizes its direct-read set and requires an observed fresh
+  read immediately before every `Update` or `Delete` target reaches the patch
+  runtime. New `Add` targets remain valid without a prior read. The existing
+  scope gate checks every target including move destinations.
+- Negative proof covers an unobserved update, a multifile patch containing an
+  unobserved target, and a Windows junction/symlink escape where supported.
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_stale_read_gate -j 1 --lib -- --test-threads=1
+cargo +1.95.0 test -p codex-core cccx_child_write_scope -j 1 --lib -- --test-threads=1
+```
+
+- Result: `3 passed` and `5 passed`. Gate 10 remains PARTIAL: shell and MCP
+  write target normalization must receive the same complete fail-closed
+  treatment before the gate can pass.
+
+### Gate 5 remediation: app-server Bypass remains truthfully fail-closed
+
+- `AppServerAttestationProvider` now explicitly returns no Bypass sandbox
+  attestation. Its upstream `AttestationGenerate`/`x-oai-attestation` flow is
+  documented as model-request attestation only, never proof of local OS
+  sandbox isolation. Circuit breakers remain in force.
+
+```powershell
+cargo +1.95.0 test -p codex-app-server app_server_provider_does_not_mint_bypass_sandbox_attestation -j 1 --lib -- --test-threads=1
+cargo +1.95.0 test -p codex-core cccx_thread_settings_ -j 1 --lib -- --test-threads=1
+```
+
+- Result: `1 passed` and `4 passed`. Gate 5 remains PARTIAL by design: no
+  host API currently attests current thread/session OS sandbox isolation, so
+  app-server Bypass must remain disabled rather than accept an unverifiable
+  confirmation or request token.
+
+### Gate 16 remediation: logical session survives lifecycle transitions
+
+- Resume selection now chooses the latest worker incarnation for a logical
+  session/display name and evaluates its latest status, preventing an older
+  completed incarnation from making a resumed worker ambiguous.
+- Focused runtime flow covers checkpoint/interrupt, resume with a new worker
+  incarnation, and cancel while preserving the original logical session ID.
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_checkpoint_resume_cancel_keeps_logical_session_across_incarnations -j 1 --lib -- --test-threads=1
+```
+
+- Result: `1 passed; 0 failed`. Gate 16 remains PARTIAL until the equivalent
+  user-facing interrupt/resume path is covered through a full session/TUI
+  boundary.
+
+### Gate 21 verification: CX plugin MCP projection
+
+- The native extension catalog accepts only active plugins with a valid CCCX
+  sidecar. At the CC-to-CX spawn boundary, plugin-provided MCP grants are
+  retained only when their declaring extension is CX-compatible; normal
+  project-configured MCP grants are unaffected.
+
+```powershell
+D:\cargo-targets\cccx\debug\deps\codex_core_plugins-4650b4cf2229de08.exe cx_mcp_catalog_keeps_only_cx_compatible_extension_grants --test-threads=1
+D:\cargo-targets\cccx\debug\deps\codex_core-4f95019d05e42634.exe cx_projection_strips_incompatible_extension_mcp_but_preserves_builtin_mcp --test-threads=1
+```
+
+- Result: both focused tests passed (`1 passed; 0 failed` each). Gate 21 is
+  still **PARTIAL**: this proves catalog and projection filtering, but not a
+  complete spawned-CX runtime proof of the child tool catalog and plugin
+  isolation.

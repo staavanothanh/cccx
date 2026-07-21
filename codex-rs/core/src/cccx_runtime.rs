@@ -19,6 +19,7 @@ use cccx_task_graph::{
 };
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CccxRuntimeAgentModelRoute;
 use codex_protocol::protocol::CccxRuntimeAgentUpdateEvent;
 use codex_protocol::protocol::CccxRuntimeTaskUpdateEvent;
@@ -257,37 +258,68 @@ impl CccxRuntimeRegistry {
             .await
             .map_err(|error| format!("failed to load CCCX task graph: {error}"))?
             .ok_or_else(|| "CCCX task graph is missing".to_string())?;
-        let workers = graph
+        let candidate_attempts = graph
             .tasks
-            .values()
-            .flat_map(|task| task.attempts.iter())
-            .filter(|attempt| {
-                attempt.worker.logical_session_id == worker_identifier
-                    || attempt.worker.display_name == worker_identifier
+            .iter()
+            .flat_map(|(task_id, task)| {
+                task.attempts
+                    .iter()
+                    .map(move |attempt| (task_id.as_str(), attempt))
             })
             .collect::<Vec<_>>();
-        let worker = match workers.as_slice() {
-            [] => return Err(format!("unknown CCCX worker `{worker_identifier}`")),
-            [worker] => *worker,
-            _ => {
+        let exact_logical_matches = candidate_attempts
+            .iter()
+            .copied()
+            .filter(|(_, attempt)| attempt.worker.logical_session_id == worker_identifier)
+            .collect::<Vec<_>>();
+        let (_task_id, worker) = if !exact_logical_matches.is_empty() {
+            let task_ids = exact_logical_matches
+                .iter()
+                .map(|(task_id, _)| *task_id)
+                .collect::<BTreeSet<_>>();
+            if task_ids.len() > 1 {
                 return Err(format!(
-                    "CCCX worker display name `{worker_identifier}` is ambiguous; use its logicalSessionId"
+                    "CCCX logicalSessionId `{worker_identifier}` appears in multiple tasks; TaskGraph requires repair before resume"
                 ));
+            }
+            *exact_logical_matches
+                .last()
+                .expect("non-empty exact logical match")
+        } else {
+            let display_matches = candidate_attempts
+                .iter()
+                .copied()
+                .filter(|(_, attempt)| attempt.worker.display_name == worker_identifier)
+                .collect::<Vec<_>>();
+            match display_matches.as_slice() {
+                [] => return Err(format!("unknown CCCX worker `{worker_identifier}`")),
+                matches => {
+                    let logical_ids = matches
+                        .iter()
+                        .map(|(_, attempt)| attempt.worker.logical_session_id.as_str())
+                        .collect::<BTreeSet<_>>();
+                    if logical_ids.len() > 1 {
+                        return Err(format!(
+                            "CCCX worker display name `{worker_identifier}` is ambiguous; use its logicalSessionId"
+                        ));
+                    }
+                    *matches.last().expect("non-empty display match")
+                }
             }
         };
         let logical_session_id = &worker.worker.logical_session_id;
-        let checkpoint = crate::checkpoint::load_checkpoint(project_root, logical_session_id)
-            .await
-            .map_err(|error| format!("failed to load CCCX checkpoint: {error}"))?
-            .ok_or_else(|| {
-                format!("no checkpoint exists for CCCX worker `{logical_session_id}`")
-            })?;
         if worker.worker.status != WorkerStatus::Resumable {
             return Err(format!(
                 "CCCX worker `{logical_session_id}` is {:?}, not resumable",
                 worker.worker.status
             ));
         }
+        let checkpoint = crate::checkpoint::load_checkpoint(project_root, logical_session_id)
+            .await
+            .map_err(|error| format!("failed to load CCCX checkpoint: {error}"))?
+            .ok_or_else(|| {
+                format!("no checkpoint exists for CCCX worker `{logical_session_id}`")
+            })?;
         if checkpoint.attempt_id != worker.attempt_id {
             return Err(format!(
                 "checkpoint attempt `{}` does not match worker attempt `{}`",
@@ -459,6 +491,7 @@ impl CccxRuntimeRegistry {
             .map_err(|error| error.to_string())?
             .unwrap_or_else(|| TaskGraph::new("cccx-runtime", "cccx runtime graph"));
         let mut collector = ArtifactCollector::new(
+            &runtime.work_spec.task_id,
             &runtime.work_spec.work_spec_id,
             &child_thread_id.to_string(),
         );
@@ -560,6 +593,7 @@ impl CccxRuntimeRegistry {
             .map_err(|error| format!("failed to load terminal gateway provenance: {error}"))?,
         };
         let mut collector = ArtifactCollector::new(
+            &runtime.work_spec.task_id,
             &runtime.work_spec.work_spec_id,
             &child_thread_id.to_string(),
         );
@@ -683,19 +717,37 @@ pub(crate) fn cccx_agent_status_label(status: &AgentStatus) -> &'static str {
 /// particular, an explicit child route must already be present in the local
 /// 9router catalog before projection can admit it.
 pub(crate) fn parent_capability_set_for_work_spec(
-    project_root: &Path,
     work_spec: &WorkSpec,
     parent_allowed_tools: BTreeSet<String>,
     parent_allowed_mcp_tools: BTreeSet<String>,
+    parent_writable_roots: BTreeSet<String>,
     parent_model_routes: BTreeSet<String>,
+    parent_permission_ceiling: PermissionPolicy,
 ) -> cccx_protocol::ParentCapabilitySet {
     cccx_protocol::ParentCapabilitySet {
         tools: parent_allowed_tools,
         mcp_tools: parent_allowed_mcp_tools,
-        writable_roots: BTreeSet::from([project_root.display().to_string()]),
+        writable_roots: parent_writable_roots,
         protected_paths: work_spec.scope.protected_paths.clone(),
         model_routes: parent_model_routes,
-        permission_ceiling: PermissionPolicy::Allow,
+        permission_ceiling: parent_permission_ceiling,
+    }
+}
+
+pub(crate) fn permission_ceiling_from_approval_policy(
+    approval_policy: AskForApproval,
+    existing_child_ceiling: Option<PermissionPolicy>,
+) -> PermissionPolicy {
+    let live_ceiling = match approval_policy {
+        AskForApproval::Never => PermissionPolicy::Allow,
+        AskForApproval::UnlessTrusted | AskForApproval::OnRequest | AskForApproval::Granular(_) => {
+            PermissionPolicy::Ask
+        }
+    };
+    match existing_child_ceiling {
+        Some(PermissionPolicy::Deny) => PermissionPolicy::Deny,
+        Some(PermissionPolicy::Ask) => PermissionPolicy::Ask,
+        Some(PermissionPolicy::Allow) | None => live_ceiling,
     }
 }
 
@@ -862,7 +914,7 @@ mod tests {
                 "route".into(),
             )
             .unwrap();
-        let mut collector = ArtifactCollector::new("ws-1", "attempt-1");
+        let mut collector = ArtifactCollector::new("T1", "ws-1", "attempt-1");
         collector.record_test_run("cargo test", 0, "ok");
         runtime
             .complete(
@@ -1211,6 +1263,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cccx_checkpoint_resume_cancel_keeps_logical_session_across_incarnations() {
+        let project = tempfile::TempDir::new().unwrap();
+        let mut work_spec = work_spec();
+        work_spec.base_revision.git_head = Some("head".to_string());
+        let parent_capabilities = cccx_protocol::ParentCapabilitySet {
+            tools: ["shell_command".to_string()].into_iter().collect(),
+            mcp_tools: BTreeSet::new(),
+            writable_roots: ["D:/repo".to_string()].into_iter().collect(),
+            protected_paths: BTreeSet::new(),
+            model_routes: ["9router/test".to_string()].into_iter().collect(),
+            permission_ceiling: PermissionPolicy::Ask,
+        };
+        let first_incarnation = ThreadId::new();
+        let mut registry = CccxRuntimeRegistry::default();
+        registry
+            .register_spawn(
+                first_incarnation,
+                CccxSpawnRuntime {
+                    project_root: project.path().to_path_buf(),
+                    logical_session_id: "logical-a1".to_string(),
+                    work_spec: work_spec.clone(),
+                    display_name: "a1-worker".to_string(),
+                    model_route_summary: "9router/test".to_string(),
+                    model_route_selection_source: Some("inherit_main_effective".to_string()),
+                    gateway_provenance: None,
+                    tool_call_sequence_digest: None,
+                    parent_capabilities: Some(parent_capabilities.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        registry
+            .checkpoint_spawn(first_incarnation, "applied patch".to_string())
+            .await
+            .unwrap();
+        registry
+            .complete_spawn(first_incarnation, "provider disconnected".to_string(), false)
+            .await
+            .unwrap();
+
+        let checkpoint = CccxRuntimeRegistry::prepare_resume(
+            project.path(),
+            "logical-a1",
+            "head",
+            None,
+            60,
+            false,
+        )
+        .await
+        .expect("interrupted latest incarnation must be resumable by logicalSessionId");
+        assert_eq!(checkpoint.logical_session_id, "logical-a1");
+        assert_eq!(checkpoint.attempt_id, first_incarnation.to_string());
+        assert_eq!(
+            checkpoint.worker_incarnation_id,
+            first_incarnation.to_string()
+        );
+        assert_eq!(
+            checkpoint.work_spec.as_ref().unwrap().work_spec_id,
+            work_spec.work_spec_id
+        );
+        assert!(checkpoint.parent_capabilities.is_some());
+
+        let resumed_incarnation = ThreadId::new();
+        assert_ne!(first_incarnation, resumed_incarnation);
+        registry
+            .register_spawn(
+                resumed_incarnation,
+                CccxSpawnRuntime {
+                    project_root: project.path().to_path_buf(),
+                    logical_session_id: checkpoint.logical_session_id.clone(),
+                    work_spec: checkpoint.work_spec.clone().unwrap(),
+                    display_name: checkpoint.display_name.clone().unwrap(),
+                    model_route_summary: "9router/test".to_string(),
+                    model_route_selection_source: checkpoint.model_route_selection_source.clone(),
+                    gateway_provenance: None,
+                    tool_call_sequence_digest: checkpoint.tool_call_sequence_digest.clone(),
+                    parent_capabilities: checkpoint.parent_capabilities.clone(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let graph = cccx_task_graph_state::load_task_graph(project.path())
+            .await
+            .unwrap()
+            .unwrap();
+        let attempts = &graph.tasks["T1"].attempts;
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].attempt_id, first_incarnation.to_string());
+        assert_eq!(attempts[0].worker.logical_session_id, "logical-a1");
+        assert_eq!(attempts[0].worker.status, WorkerStatus::Resumable);
+        assert_eq!(attempts[1].attempt_id, resumed_incarnation.to_string());
+        assert_eq!(attempts[1].worker.logical_session_id, "logical-a1");
+        assert_eq!(attempts[1].worker.status, WorkerStatus::Running);
+
+        let running_resume_error = CccxRuntimeRegistry::prepare_resume(
+            project.path(),
+            "logical-a1",
+            "head",
+            None,
+            60,
+            false,
+        )
+        .await
+        .expect_err("running latest incarnation must not resume from the stale checkpoint");
+        assert!(running_resume_error.contains("Running"));
+        assert!(!running_resume_error.contains("ambiguous"));
+
+        registry
+            .cancel_spawn(resumed_incarnation, "user cancelled resumed worker".to_string())
+            .await
+            .unwrap()
+            .expect("cancel must persist terminal TaskGraph state");
+
+        let graph = cccx_task_graph_state::load_task_graph(project.path())
+            .await
+            .unwrap()
+            .unwrap();
+        let attempts = &graph.tasks["T1"].attempts;
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].worker.status, WorkerStatus::Resumable);
+        assert_eq!(attempts[1].worker.status, WorkerStatus::Cancelled);
+        assert!(attempts
+            .iter()
+            .all(|attempt| attempt.worker.logical_session_id == "logical-a1"));
+        let persisted_checkpoint = crate::checkpoint::load_checkpoint(project.path(), "logical-a1")
+            .await
+            .unwrap()
+            .expect("cancel must not erase the prior audit checkpoint");
+        assert_eq!(
+            persisted_checkpoint.worker_incarnation_id,
+            first_incarnation.to_string()
+        );
+
+        let cancelled_resume_error = CccxRuntimeRegistry::prepare_resume(
+            project.path(),
+            "logical-a1",
+            "head",
+            None,
+            60,
+            false,
+        )
+        .await
+        .expect_err("cancelled latest incarnation is terminal");
+        assert!(cancelled_resume_error.contains("Cancelled"));
+        assert!(!cancelled_resume_error.contains("ambiguous"));
+    }
+
+    #[tokio::test]
     async fn cancelled_spawn_is_terminal_and_never_writes_a_checkpoint() {
         let project = tempfile::TempDir::new().unwrap();
         let child_thread_id = ThreadId::new();
@@ -1279,11 +1480,12 @@ mod tests {
         ]);
 
         let parent = parent_capability_set_for_work_spec(
-            project_root,
             &ws,
             parent_tools.clone(),
             parent_mcp.clone(),
+            BTreeSet::from([project_root.display().to_string()]),
             BTreeSet::from([main_model.to_string()]),
+            PermissionPolicy::Allow,
         );
 
         // Phase 3: parent.tools must be the ACTUAL parent tools, not the
@@ -1293,6 +1495,78 @@ mod tests {
         assert_eq!(parent.mcp_tools, parent_mcp);
         assert_eq!(parent.permission_ceiling, PermissionPolicy::Allow);
         assert!(parent.model_routes.contains("9router/main"));
+    }
+
+    #[test]
+    fn p8_parent_capability_uses_live_parent_writable_roots_and_ceiling() {
+        let ws = work_spec();
+        let parent_writable_roots = BTreeSet::from(["D:/repo/src".to_string()]);
+
+        let parent = parent_capability_set_for_work_spec(
+            &ws,
+            BTreeSet::from(["shell_command".to_string()]),
+            BTreeSet::new(),
+            parent_writable_roots.clone(),
+            BTreeSet::from(["9router/main".to_string()]),
+            PermissionPolicy::Ask,
+        );
+
+        assert_eq!(
+            parent.writable_roots, parent_writable_roots,
+            "parent writable roots must be copied from live runtime permissions, not project root"
+        );
+        assert_eq!(
+            parent.permission_ceiling,
+            PermissionPolicy::Ask,
+            "parent permission ceiling must be copied from live runtime policy, not hard-coded Allow"
+        );
+    }
+
+    #[test]
+    fn p8_parent_capability_empty_writable_roots_project_empty_child_scope() {
+        let mut ws = work_spec();
+        ws.scope.canonical_paths = BTreeSet::from(["D:/repo/src".to_string()]);
+
+        let parent = parent_capability_set_for_work_spec(
+            &ws,
+            BTreeSet::from(["shell_command".to_string()]),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::from(["9router/main".to_string()]),
+            PermissionPolicy::Ask,
+        );
+        let projection = cccx_protocol::project_child_config(&ws, &parent).unwrap();
+
+        assert!(
+            projection.writable_scope.is_empty(),
+            "empty parent writable roots must not fall back to project-wide child writes"
+        );
+        assert_eq!(projection.permission_policy, PermissionPolicy::Ask);
+    }
+
+    #[test]
+    fn p8_permission_ceiling_preserves_existing_stricter_child_runtime_ceiling() {
+        assert_eq!(
+            permission_ceiling_from_approval_policy(
+                codex_protocol::protocol::AskForApproval::Never,
+                Some(PermissionPolicy::Deny),
+            ),
+            PermissionPolicy::Deny
+        );
+        assert_eq!(
+            permission_ceiling_from_approval_policy(
+                codex_protocol::protocol::AskForApproval::Never,
+                Some(PermissionPolicy::Ask),
+            ),
+            PermissionPolicy::Ask
+        );
+        assert_eq!(
+            permission_ceiling_from_approval_policy(
+                codex_protocol::protocol::AskForApproval::OnRequest,
+                None,
+            ),
+            PermissionPolicy::Ask
+        );
     }
 
     /// Phase 3: intersection of WorkSpec tools with narrow parent capability
@@ -1307,11 +1581,12 @@ mod tests {
         let parent_mcp = BTreeSet::new();
 
         let parent = parent_capability_set_for_work_spec(
-            project_root,
             &ws,
             parent_tools,
             parent_mcp,
+            BTreeSet::from([project_root.display().to_string()]),
             BTreeSet::from(["9router/main".to_string()]),
+            PermissionPolicy::Allow,
         );
 
         // The projection should be empty because WorkSpec ∩ parent = ∅
@@ -1330,11 +1605,12 @@ mod tests {
             route_id: "9router/unconfigured-route".to_string(),
         };
         let parent = parent_capability_set_for_work_spec(
-            std::path::Path::new("D:/repo"),
             &ws,
             BTreeSet::new(),
             BTreeSet::new(),
+            BTreeSet::from(["D:/repo".to_string()]),
             BTreeSet::from(["9router/main".to_string()]),
+            PermissionPolicy::Allow,
         );
 
         assert!(matches!(
@@ -1509,7 +1785,7 @@ mod tests {
         // Apply Artifact WITHOUT verification: pass None for exit_code and log_digest.
         // When both are None, GoalEvaluator::evaluate() returns None, so
         // record_verification() is never called → task stays unverified.
-        let mut collector = ArtifactCollector::new("ws-1", "attempt-1");
+        let mut collector = ArtifactCollector::new("T1", "ws-1", "attempt-1");
         collector.record_runtime_log("tests pass", "3/3 ok");
         let artifact = collector.finalize(
             ArtifactStatus::Success,
@@ -1558,7 +1834,7 @@ mod tests {
             .unwrap();
 
         // Full cycle: Artifact → VerificationRecord(passed=true) → can_stop=true
-        let mut collector = ArtifactCollector::new("ws-1", "attempt-1");
+        let mut collector = ArtifactCollector::new("T1", "ws-1", "attempt-1");
         collector.record_test_run("cargo test", 0, "checksum");
         runtime
             .complete(
@@ -1847,7 +2123,7 @@ mod tests {
             .unwrap();
 
         // Step 4: CX produces Artifact with VerificationRecord
-        let mut collector = ArtifactCollector::new("ws-1", "attempt-p13");
+        let mut collector = ArtifactCollector::new("T1", "ws-1", "attempt-p13");
         collector.record_test_run("cargo test", 0, "sha256:e2e");
         let artifact = collector.finalize(
             ArtifactStatus::Success,
@@ -1904,7 +2180,7 @@ mod tests {
             .unwrap();
 
         // Apply Artifact with NO verification (None, None)
-        let mut collector = ArtifactCollector::new("ws-1", "attempt-p13r");
+        let mut collector = ArtifactCollector::new("T1", "ws-1", "attempt-p13r");
         collector.record_runtime_log("tests pass", "3/3 ok");
         let artifact =
             collector.finalize(ArtifactStatus::Success, "tests passed".into(), provenance());

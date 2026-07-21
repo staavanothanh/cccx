@@ -28,6 +28,11 @@ use crate::bottom_pane::ChatComposerConfig;
 use crate::bottom_pane::InputResult;
 use crate::bottom_pane::bottom_pane_view::BottomPaneView;
 use crate::bottom_pane::scroll_state::ScrollState;
+use crate::cccx_secure_config::is_secure_config_turn;
+#[cfg(test)]
+use crate::cccx_secure_config::CCCX_API_KEY_QUESTION_ID;
+#[cfg(test)]
+use crate::cccx_secure_config::CCCX_API_KEY_TURN_ID;
 use crate::bottom_pane::selection_popup_common::GenericDisplayRow;
 use crate::bottom_pane::selection_popup_common::measure_rows_height;
 use crate::history_cell;
@@ -916,13 +921,15 @@ impl RequestUserInputOverlay {
                 answers: answers.clone(),
             },
         );
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::RequestUserInputResultCell {
-                questions: self.request.questions.clone(),
-                answers,
-                interrupted: false,
-            },
-        )));
+        if !is_secure_config_turn(&self.request.turn_id) {
+            self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                history_cell::RequestUserInputResultCell {
+                    questions: self.request.questions.clone(),
+                    answers,
+                    interrupted: false,
+                },
+            )));
+        }
         self.advance_queue_or_complete_at(Instant::now());
     }
 
@@ -935,13 +942,15 @@ impl RequestUserInputOverlay {
                 answers: answers.clone(),
             },
         );
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-            history_cell::RequestUserInputResultCell {
-                questions: self.request.questions.clone(),
-                answers,
-                interrupted: false,
-            },
-        )));
+        if !is_secure_config_turn(&self.request.turn_id) {
+            self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                history_cell::RequestUserInputResultCell {
+                    questions: self.request.questions.clone(),
+                    answers,
+                    interrupted: false,
+                },
+            )));
+        }
         self.advance_queue_or_complete_at(now);
     }
 
@@ -1934,6 +1943,39 @@ mod tests {
         assert!(
             matches!(event, AppEvent::InsertHistoryCell(_)),
             "expected history cell event"
+        );
+    }
+
+    #[test]
+    fn secure_input_config_does_not_emit_a_history_cell() {
+        let (tx, mut rx) = test_sender();
+        let mut question = question_without_options(CCCX_API_KEY_QUESTION_ID, "9router API key");
+        question.is_secret = true;
+        let mut overlay = RequestUserInputOverlay::new(
+            request_event(CCCX_API_KEY_TURN_ID, vec![question]),
+            tx,
+            /*has_input_focus*/ true,
+            /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
+        overlay
+            .composer
+            .set_text_content("key-entered-only-in-memory".to_string(), Vec::new(), Vec::new());
+        let draft = overlay.capture_composer_draft();
+        if let Some(answer) = overlay.current_answer_mut() {
+            answer.draft = draft;
+            answer.answer_committed = true;
+        }
+
+        overlay.submit_answers();
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::CodexOp(Op::UserInputAnswer { id, .. })) if id == CCCX_API_KEY_TURN_ID
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "secure configuration must not create a transcript history event"
         );
     }
 

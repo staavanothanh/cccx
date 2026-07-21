@@ -398,6 +398,7 @@ pub struct CccxPermissionListResponse {
 #[ts(export_to = "v2/")]
 pub struct CccxPermissionBatchApproveParams {
     pub thread_id: String,
+    pub request_ids: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

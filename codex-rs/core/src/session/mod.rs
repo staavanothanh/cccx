@@ -2250,11 +2250,20 @@ impl Session {
             approval_id = %effective_approval_id,
             "cccx permission queue recorded command approval request"
         );
-        let _ = self
+        if !self
             .services
             .cccx_permission_queue
-            .active_request_id()
-            .await;
+            .wait_until_active(&cccx_request_id)
+            .await
+        {
+            self.notify_approval(&effective_approval_id, ReviewDecision::Abort)
+                .await;
+            self.services
+                .cccx_permission_queue
+                .forget_native_approval(&cccx_request_id)
+                .await;
+            return rx_approve.await.unwrap_or(ReviewDecision::Abort);
+        }
 
         let parsed_cmd = parse_command(&command);
         let proposed_network_policy_amendments = network_approval_context.as_ref().map(|context| {
@@ -2376,11 +2385,19 @@ impl Session {
             approval_id = %approval_id,
             "cccx permission queue recorded patch approval request"
         );
-        let _ = self
+        if !self
             .services
             .cccx_permission_queue
-            .active_request_id()
-            .await;
+            .wait_until_active(&cccx_request_id)
+            .await
+        {
+            self.notify_approval(&approval_id, ReviewDecision::Abort).await;
+            self.services
+                .cccx_permission_queue
+                .forget_native_approval(&cccx_request_id)
+                .await;
+            return rx_approve.await.unwrap_or(ReviewDecision::Abort);
+        }
 
         let event = EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
             call_id,
@@ -3417,9 +3434,9 @@ impl Session {
                     .unwrap_or(&session_cwd),
             );
             match memory.load_context().await {
-                Ok(memory_context) if !memory_context.is_empty() => developer_sections.push(format!(
-                    "<cccx_project_memory>\n{memory_context}\n</cccx_project_memory>"
-                )),
+                Ok(memory_context) if !memory_context.is_empty() => developer_sections.push(
+                    format!("<cccx_project_memory>\n{memory_context}\n</cccx_project_memory>"),
+                ),
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%error, "cccx: failed to load project memory"),
             }

@@ -1,10 +1,16 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use cccx_protocol::ActorIdentity;
 use tokio::sync::RwLock;
+use tokio::sync::OwnedRwLockReadGuard;
+use tokio::sync::OwnedRwLockWriteGuard;
 use tokio::task::JoinError;
 use tokio_util::either::Either;
 use tokio_util::sync::CancellationToken;
@@ -28,6 +34,19 @@ use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
+
+static CCCX_PROJECT_WRITE_LEASES: OnceLock<Mutex<HashMap<PathBuf, Arc<RwLock<()>>>>> =
+    OnceLock::new();
+
+enum CccxProjectWriteLeaseGuard {
+    Shared(OwnedRwLockReadGuard<()>),
+    Exclusive(OwnedRwLockWriteGuard<()>),
+}
+
+enum CccxProjectWriteLeaseKind {
+    SharedRead,
+    ExclusiveWrite,
+}
 
 struct ToolCallTimingGuard {
     started_at: Instant,
@@ -130,6 +149,8 @@ impl ToolCallRuntime {
 
         let mut dispatch_handle: AbortOnDropHandle<Result<AnyToolResult, FunctionCallError>> =
             AbortOnDropHandle::new(tokio::spawn(async move {
+                let _cccx_project_write_lease =
+                    cccx_project_write_lease_for_tool_call(turn.as_ref(), &dispatch_call).await;
                 let _guard = if supports_parallel {
                     Either::Left(lock.read().await)
                 } else {
@@ -259,6 +280,92 @@ impl ToolCallRuntime {
     }
 }
 
+impl Drop for CccxProjectWriteLeaseGuard {
+    fn drop(&mut self) {
+        match self {
+            Self::Shared(_guard) => {}
+            Self::Exclusive(_guard) => {}
+        }
+    }
+}
+
+async fn cccx_project_write_lease_for_tool_call(
+    turn: &crate::session::turn_context::TurnContext,
+    call: &ToolCall,
+) -> Option<CccxProjectWriteLeaseGuard> {
+    if matches!(turn.cccx_actor_identity(), ActorIdentity::MainCc) {
+        return None;
+    }
+
+    let project_key = cccx_project_lease_key(turn);
+    let lease = {
+        let leases = CCCX_PROJECT_WRITE_LEASES.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut leases = leases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            leases
+                .entry(project_key)
+                .or_insert_with(|| Arc::new(RwLock::new(()))),
+        )
+    };
+
+    match cccx_project_write_lease_kind(call) {
+        CccxProjectWriteLeaseKind::SharedRead => Some(CccxProjectWriteLeaseGuard::Shared(
+            lease.read_owned().await,
+        )),
+        CccxProjectWriteLeaseKind::ExclusiveWrite => Some(CccxProjectWriteLeaseGuard::Exclusive(
+            lease.write_owned().await,
+        )),
+    }
+}
+
+fn cccx_project_lease_key(turn: &crate::session::turn_context::TurnContext) -> PathBuf {
+    std::fs::canonicalize(turn.config.cwd.as_path())
+        .unwrap_or_else(|_| turn.config.cwd.as_path().to_path_buf())
+}
+
+fn cccx_project_write_lease_kind(call: &ToolCall) -> CccxProjectWriteLeaseKind {
+    if cccx_tool_call_is_known_read_only(call) {
+        CccxProjectWriteLeaseKind::SharedRead
+    } else {
+        CccxProjectWriteLeaseKind::ExclusiveWrite
+    }
+}
+
+fn cccx_tool_call_is_known_read_only(call: &ToolCall) -> bool {
+    if matches!(call.payload, ToolPayload::ToolSearch { .. }) {
+        return true;
+    }
+
+    let name = call.tool_name.name.as_str();
+    match call.tool_name.namespace.as_deref() {
+        None => matches!(
+            name,
+            "view_image"
+                | "list_mcp_resources"
+                | "list_mcp_resource_templates"
+                | "read_mcp_resource"
+                | "multi_agent_v1__wait_agent"
+                | "get_goal"
+        ),
+        Some(namespace) if namespace.starts_with("mcp__codebase_memory_mcp") => matches!(
+            name,
+            "get_architecture"
+                | "search_graph"
+                | "trace_path"
+                | "get_code_snippet"
+                | "query_graph"
+                | "search_code"
+                | "list_projects"
+        ),
+        Some(namespace) if namespace.starts_with("mcp__sequential_thinking") => {
+            matches!(name, "sequentialthinking" | "sequential_thinking")
+        }
+        _ => false,
+    }
+}
+
 impl ToolCallTimingGuard {
     fn capture(
         started_at: Instant,
@@ -356,6 +463,7 @@ mod tests {
     use codex_extension_api::ToolCallOutcome;
     use codex_protocol::models::FunctionCallOutputBody;
     use codex_protocol::models::FunctionCallOutputPayload;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use tokio::sync::Notify;
     use tokio::sync::oneshot;
@@ -539,6 +647,288 @@ mod tests {
     }
 
     impl CoreToolRuntime for ImmediateHandler {}
+
+    struct LeaseTestHandler {
+        tool_name: codex_tools::ToolName,
+        supports_parallel: bool,
+        started: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+        release: CancellationToken,
+    }
+
+    impl ToolExecutor<ToolInvocation> for LeaseTestHandler {
+        fn tool_name(&self) -> codex_tools::ToolName {
+            self.tool_name.clone()
+        }
+
+        fn spec(&self) -> codex_tools::ToolSpec {
+            codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
+                name: self.tool_name.name.clone(),
+                description: "Lease test tool.".to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: codex_tools::JsonSchema::default(),
+                output_schema: None,
+            })
+        }
+
+        fn supports_parallel_tool_calls(&self) -> bool {
+            self.supports_parallel
+        }
+
+        fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+            Box::pin(async {
+                let started = self
+                    .started
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                self.release.cancelled().await;
+                Ok(
+                    Box::new(FunctionToolOutput::from_text("ok".to_string(), Some(true)))
+                        as Box<dyn crate::tools::context::ToolOutput>,
+                )
+            })
+        }
+    }
+
+    impl CoreToolRuntime for LeaseTestHandler {}
+
+    async fn lease_test_runtime(
+        actor: ActorIdentity,
+        tool_name: codex_tools::ToolName,
+        supports_parallel: bool,
+        shared_cwd: Option<AbsolutePathBuf>,
+        release: CancellationToken,
+    ) -> (
+        ToolCallRuntime,
+        codex_tools::ToolName,
+        oneshot::Receiver<()>,
+    ) {
+        let (session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+        turn_context.cccx_actor_identity = actor;
+        if let Some(shared_cwd) = shared_cwd {
+            let mut config = (*turn_context.config).clone();
+            config.cwd = shared_cwd;
+            turn_context.config = Arc::new(config);
+        }
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let (started_tx, started_rx) = oneshot::channel();
+        let handler = Arc::new(LeaseTestHandler {
+            tool_name: tool_name.clone(),
+            supports_parallel,
+            started: std::sync::Mutex::new(Some(started_tx)),
+            release,
+        }) as Arc<dyn CoreToolRuntime>;
+        let step_context = StepContext::for_test(Arc::clone(&turn_context));
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        (
+            ToolCallRuntime::new(router, session, step_context, tracker),
+            tool_name,
+            started_rx,
+        )
+    }
+
+    fn lease_test_call(tool_name: codex_tools::ToolName) -> ToolCall {
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn cccx_project_write_lease_allows_read_only_subagents_in_parallel()
+    -> anyhow::Result<()> {
+        let release = CancellationToken::new();
+        let (runtime_a, tool_name_a, started_a) = lease_test_runtime(
+            ActorIdentity::CxSubagent,
+            codex_tools::ToolName::plain("view_image"),
+            /*supports_parallel*/ false,
+            None,
+            release.clone(),
+        )
+        .await;
+        let shared_cwd = runtime_a.step_context.turn.config.cwd.clone();
+        let (runtime_b, tool_name_b, started_b) = lease_test_runtime(
+            ActorIdentity::CcSubagent,
+            codex_tools::ToolName::plain("view_image"),
+            /*supports_parallel*/ false,
+            Some(shared_cwd),
+            release.clone(),
+        )
+        .await;
+
+        let task_a = tokio::spawn(
+            runtime_a.handle_tool_call(lease_test_call(tool_name_a), CancellationToken::new()),
+        );
+        let task_b = tokio::spawn(
+            runtime_b.handle_tool_call(lease_test_call(tool_name_b), CancellationToken::new()),
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), started_a)
+            .await
+            .expect("first read-only subagent should start")
+            .expect("first read-only subagent should signal start");
+        tokio::time::timeout(Duration::from_secs(1), started_b)
+            .await
+            .expect("second read-only subagent should start without waiting for first")
+            .expect("second read-only subagent should signal start");
+
+        release.cancel();
+        task_a.await.expect("first task should join")?;
+        task_b.await.expect("second task should join")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cccx_project_write_lease_serializes_write_capable_subagents_for_same_project()
+    -> anyhow::Result<()> {
+        let release = CancellationToken::new();
+        let (runtime_a, tool_name_a, started_a) = lease_test_runtime(
+            ActorIdentity::CxSubagent,
+            codex_tools::ToolName::plain("shell_command"),
+            /*supports_parallel*/ true,
+            None,
+            release.clone(),
+        )
+        .await;
+        let shared_cwd = runtime_a.step_context.turn.config.cwd.clone();
+        let (runtime_b, tool_name_b, started_b) = lease_test_runtime(
+            ActorIdentity::CcSubagent,
+            codex_tools::ToolName::plain("shell_command"),
+            /*supports_parallel*/ true,
+            Some(shared_cwd),
+            release.clone(),
+        )
+        .await;
+
+        let task_a = tokio::spawn(
+            runtime_a.handle_tool_call(lease_test_call(tool_name_a), CancellationToken::new()),
+        );
+        tokio::time::timeout(Duration::from_secs(1), started_a)
+            .await
+            .expect("first write-capable subagent should start")
+            .expect("first write-capable subagent should signal start");
+
+        let task_b = tokio::spawn(
+            runtime_b.handle_tool_call(lease_test_call(tool_name_b), CancellationToken::new()),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), started_b)
+                .await
+                .is_err(),
+            "second write-capable subagent for the same project must wait for the first lease"
+        );
+
+        release.cancel();
+        task_a.await.expect("first task should join")?;
+        task_b.await.expect("second task should join")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cccx_project_write_lease_treats_unknown_subagent_tools_as_write_capable()
+    -> anyhow::Result<()> {
+        let release = CancellationToken::new();
+        let (runtime_a, tool_name_a, started_a) = lease_test_runtime(
+            ActorIdentity::CxSubagent,
+            codex_tools::ToolName::plain("unknown_future_tool"),
+            /*supports_parallel*/ true,
+            None,
+            release.clone(),
+        )
+        .await;
+        let shared_cwd = runtime_a.step_context.turn.config.cwd.clone();
+        let (runtime_b, tool_name_b, started_b) = lease_test_runtime(
+            ActorIdentity::CxSubagent,
+            codex_tools::ToolName::plain("unknown_future_tool"),
+            /*supports_parallel*/ true,
+            Some(shared_cwd),
+            release.clone(),
+        )
+        .await;
+
+        let task_a = tokio::spawn(
+            runtime_a.handle_tool_call(lease_test_call(tool_name_a), CancellationToken::new()),
+        );
+        tokio::time::timeout(Duration::from_secs(1), started_a)
+            .await
+            .expect("first unknown subagent tool should start")
+            .expect("first unknown subagent tool should signal start");
+
+        let task_b = tokio::spawn(
+            runtime_b.handle_tool_call(lease_test_call(tool_name_b), CancellationToken::new()),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), started_b)
+                .await
+                .is_err(),
+            "unknown subagent tools must fail closed to the exclusive write-worker lease"
+        );
+
+        release.cancel();
+        task_a.await.expect("first task should join")?;
+        task_b.await.expect("second task should join")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cccx_project_write_lease_does_not_change_main_cc_tool_parallelism()
+    -> anyhow::Result<()> {
+        let release = CancellationToken::new();
+        let (runtime_a, tool_name_a, started_a) = lease_test_runtime(
+            ActorIdentity::MainCc,
+            codex_tools::ToolName::plain("shell_command"),
+            /*supports_parallel*/ true,
+            None,
+            release.clone(),
+        )
+        .await;
+        let shared_cwd = runtime_a.step_context.turn.config.cwd.clone();
+        let (runtime_b, tool_name_b, started_b) = lease_test_runtime(
+            ActorIdentity::MainCc,
+            codex_tools::ToolName::plain("shell_command"),
+            /*supports_parallel*/ true,
+            Some(shared_cwd),
+            release.clone(),
+        )
+        .await;
+
+        let task_a = tokio::spawn(
+            runtime_a.handle_tool_call(lease_test_call(tool_name_a), CancellationToken::new()),
+        );
+        let task_b = tokio::spawn(
+            runtime_b.handle_tool_call(lease_test_call(tool_name_b), CancellationToken::new()),
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), started_a)
+            .await
+            .expect("first Main CC call should start")
+            .expect("first Main CC call should signal start");
+        tokio::time::timeout(Duration::from_secs(1), started_b)
+            .await
+            .expect("second Main CC call should preserve upstream cross-runtime behavior")
+            .expect("second Main CC call should signal start");
+
+        release.cancel();
+        task_a.await.expect("first task should join")?;
+        task_b.await.expect("second task should join")?;
+
+        Ok(())
+    }
 
     struct CancellationCleanupHandler {
         tool_name: codex_tools::ToolName,

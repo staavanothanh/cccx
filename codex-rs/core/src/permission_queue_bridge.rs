@@ -3,9 +3,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cccx_policy::{
-    NormalizedAction, PermissionRequest, PermissionRequestQueue, PermissionRisk, QueueError,
+    NormalizedAction, PermissionRequest, PermissionRequestQueue, PermissionRequestStatus,
+    PermissionRisk, QueueError,
 };
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::Notify;
 
 /// Wraps cccx-policy's PermissionRequestQueue for thread-safe use in session.
 pub struct CccxPermissionQueue {
@@ -13,6 +15,7 @@ pub struct CccxPermissionQueue {
     /// The queue owns the correlation between its stable `pr-*` identity and
     /// the native Codex approval waiter that must receive the decision.
     native_approvals: Arc<AsyncMutex<BTreeMap<String, NativeApproval>>>,
+    state_changed: Arc<Notify>,
     counter: AtomicU64,
 }
 
@@ -45,6 +48,7 @@ impl CccxPermissionQueue {
         Self {
             inner: Arc::new(AsyncMutex::new(PermissionRequestQueue::default())),
             native_approvals: Arc::new(AsyncMutex::new(BTreeMap::new())),
+            state_changed: Arc::new(Notify::new()),
             counter: AtomicU64::new(0),
         }
     }
@@ -66,6 +70,7 @@ impl CccxPermissionQueue {
         let request = PermissionRequest::new(&request_id, &agent_session_id, action, risk)
             .with_context(agent_display_name, task_id, reason);
         self.inner.lock().await.enqueue(request);
+        self.state_changed.notify_waiters();
         request_id
     }
 
@@ -88,7 +93,7 @@ impl CccxPermissionQueue {
         approved: bool,
     ) -> Result<(), QueueError> {
         let mut queue = self.inner.lock().await;
-        if approved {
+        let result = if approved {
             let digest = queue
                 .get(request_id)
                 .ok_or_else(|| QueueError::UnknownRequest(request_id.to_string()))?
@@ -97,6 +102,29 @@ impl CccxPermissionQueue {
             queue.approve(request_id, &digest)
         } else {
             queue.deny(request_id)
+        };
+        drop(queue);
+        self.state_changed.notify_waiters();
+        result
+    }
+
+    /// Wait until a request becomes the single active prompt that may be
+    /// rendered to the user. Returns `false` when the request reaches any
+    /// terminal/non-queued state before activation.
+    pub async fn wait_until_active(&self, request_id: &str) -> bool {
+        loop {
+            let notified = self.state_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let queue = self.inner.lock().await;
+                match queue.get(request_id).map(|request| &request.status) {
+                    Some(PermissionRequestStatus::Active) => return true,
+                    Some(PermissionRequestStatus::Queued) => {}
+                    Some(_) | None => return false,
+                }
+            }
+            notified.await;
         }
     }
 
@@ -133,18 +161,35 @@ impl CccxPermissionQueue {
             .lock()
             .await
             .cancel_agent_requests(agent_session_id);
+        self.state_changed.notify_waiters();
         let mut native_approvals = self.native_approvals.lock().await;
         for request_id in request_ids {
             native_approvals.remove(&request_id);
         }
     }
 
+    #[cfg(test)]
     pub async fn active_request_id(&self) -> Option<String> {
         self.inner
             .lock()
             .await
             .active_request_id()
             .map(String::from)
+    }
+
+    pub async fn ensure_active(&self, request_id: &str) -> Result<(), String> {
+        let queue = self.inner.lock().await;
+        let request = queue
+            .get(request_id)
+            .ok_or_else(|| format!("unknown permission request `{request_id}`"))?;
+        if request.status == PermissionRequestStatus::Active {
+            Ok(())
+        } else {
+            Err(format!(
+                "permission request `{request_id}` is not active; status is {:?}",
+                request.status
+            ))
+        }
     }
 
     /// Return the only request that may be auto-approved by a batch
@@ -156,6 +201,45 @@ impl CccxPermissionQueue {
         let request = queue.get(request_id)?;
         (request.risk != PermissionRisk::High && request.risk != PermissionRisk::CircuitBreaker)
             .then(|| request_id.to_string())
+    }
+
+    pub async fn validate_batch_request_ids(&self, request_ids: &[String]) -> Result<(), String> {
+        if request_ids.is_empty() {
+            return Err("batch approval requires at least one request id".to_string());
+        }
+        let queue = self.inner.lock().await;
+        for request_id in request_ids {
+            let request = queue
+                .get(request_id)
+                .ok_or_else(|| format!("unknown permission request `{request_id}`"))?;
+            if !matches!(
+                request.status,
+                PermissionRequestStatus::Active | PermissionRequestStatus::Queued
+            ) {
+                return Err(format!(
+                    "permission request `{request_id}` is not pending; status is {:?}",
+                    request.status
+                ));
+            }
+            if matches!(
+                request.risk,
+                PermissionRisk::High | PermissionRisk::CircuitBreaker
+            ) {
+                return Err(format!(
+                    "permission request `{request_id}` is {:?} risk and cannot be batch approved",
+                    request.risk
+                ));
+            }
+        }
+        let Some(active_id) = queue.active_request_id() else {
+            return Err("permission queue has no active request".to_string());
+        };
+        if request_ids.first().map(String::as_str) != Some(active_id) {
+            return Err(format!(
+                "batch approval must start with the current active request `{active_id}`"
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -482,5 +566,137 @@ mod tests {
             )
             .await;
         assert_eq!(queue.active_safe_request_id().await, None);
+    }
+
+    #[tokio::test]
+    async fn queued_native_prompt_waits_until_it_is_active() {
+        let queue = CccxPermissionQueue::new();
+        let first = queue
+            .enqueue(
+                "worker-a".to_string(),
+                "worker A".to_string(),
+                "T1".to_string(),
+                action("T1"),
+                "first".to_string(),
+            )
+            .await;
+        let second = queue
+            .enqueue(
+                "worker-b".to_string(),
+                "worker B".to_string(),
+                "T2".to_string(),
+                action("T2"),
+                "second".to_string(),
+            )
+            .await;
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                queue.wait_until_active(&second),
+            )
+            .await
+            .is_err(),
+            "queued native prompt must not render before it becomes active"
+        );
+
+        queue
+            .resolve_native_decision(&first, false)
+            .await
+            .expect("deny active");
+        assert!(queue.wait_until_active(&second).await);
+    }
+
+    #[tokio::test]
+    async fn queued_native_prompt_aborts_when_cancelled_before_activation() {
+        let queue = CccxPermissionQueue::new();
+        queue
+            .enqueue(
+                "worker-a".to_string(),
+                "worker A".to_string(),
+                "T1".to_string(),
+                action("T1"),
+                "first".to_string(),
+            )
+            .await;
+        let second = queue
+            .enqueue(
+                "worker-b".to_string(),
+                "worker B".to_string(),
+                "T2".to_string(),
+                action("T2"),
+                "second".to_string(),
+            )
+            .await;
+
+        queue.cancel_agent_requests("worker-b").await;
+
+        assert!(
+            !queue.wait_until_active(&second).await,
+            "cancelled queued prompt must fail closed instead of rendering later"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_validation_requires_explicit_active_safe_ids() {
+        let queue = CccxPermissionQueue::new();
+        let active = queue
+            .enqueue(
+                "worker-a".to_string(),
+                "worker A".to_string(),
+                "T1".to_string(),
+                action("T1"),
+                "first".to_string(),
+            )
+            .await;
+        let queued = queue
+            .enqueue(
+                "worker-b".to_string(),
+                "worker B".to_string(),
+                "T2".to_string(),
+                action("T2"),
+                "second".to_string(),
+            )
+            .await;
+
+        assert!(
+            queue
+                .validate_batch_request_ids(std::slice::from_ref(&queued))
+                .await
+                .expect_err("batch must start with current active request")
+                .contains(&active)
+        );
+        queue
+            .validate_batch_request_ids(&[active.clone(), queued])
+            .await
+            .expect("active and queued medium-risk IDs are eligible");
+
+        let high = NormalizedAction {
+            action_type: ActionType::Shell,
+            summary: "run command".to_string(),
+            command: Some("npm test".to_string()),
+            target_paths: vec![],
+            tool_name: Some("shell_command".to_string()),
+            task_id: "T3".to_string(),
+            changed_files: 0,
+            changed_lines: 0,
+        };
+        queue.resolve_native_decision(&active, false).await.unwrap();
+        let high_id = queue
+            .enqueue(
+                "worker-c".to_string(),
+                "worker C".to_string(),
+                "T3".to_string(),
+                high,
+                "run tests".to_string(),
+            )
+            .await;
+        assert!(
+            queue
+                .validate_batch_request_ids(&[high_id])
+                .await
+                .expect_err("high risk cannot be batch-approved")
+                .contains("High")
+        );
     }
 }

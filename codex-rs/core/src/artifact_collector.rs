@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 
 /// Accumulates subagent execution evidence and produces an Artifact on completion.
 pub struct ArtifactCollector {
+    task_id: String,
     work_spec_id: String,
     attempt_id: String,
     changed_paths: BTreeSet<String>,
@@ -10,8 +11,9 @@ pub struct ArtifactCollector {
 }
 
 impl ArtifactCollector {
-    pub fn new(work_spec_id: &str, attempt_id: &str) -> Self {
+    pub fn new(task_id: &str, work_spec_id: &str, attempt_id: &str) -> Self {
         Self {
+            task_id: task_id.to_string(),
             work_spec_id: work_spec_id.to_string(),
             attempt_id: attempt_id.to_string(),
             changed_paths: BTreeSet::new(),
@@ -78,7 +80,7 @@ impl ArtifactCollector {
         Artifact {
             schema_version: cccx_protocol::CCCX_ARTIFACT_SCHEMA_VERSION.to_string(),
             artifact_id,
-            task_id: self.work_spec_id.clone(),
+            task_id: self.task_id,
             work_spec_id: self.work_spec_id,
             attempt_id: self.attempt_id,
             status,
@@ -130,7 +132,7 @@ mod tests {
 
     #[test]
     fn finalized_success_artifact_contains_required_provenance_and_evidence() {
-        let mut collector = ArtifactCollector::new("ws-1", "attempt-1");
+        let mut collector = ArtifactCollector::new("T1", "ws-1", "attempt-1");
         collector.record_file_change("D:/repo/src/lib.rs");
         collector.record_file_change("D:/repo/src/lib.rs");
         collector.record_test_run("cargo test -p cccx-protocol", 0, "ok");
@@ -146,6 +148,8 @@ mod tests {
             .validate()
             .expect("collector must produce design-valid artifact");
         assert_eq!(artifact.artifact_id, "art-ws-1-attempt-1");
+        assert_eq!(artifact.task_id, "T1");
+        assert_eq!(artifact.work_spec_id, "ws-1");
         assert_eq!(artifact.changed_paths.len(), 1);
         assert_eq!(artifact.evidence.len(), 2);
         assert!(
@@ -158,7 +162,7 @@ mod tests {
 
     #[test]
     fn success_artifact_without_runtime_evidence_remains_invalid() {
-        let collector = ArtifactCollector::new("ws-1", "attempt-1");
+        let collector = ArtifactCollector::new("T1", "ws-1", "attempt-1");
 
         let artifact = collector.finalize(
             ArtifactStatus::Success,

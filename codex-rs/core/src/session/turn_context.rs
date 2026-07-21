@@ -85,6 +85,7 @@ pub(crate) struct CccxReadSet {
 
 impl CccxReadSet {
     pub(crate) async fn record(&self, path: PathBuf, bytes: &[u8]) {
+        let path = cccx_read_set_key(&path);
         self.digests
             .lock()
             .await
@@ -92,10 +93,32 @@ impl CccxReadSet {
     }
 
     pub(crate) async fn verify_if_observed(&self, path: &Path) -> Result<(), String> {
-        let expected = self.digests.lock().await.get(path).cloned();
+        let path = cccx_read_set_key(path);
+        let expected = self.digests.lock().await.get(&path).cloned();
         let Some(expected) = expected else {
             return Ok(());
         };
+        verify_cccx_read_digest(&path, &expected)
+    }
+
+    pub(crate) async fn verify_observed_fresh(&self, path: &Path) -> Result<(), String> {
+        let path = cccx_read_set_key(path);
+        let expected = self.digests.lock().await.get(&path).cloned();
+        let Some(expected) = expected else {
+            return Err(format!(
+                "no direct read recorded for `{}` before write",
+                path.display()
+            ));
+        };
+        verify_cccx_read_digest(&path, &expected)
+    }
+}
+
+fn cccx_read_set_key(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn verify_cccx_read_digest(path: &Path, expected: &str) -> Result<(), String> {
         let bytes = std::fs::read(path).map_err(|error| {
             format!("cannot re-read `{}` before write: {error}", path.display())
         })?;
@@ -105,7 +128,6 @@ impl CccxReadSet {
         } else {
             Err(format!("stale read detected for `{}`", path.display()))
         }
-    }
 }
 
 #[cfg(test)]
@@ -310,6 +332,13 @@ impl TurnContext {
 
     pub(crate) async fn verify_cccx_read_fresh(&self, path: &Path) -> Result<(), String> {
         self.cccx_read_set.verify_if_observed(path).await
+    }
+
+    pub(crate) async fn verify_cccx_read_observed_fresh(
+        &self,
+        path: &Path,
+    ) -> Result<(), String> {
+        self.cccx_read_set.verify_observed_fresh(path).await
     }
 
     #[cfg(test)]

@@ -1084,6 +1084,7 @@ impl AppServerSession {
     pub(crate) async fn cccx_permission_batch_approve(
         &mut self,
         thread_id: ThreadId,
+        request_ids: Vec<String>,
     ) -> std::result::Result<bool, TypedRequestError> {
         let request_id = self.next_request_id();
         let response: CccxPermissionBatchApproveResponse = self
@@ -1092,6 +1093,7 @@ impl AppServerSession {
                 request_id,
                 params: CccxPermissionBatchApproveParams {
                     thread_id: thread_id.to_string(),
+                    request_ids,
                 },
             })
             .await?;

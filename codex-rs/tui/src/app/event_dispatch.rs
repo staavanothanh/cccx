@@ -9,6 +9,10 @@ use super::*;
 use crate::app_server_session::ForkGoalContinuation;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
+use crate::cccx_secure_config::api_key_from_secure_response;
+use crate::cccx_secure_config::CCCX_API_KEY_TURN_ID;
+use codex_core::cccx_secrets::CccxSecretsStore;
+use codex_core::cccx_secrets::CCCX_API_KEY;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -411,6 +415,23 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
+                if let AppCommand::UserInputAnswer { id, response } = &op
+                    && id == CCCX_API_KEY_TURN_ID
+                {
+                    match api_key_from_secure_response(response).and_then(|api_key| {
+                        CccxSecretsStore::new(self.config.codex_home.as_path().to_path_buf())
+                            .set(CCCX_API_KEY, &api_key)
+                            .map_err(|_| "CCCX could not save the API key to its encrypted local secret store.")
+                    }) {
+                        Ok(()) => self.chat_widget.add_info_message(
+                            "CCCX_API_KEY saved securely. Use /new (or restart cccx) before the current session sends its next request."
+                                .to_string(),
+                            None,
+                        ),
+                        Err(message) => self.chat_widget.add_error_message(message.to_string()),
+                    }
+                    return Ok(AppRunControl::Continue);
+                }
                 if matches!(&op, AppCommand::UserTurn { .. })
                     && let Some(thread_id) = self.current_displayed_thread_id()
                     && self.read_only_worker_threads.contains(&thread_id)

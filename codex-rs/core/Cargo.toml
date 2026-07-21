@@ -59,6 +59,7 @@ codex-git-utils = { workspace = true }
 codex-hooks = { workspace = true }
 codex-http-client = { workspace = true }
 codex-install-context = { workspace = true }
+codex-secrets = { workspace = true }
 codex-network-proxy = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
@@ -147,6 +148,7 @@ codex-shell-escalation = { workspace = true }
 [dev-dependencies]
 assert_cmd = { workspace = true }
 assert_matches = { workspace = true }
+codex-keyring-store = { workspace = true }
 codex-image-generation-extension = { workspace = true }
 codex-home = { workspace = true }
 codex-otel = { workspace = true }

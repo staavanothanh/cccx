@@ -31,13 +31,26 @@ impl GoalEvaluator {
             policy_id: task.verification_spec.spec_digest.clone(),
             command: Some(command),
             artifact_digest,
-            result_revision: RevisionRef { git_head: None, working_tree_digest: None },
+            result_revision: RevisionRef {
+                git_head: None,
+                working_tree_digest: None,
+            },
             passed,
             checked_at: chrono::Utc::now().to_rfc3339(),
             evidence_digest: log_digest,
             protected_input_digest: Some(protected_input_digest),
-            findings: if passed { Vec::new() } else { vec![format!("verification command failed with exit code {exit_code}")] },
-            reason: if passed { "verification command exited 0".to_string() } else { format!("verification command failed with exit code {exit_code}") },
+            findings: if passed {
+                Vec::new()
+            } else {
+                vec![format!(
+                    "verification command failed with exit code {exit_code}"
+                )]
+            },
+            reason: if passed {
+                "verification command exited 0".to_string()
+            } else {
+                format!("verification command failed with exit code {exit_code}")
+            },
         }
     }
 
@@ -155,6 +168,9 @@ mod tests {
         assert!(record.passed);
         assert_eq!(record.attempt_id, "attempt-42");
         assert_eq!(record.command.unwrap().argv, vec!["cargo", "test"]);
-        assert_eq!(record.protected_input_digest.as_deref(), Some("sha256:protected"));
+        assert_eq!(
+            record.protected_input_digest.as_deref(),
+            Some("sha256:protected")
+        );
     }
 }

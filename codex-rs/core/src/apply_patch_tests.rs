@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::exec_policy::CccxAutoClassifier;
@@ -67,6 +68,23 @@ fn cccx_child_write_scope_rejects_target_outside_projected_root() {
 }
 
 #[test]
+fn cccx_child_write_scope_rejects_empty_projected_roots() {
+    let tmp = tempdir().expect("tmp");
+    let path = tmp.path().join("blocked.txt");
+    let action = ApplyPatchAction::new_add_for_test(
+        &PathUri::from_host_native_path(&path).expect("absolute path"),
+        "blocked".to_string(),
+    );
+
+    let result = cccx_validate_write_scope(&BTreeSet::new(), &action);
+
+    assert!(
+        result.is_err_and(|reason| reason.contains("projected writable scope is empty")),
+        "empty child writable scope must fail closed for apply_patch"
+    );
+}
+
+#[test]
 fn cccx_child_write_scope_rejects_parent_traversal() {
     let tmp = tempdir().expect("tmp");
     let allowed = tmp.path().join("allowed");
@@ -88,6 +106,59 @@ fn cccx_child_write_scope_rejects_parent_traversal() {
         result.is_err(),
         "path traversal must not escape child scope"
     );
+}
+
+#[test]
+fn cccx_child_write_scope_rejects_directory_alias_escape() {
+    let tmp = tempdir().expect("tmp");
+    let allowed = tmp.path().join("allowed");
+    let outside = tmp.path().join("outside");
+    let alias = allowed.join("alias");
+    std::fs::create_dir_all(&allowed).expect("allowed root");
+    std::fs::create_dir_all(&outside).expect("outside root");
+    if !try_create_directory_alias(&outside, &alias) {
+        eprintln!(
+            "skipping directory alias escape test because this host cannot create a symlink/junction"
+        );
+        return;
+    }
+    let escaped = alias.join("escape.txt");
+    let action = ApplyPatchAction::new_add_for_test(
+        &PathUri::from_host_native_path(&escaped).expect("absolute path"),
+        "blocked".to_string(),
+    );
+
+    let result = cccx_validate_write_scope(
+        &[allowed.to_string_lossy().to_string()]
+            .into_iter()
+            .collect(),
+        &action,
+    );
+
+    assert!(
+        result.is_err_and(|reason| reason.contains("outside the projected writable scope")),
+        "directory symlink/junction inside child scope must not allow writes outside scope"
+    );
+}
+
+#[cfg(unix)]
+fn try_create_directory_alias(source: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(source, link).is_ok()
+}
+
+#[cfg(windows)]
+fn try_create_directory_alias(source: &Path, link: &Path) -> bool {
+    std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(source)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn try_create_directory_alias(_source: &Path, _link: &Path) -> bool {
+    false
 }
 
 #[tokio::test]
@@ -128,6 +199,101 @@ async fn cccx_child_write_scope_rejects_move_destination_outside_projected_root(
     assert!(
         result.is_err_and(|reason| reason.contains("outside the projected writable scope")),
         "a move destination outside the child scope must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn cccx_stale_read_gate_blocks_unobserved_update_before_runtime_execution() {
+    let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+    let tmp = tempdir().expect("tmp");
+    let file = tmp.path().join("unobserved.txt");
+    std::fs::write(&file, "before\n").expect("initial file");
+    let patch = r#"*** Begin Patch
+*** Update File: unobserved.txt
+@@
+-before
++after
+*** End Patch"#;
+    let cwd = PathUri::from_host_native_path(tmp.path()).expect("absolute cwd");
+    let action = match codex_apply_patch::maybe_parse_apply_patch_verified(
+        &["apply_patch".to_string(), patch.to_string()],
+        &cwd,
+        LOCAL_FS.as_ref(),
+        None,
+    )
+    .await
+    {
+        MaybeApplyPatchVerified::Body(action) => action,
+        other => panic!("expected verified patch, got {other:?}"),
+    };
+
+    let result = apply_patch(
+        &session,
+        &turn_context,
+        &FileSystemSandboxPolicy::unrestricted(),
+        action,
+        vec![file.to_string_lossy().to_string()],
+    )
+    .await;
+
+    assert!(
+        matches!(result, InternalApplyPatchInvocation::Output(Err(FunctionCallError::RespondToModel(message))) if message.contains("no direct read recorded")),
+        "an unobserved update must fail closed before runtime execution"
+    );
+}
+
+#[tokio::test]
+async fn cccx_stale_read_gate_blocks_multifile_patch_when_one_target_is_unobserved() {
+    let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+    let tmp = tempdir().expect("tmp");
+    let observed = tmp.path().join("observed.txt");
+    let unobserved = tmp.path().join("unobserved.txt");
+    std::fs::write(&observed, "before-a\n").expect("observed file");
+    std::fs::write(&unobserved, "before-b\n").expect("unobserved file");
+    let patch = r#"*** Begin Patch
+*** Update File: observed.txt
+@@
+-before-a
++after-a
+*** Update File: unobserved.txt
+@@
+-before-b
++after-b
+*** End Patch"#;
+    let cwd = PathUri::from_host_native_path(tmp.path()).expect("absolute cwd");
+    let action = match codex_apply_patch::maybe_parse_apply_patch_verified(
+        &["apply_patch".to_string(), patch.to_string()],
+        &cwd,
+        LOCAL_FS.as_ref(),
+        None,
+    )
+    .await
+    {
+        MaybeApplyPatchVerified::Body(action) => action,
+        other => panic!("expected verified patch, got {other:?}"),
+    };
+    turn_context
+        .record_cccx_read(
+            std::fs::canonicalize(&observed).expect("canonical observed file"),
+            b"before-a\n",
+        )
+        .await;
+
+    let result = apply_patch(
+        &session,
+        &turn_context,
+        &FileSystemSandboxPolicy::unrestricted(),
+        action,
+        vec![
+            observed.to_string_lossy().to_string(),
+            unobserved.to_string_lossy().to_string(),
+        ],
+    )
+    .await;
+
+    assert!(
+        matches!(result, InternalApplyPatchInvocation::Output(Err(FunctionCallError::RespondToModel(message))) if message.contains("unobserved.txt") && message.contains("no direct read recorded")),
+        "a multi-file patch must fail closed when any update/delete target was not directly read"
     );
 }
 

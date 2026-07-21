@@ -26,7 +26,10 @@ pub(crate) struct VerificationRun {
 #[derive(Debug, Error)]
 pub(crate) enum VerificationRunnerError {
     #[error("verification cwd `{path}` is outside project root `{project_root}")]
-    CwdOutsideProject { path: PathBuf, project_root: PathBuf },
+    CwdOutsideProject {
+        path: PathBuf,
+        project_root: PathBuf,
+    },
     #[error("protected verification input changed: `{path}` expected {expected}, got {actual}")]
     ProtectedInputChanged {
         path: String,
@@ -47,15 +50,17 @@ pub(crate) async fn run_verification(
         return Ok(None);
     };
     let cwd = resolve_cwd(project_root, &command_spec.cwd)?;
-    let protected_input_digest = verify_protected_inputs(project_root, &spec.protected_digests).await?;
+    let protected_input_digest =
+        verify_protected_inputs(project_root, &spec.protected_digests).await?;
     let started_at = chrono::Utc::now().to_rfc3339();
     let timeout_ms = command_spec.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
     let mut command = Command::new(&command_spec.argv[0]);
     command.args(&command_spec.argv[1..]).current_dir(&cwd);
-    let output = match tokio::time::timeout(Duration::from_millis(timeout_ms), command.output()).await {
-        Ok(result) => result.map_err(VerificationRunnerError::Spawn)?,
-        Err(_) => return Err(VerificationRunnerError::TimedOut { timeout_ms }),
-    };
+    let output =
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), command.output()).await {
+            Ok(result) => result.map_err(VerificationRunnerError::Spawn)?,
+            Err(_) => return Err(VerificationRunnerError::TimedOut { timeout_ms }),
+        };
     let mut log = output.stdout;
     log.extend_from_slice(&output.stderr);
     let log_digest = sha256_digest(&log);
@@ -75,12 +80,19 @@ pub(crate) async fn run_verification(
 fn resolve_cwd(project_root: &Path, raw_cwd: &str) -> Result<PathBuf, VerificationRunnerError> {
     let root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     let requested = PathBuf::from(raw_cwd);
-    let candidate = if requested.is_absolute() { requested } else { root.join(requested) };
+    let candidate = if requested.is_absolute() {
+        requested
+    } else {
+        root.join(requested)
+    };
     let canonical = std::fs::canonicalize(&candidate).unwrap_or(candidate);
     if canonical.starts_with(&root) {
         Ok(canonical)
     } else {
-        Err(VerificationRunnerError::CwdOutsideProject { path: canonical, project_root: root })
+        Err(VerificationRunnerError::CwdOutsideProject {
+            path: canonical,
+            project_root: root,
+        })
     }
 }
 
@@ -95,7 +107,9 @@ async fn verify_protected_inputs(
         let actual = sha256_digest(&bytes);
         if &actual != expected {
             return Err(VerificationRunnerError::ProtectedInputChanged {
-                path: path.clone(), expected: expected.clone(), actual,
+                path: path.clone(),
+                expected: expected.clone(),
+                actual,
             });
         }
         aggregate.update(path.as_bytes());
@@ -117,7 +131,11 @@ mod tests {
 
     fn command_spec(argv: Vec<String>) -> VerificationSpec {
         VerificationSpec {
-            command: Some(CommandSpec { argv, cwd: ".".to_string(), timeout_ms: Some(5_000) }),
+            command: Some(CommandSpec {
+                argv,
+                cwd: ".".to_string(),
+                timeout_ms: Some(5_000),
+            }),
             protected_digests: BTreeMap::new(),
             verification_policy_id: Some("test".to_string()),
             spec_digest: "sha256:spec".to_string(),
@@ -128,9 +146,17 @@ mod tests {
     async fn runs_pinned_argv_cwd_and_captures_real_output_digest() {
         let root = TempDir::new().unwrap();
         let spec = if cfg!(windows) {
-            command_spec(vec!["cmd".to_string(), "/C".to_string(), "echo cccx-verification".to_string()])
+            command_spec(vec![
+                "cmd".to_string(),
+                "/C".to_string(),
+                "echo cccx-verification".to_string(),
+            ])
         } else {
-            command_spec(vec!["sh".to_string(), "-c".to_string(), "printf cccx-verification".to_string()])
+            command_spec(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf cccx-verification".to_string(),
+            ])
         };
         let run = run_verification(root.path(), &spec).await.unwrap().unwrap();
         assert_eq!(run.command.exit_code, 0);
@@ -148,7 +174,8 @@ mod tests {
         let protected = root.path().join("golden.txt");
         tokio::fs::write(&protected, "changed").await.unwrap();
         let mut spec = command_spec(vec!["definitely-not-run".to_string()]);
-        spec.protected_digests.insert("golden.txt".to_string(), "sha256:expected".to_string());
+        spec.protected_digests
+            .insert("golden.txt".to_string(), "sha256:expected".to_string());
         assert!(matches!(
             run_verification(root.path(), &spec).await,
             Err(VerificationRunnerError::ProtectedInputChanged { .. })

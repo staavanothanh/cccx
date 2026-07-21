@@ -101,19 +101,18 @@ async fn cccx_compaction_survivor_item(turn_context: &TurnContext) -> Option<Res
     }
     #[allow(deprecated)]
     let project_root = turn_context.cwd.as_path();
-    let graph = match cccx_task_graph_state::load_task_graph(project_root).await {
-        Ok(Some(graph)) => graph,
-        Ok(None) => return None,
+    let task_graph = match cccx_task_graph_state::load_task_graph(project_root).await {
+        Ok(Some(graph)) => match cccx_task_graph_state::compaction_survivor_json(&graph) {
+            Ok(json) => serde_json::from_str::<serde_json::Value>(&json).ok(),
+            Err(error) => {
+                tracing::warn!(%error, "failed to serialize cccx TaskGraph compaction survivor");
+                None
+            }
+        },
+        Ok(None) => None,
         Err(error) => {
             tracing::warn!(%error, "failed to load cccx TaskGraph for compaction survivor");
-            return None;
-        }
-    };
-    let task_graph = match cccx_task_graph_state::compaction_survivor_json(&graph) {
-        Ok(json) => json,
-        Err(error) => {
-            tracing::warn!(%error, "failed to serialize cccx TaskGraph compaction survivor");
-            return None;
+            None
         }
     };
     let memory = crate::project_memory::ProjectMemory::new(
@@ -128,9 +127,12 @@ async fn cccx_compaction_survivor_item(turn_context: &TurnContext) -> Option<Res
         }
     };
     let checkpoint_refs = checkpoint_refs(project_root).await;
+    if task_graph.is_none() && project_memory.is_empty() && checkpoint_refs.is_empty() {
+        return None;
+    }
     let json = serde_json::json!({
         "schema": "cccx.compaction_survivor.v1",
-        "task_graph": serde_json::from_str::<serde_json::Value>(&task_graph).ok(),
+        "task_graph": task_graph,
         "project_memory": project_memory,
         "checkpoint_refs": checkpoint_refs,
         // ADR state remains owned by codebase-memory-mcp; the index is not

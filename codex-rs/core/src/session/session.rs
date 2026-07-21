@@ -1130,7 +1130,22 @@ impl Session {
                     },
                     thread_id,
                     config.cwd.clone().to_path_buf(),
-                    session_configuration.provider.clone(),
+                    {
+                        let mut provider = session_configuration.provider.clone();
+                        if crate::cccx_secrets::inject_persisted_9router_key(
+                            &mut provider,
+                            config.codex_home.as_path(),
+                        )
+                        .is_err()
+                        {
+                            // Do not surface an underlying keyring error or any
+                            // secret-bearing value into session transcript/logs.
+                            tracing::warn!(
+                                "cccx could not load the persisted 9router credential; use CCCX_API_KEY or /config set CCCX_API_KEY"
+                            );
+                        }
+                        provider
+                    },
                     session_configuration.session_source.clone(),
                     session_configuration.originator.clone(),
                     config.model_verbosity,

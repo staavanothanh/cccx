@@ -1,5 +1,20 @@
 use super::*;
+use clap::CommandFactory;
 use pretty_assertions::assert_eq;
+
+#[test]
+fn help_uses_the_cccx_command_identity() {
+    let mut command = Cli::command();
+    let mut help = Vec::new();
+    command.write_long_help(&mut help).unwrap();
+    let help = String::from_utf8(help).unwrap();
+
+    assert!(help.contains("Usage: cccx exec [OPTIONS] [PROMPT]"));
+    assert!(!help.contains("Usage: codex exec"));
+    assert!(help.contains("$CCCX_HOME/config.toml"));
+    assert!(help.contains("version of cccx"));
+    assert!(help.contains("running cccx outside"));
+}
 
 #[test]
 fn resume_parses_prompt_after_global_flags() {

@@ -1,4 +1,7 @@
-use crate::cccx_runtime::{CccxSpawnRuntime, parent_capability_set_for_work_spec};
+use crate::cccx_runtime::{
+    CccxSpawnRuntime, parent_capability_set_for_work_spec,
+    permission_ceiling_from_approval_policy,
+};
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
@@ -25,6 +28,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -33,6 +37,13 @@ pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIME
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
 pub(crate) const MAX_SPAWN_AGENT_MODEL_OVERRIDES: usize = 5;
+
+fn filter_cx_extension_mcp_grants_for_projection(
+    parent_allowed_mcp_tools: &mut BTreeSet<String>,
+    catalog: &codex_core_plugins::cccx_extension::CccxExtensionMcpCatalog,
+) {
+    parent_allowed_mcp_tools.retain(|grant| catalog.grant_allowed_for_cx(grant));
+}
 
 pub(crate) fn model_supports_multi_agent_backend(
     model: &ModelPreset,
@@ -336,7 +347,7 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
         .into_iter()
         .map(|spec| spec.name().to_string())
         .collect();
-    let parent_allowed_mcp_tools = step_context
+    let mut parent_allowed_mcp_tools: BTreeSet<String> = step_context
         .mcp_tools()
         .await
         .iter()
@@ -349,21 +360,49 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
             ]
         })
         .collect();
+    if matches!(work_spec.harness, cccx_protocol::HarnessKind::Cx) {
+        let loaded_plugins = session
+            .services
+            .plugins_manager
+            .plugins_for_config(&turn.config.plugins_config_input())
+            .await;
+        let extension_mcp_catalog =
+            codex_core_plugins::cccx_extension::cccx_extension_mcp_catalog(&loaded_plugins);
+        filter_cx_extension_mcp_grants_for_projection(
+            &mut parent_allowed_mcp_tools,
+            &extension_mcp_catalog,
+        );
+    }
     let parent_model_routes = configured_model_catalog
         .available_models
         .iter()
         .cloned()
         .collect();
+    let parent_file_system_policy = turn.file_system_sandbox_policy();
+    let parent_writable_roots = if parent_file_system_policy.has_full_disk_write_access() {
+        work_spec.scope.canonical_paths.clone()
+    } else {
+        parent_file_system_policy
+            .get_writable_roots_with_cwd(config.cwd.as_path())
+            .into_iter()
+            .map(|root| root.root.to_string_lossy().to_string())
+            .collect()
+    };
+    let parent_permission_ceiling = permission_ceiling_from_approval_policy(
+        turn.approval_policy.value(),
+        config.cccx_child_permission_policy.clone(),
+    );
 
     // Parent capability is captured from the live turn registry, never from
     // the child's requested WorkSpec. A child can only receive the strict
     // intersection at this exact spawn boundary.
     let parent = parent_capability_set_for_work_spec(
-        &project_root,
         &work_spec,
         parent_allowed_tools,
         parent_allowed_mcp_tools,
+        parent_writable_roots,
         parent_model_routes,
+        parent_permission_ceiling,
     );
     crate::cccx_spawn::apply_cccx_harness_to_config(config, &parent, &work_spec)
         .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
@@ -383,6 +422,39 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
         tool_call_sequence_digest: None,
         parent_capabilities: Some(parent),
     })))
+}
+
+#[cfg(test)]
+mod cccx_plugin_projection_tests {
+    use super::*;
+    use codex_core_plugins::cccx_extension::CccxExtensionMcpCatalog;
+
+    #[test]
+    fn cx_projection_strips_incompatible_extension_mcp_but_preserves_builtin_mcp() {
+        let mut parent_allowed = BTreeSet::from([
+            "mcp:plugin.cc_only".to_string(),
+            "mcp:plugin.cx_read".to_string(),
+            "mcp:codebase-memory.search_graph".to_string(),
+        ]);
+        let catalog = CccxExtensionMcpCatalog {
+            extension_stable_ids: BTreeSet::from([
+                "mcp:plugin.cc_only".to_string(),
+                "mcp:plugin.cx_read".to_string(),
+            ]),
+            cx_compatible_stable_ids: BTreeSet::from(["mcp:plugin.cx_read".to_string()]),
+        };
+
+        filter_cx_extension_mcp_grants_for_projection(&mut parent_allowed, &catalog);
+
+        assert_eq!(
+            parent_allowed,
+            BTreeSet::from([
+                "mcp:plugin.cx_read".to_string(),
+                "mcp:codebase-memory.search_graph".to_string(),
+            ]),
+            "CX child projection must fail closed for extension MCP grants that are not CX-compatible while preserving non-extension MCP grants"
+        );
+    }
 }
 
 /// A structured CCCX spawn resolves opaque 9router model IDs at the scheduler

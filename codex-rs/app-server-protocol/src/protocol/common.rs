@@ -2039,6 +2039,7 @@ mod tests {
             request_id: request_id(),
             params: v2::CccxPermissionBatchApproveParams {
                 thread_id: "root-thread".to_string(),
+                request_ids: vec!["pr-1".to_string(), "pr-2".to_string()],
             },
         };
 
@@ -2053,7 +2054,10 @@ mod tests {
             json!({
                 "method": "cccx/permission/batch_approve",
                 "id": 1,
-                "params": { "threadId": "root-thread" }
+                "params": {
+                    "threadId": "root-thread",
+                    "requestIds": ["pr-1", "pr-2"]
+                }
             })
         );
     }

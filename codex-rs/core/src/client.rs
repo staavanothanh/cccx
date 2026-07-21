@@ -173,6 +173,32 @@ const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
 // period between stream events.
 const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
 const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
+
+/// The legacy realtime API accepts an endpoint override. CCCX cannot allow it:
+/// an override would turn a configured 9router session into a direct provider
+/// call, bypassing the only supported provider boundary.
+fn realtime_provider_boundary_allows(
+    provider_info: &ModelProviderInfo,
+    has_provider_override: bool,
+) -> Result<()> {
+    let boundary_active = codex_features::cccx_mvp::provider_boundary_active();
+    let bridge = ProviderGatewayBridge::new(boundary_active);
+    if !bridge.check_fail_closed(provider_info) {
+        return Err(CodexErr::InvalidRequest(format!(
+            "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
+             Configure a 9router route in your cccx config. The provider boundary is always active and cannot be disabled.",
+            provider_info.name,
+        )));
+    }
+    if boundary_active && has_provider_override {
+        return Err(CodexErr::InvalidRequest(
+            "cccx: realtime provider overrides are disabled; use the configured 9router route."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
@@ -986,6 +1012,10 @@ impl ModelClient {
     ) -> Result<RealtimeWebrtcCallStart> {
         // Create the media call over HTTP first, then retain matching auth so realtime can attach
         // the server-side control WebSocket to the call id from that HTTP response.
+        realtime_provider_boundary_allows(
+            self.state.provider.info(),
+            api_provider_override.is_some(),
+        )?;
         let client_setup = self.current_client_setup().await?;
         if let Some(header_value) = self.generate_attestation_header_for().await {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
@@ -1835,6 +1865,11 @@ impl ModelClientSession {
         Ok(())
     }
 
+    /// Realtime supports an upstream provider override for legacy callers. CCCX
+    /// deliberately rejects that escape hatch: every model-facing HTTP request
+    /// must use the configured 9router provider, just like Responses and Chat
+    /// Completions.
+
     fn finalize_gateway_provenance(
         &self,
         bridge: &ProviderGatewayBridge,
@@ -1940,6 +1975,7 @@ impl ModelClientSession {
                 self.begin_gateway_provenance(model_info);
             // Fail-closed: refuse to make a non-9router LLM call when cccx gate is on.
             self.check_cccx_gateway_fail_closed(&gateway_bridge)?;
+            self.seed_gateway_provenance(&gateway_provenance).await;
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
             let inference_trace_attempt = inference_trace.start_attempt();
@@ -1988,6 +2024,7 @@ impl ModelClientSession {
                         )
                         .await?,
                     );
+                    self.record_gateway_retry().await;
                     continue;
                 }
                 Err(err) => {
@@ -2053,6 +2090,7 @@ impl ModelClientSession {
                 self.begin_gateway_provenance(model_info);
             // Fail-closed: refuse to make a non-9router LLM call when cccx gate is on.
             self.check_cccx_gateway_fail_closed(&gateway_bridge)?;
+            self.seed_gateway_provenance(&gateway_provenance).await;
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.record_started(&request);
 
@@ -2112,6 +2150,7 @@ impl ModelClientSession {
                         )
                         .await?,
                     );
+                    self.record_gateway_retry().await;
                 }
                 Err(err) => {
                     if let Some(mut recorder) = self.finalize_gateway_provenance(
@@ -2191,6 +2230,7 @@ impl ModelClientSession {
             // WebSocket is also an LLM surface. Keep the 9router-only boundary
             // identical to the HTTP Responses and chat-completions transports.
             self.check_cccx_gateway_fail_closed(&gateway_bridge)?;
+            self.seed_gateway_provenance(&gateway_provenance).await;
             let request_session_telemetry = if warmup {
                 // `generate=false` prewarm is connection setup, not an inference request.
                 session_telemetry.clone()
@@ -2245,6 +2285,7 @@ impl ModelClientSession {
                         )
                         .await?,
                     );
+                    self.record_gateway_retry().await;
                     continue;
                 }
                 Err(err) => return Err(self.client.state.provider.map_api_error(err)),
@@ -2519,6 +2560,32 @@ impl ModelClientSession {
         .await
         {
             warn!(%error, "cccx: failed to persist provider gateway retry provenance");
+        }
+    }
+
+    /// Persist a retry-safe baseline before transport begins. A 401 or a
+    /// mid-stream disconnect can happen before a terminal stream recorder
+    /// exists; without this snapshot the retry counter has nothing factual to
+    /// mutate and silently disappears.
+    async fn seed_gateway_provenance(
+        &self,
+        provenance: &Option<cccx_provider_gateway::provenance::GatewayProvenance>,
+    ) {
+        if !codex_features::cccx_mvp::provider_boundary_active() {
+            return;
+        }
+        let Some(provenance) = provenance else {
+            return;
+        };
+        if let Err(error) = crate::cccx_gateway_provenance_state::save_gateway_provenance(
+            &self.client.state.project_root,
+            &self.client.state.thread_id.to_string(),
+            &self.gateway_provenance_scope_id,
+            provenance,
+        )
+        .await
+        {
+            warn!(%error, "cccx: failed to seed provider gateway provenance");
         }
     }
 

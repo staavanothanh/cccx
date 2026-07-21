@@ -119,7 +119,7 @@ pub(crate) struct AgentControl {
     cccx_runtime_active: Arc<AtomicUsize>,
     /// One root-owned queue shared by Main CC and every descendant session.
     cccx_permission_queue: Arc<CccxPermissionQueue>,
-    cccx_batch_approval_active: Arc<tokio::sync::Mutex<bool>>,
+    cccx_batch_approval_active: Arc<tokio::sync::Mutex<Option<VecDeque<String>>>>,
 }
 
 impl AgentControl {
@@ -287,6 +287,7 @@ impl AgentControl {
         request_id: &str,
         approve: bool,
     ) -> Result<(), String> {
+        self.cccx_permission_queue.ensure_active(request_id).await?;
         let native = self
             .cccx_permission_queue
             .native_approval(request_id)
@@ -338,9 +339,15 @@ impl AgentControl {
     /// Begin or advance a root-scoped batch of safe approvals. Each call only
     /// dispatches the currently active safe request; the native completion
     /// callback invokes this again after queue promotion.
-    pub(crate) async fn begin_cccx_safe_batch(&self) -> Result<bool, String> {
+    pub(crate) async fn begin_cccx_safe_batch(
+        &self,
+        request_ids: Vec<String>,
+    ) -> Result<bool, String> {
+        self.cccx_permission_queue
+            .validate_batch_request_ids(&request_ids)
+            .await?;
         let mut batch_active = self.cccx_batch_approval_active.lock().await;
-        *batch_active = true;
+        *batch_active = Some(VecDeque::from(request_ids));
         drop(batch_active);
         match self.advance_cccx_safe_batch().await {
             Ok(started) => Ok(started),
@@ -354,18 +361,26 @@ impl AgentControl {
     /// Stop a batch after an explicit denial or a delivery failure. A later
     /// ordinary approval must never accidentally continue a stale batch.
     pub(crate) async fn stop_cccx_safe_batch(&self) {
-        *self.cccx_batch_approval_active.lock().await = false;
+        *self.cccx_batch_approval_active.lock().await = None;
     }
 
     pub(crate) async fn advance_cccx_safe_batch(&self) -> Result<bool, String> {
         let mut batch_active = self.cccx_batch_approval_active.lock().await;
-        if !*batch_active {
-            return Ok(false);
-        }
-        let Some(request_id) = self.cccx_permission_queue.active_safe_request_id().await else {
-            *batch_active = false;
+        let Some(request_ids) = batch_active.as_mut() else {
             return Ok(false);
         };
+        let Some(request_id) = self.cccx_permission_queue.active_safe_request_id().await else {
+            *batch_active = None;
+            return Ok(false);
+        };
+        if request_ids.front() != Some(&request_id) {
+            *batch_active = None;
+            return Ok(false);
+        }
+        request_ids.pop_front();
+        if request_ids.is_empty() {
+            *batch_active = None;
+        }
         drop(batch_active);
         self.resolve_cccx_permission(&request_id, true).await?;
         Ok(true)

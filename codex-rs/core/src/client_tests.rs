@@ -88,6 +88,25 @@ use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
+
+#[test]
+fn cccx_realtime_boundary_rejects_non_9router_provider_and_overrides() {
+    let openai = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    assert!(
+        super::realtime_provider_boundary_allows(&openai, /*has_provider_override*/ false)
+            .is_err()
+    );
+
+    let nine_router = ModelProviderInfo::create_9router_provider();
+    assert!(
+        super::realtime_provider_boundary_allows(&nine_router, /*has_provider_override*/ false)
+            .is_ok()
+    );
+    assert!(
+        super::realtime_provider_boundary_allows(&nine_router, /*has_provider_override*/ true)
+            .is_err()
+    );
+}
 use wiremock::matchers::path;
 
 const TEST_CHATGPT_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6InVzZXItMTIzNDUiLCJ1c2VyX2lkIjoidXNlci0xMjM0NSIsImNoYXRncHRfcGxhbl90eXBlIjoicHJvIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.c2ln";

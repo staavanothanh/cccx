@@ -14,6 +14,9 @@ pub enum CccxCommand {
     Tasks,
     Permissions(PermissionsCommand),
     Remember { note: Option<String> },
+    /// Starts the two-step secure configuration flow. The value is deliberately
+    /// absent: secrets must never pass through the slash-command buffer.
+    ConfigSet { key: String },
     Cancel { all: bool, target: Option<String> },
     // Mode commands (design.md §8 + architecture.md §4)
     Mode(MainModeKind),
@@ -103,6 +106,7 @@ pub fn parse_cccx_command(input: &str) -> Result<Option<CccxCommand>, CommandPar
                 .filter(|note| !note.is_empty())
                 .map(str::to_string),
         })),
+        "/config" => parse_config(parts.collect()).map(Some),
         "/cancel" => parse_cancel(parts.collect()).map(Some),
         // Mode commands
         "/plan" => Ok(Some(CccxCommand::Mode(MainModeKind::Plan))),
@@ -149,6 +153,18 @@ pub fn parse_cccx_command(input: &str) -> Result<Option<CccxCommand>, CommandPar
             }))
         }
         other => Err(CommandParseError::UnknownCommand(other.to_string())),
+    }
+}
+
+fn parse_config(parts: Vec<&str>) -> Result<CccxCommand, CommandParseError> {
+    match parts.as_slice() {
+        ["set", key] => Ok(CccxCommand::ConfigSet {
+            key: (*key).to_string(),
+        }),
+        ["set"] => missing("/config set", "key"),
+        ["set", ..] => Err(CommandParseError::TooManyArguments("/config set")),
+        [] => missing("/config", "subcommand"),
+        [unknown, ..] => Err(CommandParseError::UnknownCommand(format!("/config {unknown}"))),
     }
 }
 
@@ -486,6 +502,27 @@ mod tests {
                 "design command should be registered: {command}"
             );
         }
+    }
+
+    #[test]
+    fn secure_config_set_requires_a_key_without_an_inline_value() {
+        assert_eq!(
+            parse_cccx_command("/config set CCCX_API_KEY"),
+            Ok(Some(CccxCommand::ConfigSet {
+                key: "CCCX_API_KEY".to_string(),
+            }))
+        );
+        assert!(matches!(
+            parse_cccx_command("/config set CCCX_API_KEY secret-value"),
+            Err(CommandParseError::TooManyArguments("/config set"))
+        ));
+        assert!(matches!(
+            parse_cccx_command("/config set"),
+            Err(CommandParseError::MissingArgument {
+                command: "/config set",
+                argument: "key"
+            })
+        ));
     }
 
     #[test]

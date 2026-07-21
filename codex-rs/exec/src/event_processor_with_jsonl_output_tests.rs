@@ -150,7 +150,7 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
 /// Phase 11: An Answer event emitted through the processor must become a
 /// cccx_headless::HeadlessEvent::Answer envelope.
 #[test]
-fn p11_agent_message_maps_to_answer_envelope() {
+fn cccx_jsonl_agent_message_maps_to_answer_envelope() {
     let processor = EventProcessorWithJsonOutput::new(None);
 
     let envelopes =
@@ -180,7 +180,7 @@ fn p11_agent_message_maps_to_answer_envelope() {
 
 /// Phase 11: An AgentMessage ThreadItemCompleted maps to Answer HeadlessEvent.
 #[test]
-fn p11_agent_message_maps_to_answer_event() {
+fn cccx_jsonl_agent_message_maps_to_answer_event() {
     let mut processor = EventProcessorWithJsonOutput::new(None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
@@ -212,7 +212,7 @@ fn p11_agent_message_maps_to_answer_event() {
 
 /// Phase 11: Error ThreadEvents map to Error HeadlessEvent with recoverable=false.
 #[test]
-fn p11_error_event_maps_to_headless_error_envelope() {
+fn cccx_jsonl_error_event_maps_to_headless_error_envelope() {
     let processor = EventProcessorWithJsonOutput::new(None);
 
     let envelopes = processor.map_thread_event_to_envelopes(ThreadEvent::Error(ThreadErrorEvent {
@@ -228,7 +228,7 @@ fn p11_error_event_maps_to_headless_error_envelope() {
 }
 
 #[test]
-fn p11_task_update_maps_only_typed_task_graph_runtime_event() {
+fn cccx_jsonl_task_update_maps_only_typed_task_graph_runtime_event() {
     let processor = EventProcessorWithJsonOutput::new(None);
 
     let todo =
@@ -259,7 +259,7 @@ fn p11_task_update_maps_only_typed_task_graph_runtime_event() {
 }
 
 #[test]
-fn p11_collab_runtime_state_does_not_emit_unknown_agent_update() {
+fn cccx_jsonl_collab_runtime_state_does_not_emit_unknown_agent_update() {
     let processor = EventProcessorWithJsonOutput::new(None);
     let mut agents_states = HashMap::new();
     agents_states.insert(
@@ -289,7 +289,7 @@ fn p11_collab_runtime_state_does_not_emit_unknown_agent_update() {
 }
 
 #[test]
-fn p11_agent_update_maps_typed_cccx_runtime_notification_with_model_route() {
+fn cccx_jsonl_agent_update_maps_typed_runtime_notification_with_model_route() {
     let mut processor = EventProcessorWithJsonOutput::new(None);
 
     let collected = processor.collect_thread_events(ServerNotification::CccxRuntimeAgentUpdate(
@@ -331,7 +331,7 @@ fn p11_agent_update_maps_typed_cccx_runtime_notification_with_model_route() {
 }
 
 #[test]
-fn p11_task_update_maps_typed_cccx_runtime_notification() {
+fn cccx_jsonl_task_update_maps_typed_runtime_notification() {
     let mut processor = EventProcessorWithJsonOutput::new(None);
     let collected = processor.collect_thread_events(ServerNotification::CccxRuntimeTaskUpdate(
         codex_app_server_protocol::CccxRuntimeTaskUpdateNotification {
@@ -354,7 +354,7 @@ fn p11_task_update_maps_typed_cccx_runtime_notification() {
 }
 
 #[test]
-fn p11_permission_denial_emits_approval_denied_envelope_and_exit_code_2() {
+fn cccx_jsonl_permission_denial_emits_approval_denied_envelope_and_exit_code_2() {
     let mut processor = EventProcessorWithJsonOutput::new(None);
 
     EventProcessor::on_approval_denied(&mut processor, "approval-2".to_string());
@@ -369,7 +369,7 @@ fn p11_permission_denial_emits_approval_denied_envelope_and_exit_code_2() {
 }
 
 #[test]
-fn p11_permission_request_precedes_headless_denial_with_typed_payload() {
+fn cccx_jsonl_permission_request_precedes_headless_denial_with_typed_payload() {
     let mut processor = EventProcessorWithJsonOutput::new(None);
     processor.cccx_session_id = Some("session-1".to_string());
     processor.cccx_turn_id = Some("turn-1".to_string());
@@ -403,7 +403,7 @@ fn p11_permission_request_precedes_headless_denial_with_typed_payload() {
 }
 
 #[test]
-fn p11_cancel_terminal_event_uses_cancelled_status_and_exit_code_3() {
+fn cccx_jsonl_cancel_terminal_event_uses_cancelled_status_and_exit_code_3() {
     let mut processor = EventProcessorWithJsonOutput::new(None);
 
     processor.collect_thread_events(ServerNotification::TurnCompleted(
@@ -431,7 +431,7 @@ fn p11_cancel_terminal_event_uses_cancelled_status_and_exit_code_3() {
 }
 
 #[test]
-fn p11_stdout_jsonl_and_one_final_terminal_semantics() {
+fn cccx_jsonl_stdout_jsonl_and_one_final_terminal_semantics() {
     let processor = EventProcessorWithJsonOutput::new(None);
 
     let mut envelopes =
@@ -473,7 +473,7 @@ fn p11_stdout_jsonl_and_one_final_terminal_semantics() {
 /// Phase 11: Turn completed produces exit_code=0; turn failed exit_code=1;
 /// turn interrupted exit_code=3.
 #[test]
-fn p11_exit_code_tracks_turn_status() {
+fn cccx_jsonl_exit_code_tracks_turn_status() {
     // Completed → exit_code=0
     {
         let mut processor = EventProcessorWithJsonOutput::new(None);
@@ -572,7 +572,7 @@ fn p11_exit_code_tracks_turn_status() {
 /// Even when emit_final_message_on_shutdown is false (turn failed/interrupted),
 /// the terminal event is always produced.
 #[test]
-fn p11_terminal_event_emitted_on_shutdown_even_when_message_suppressed() {
+fn cccx_jsonl_terminal_event_emitted_on_shutdown_even_when_message_suppressed() {
     let mut processor = EventProcessorWithJsonOutput::new(None);
     processor.cccx_exit_code = 1;
 
@@ -591,7 +591,7 @@ fn p11_terminal_event_emitted_on_shutdown_even_when_message_suppressed() {
 /// Phase 11 audit: on_approval_denied() sets exit_code=2.
 /// task.md line 813: "approval denied maps exit code 2."
 #[test]
-fn p11_audit_approval_denied_sets_exit_code_2() {
+fn cccx_jsonl_audit_approval_denied_sets_exit_code_2() {
     let mut processor = EventProcessorWithJsonOutput::new(None);
     assert_eq!(processor.cccx_exit_code, 0);
 
@@ -618,7 +618,7 @@ fn p11_audit_approval_denied_sets_exit_code_2() {
 /// Later WorkSpec enrichment can replace those values without changing the
 /// cccx.exec_event.v1 envelope shape.
 #[test]
-fn p11_audit_agent_update_model_route_shape_is_present() {
+fn cccx_jsonl_audit_agent_update_model_route_shape_is_present() {
     let _agent_update =
         cccx_headless::HeadlessEvent::AgentUpdate(cccx_headless::AgentUpdatePayload {
             logical_session_id: "ls-1".into(),

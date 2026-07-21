@@ -51,6 +51,42 @@ fn compacted_user_message(text: &str) -> CompactedUserMessage {
     }
 }
 
+#[tokio::test]
+async fn cccx_compaction_survivor_keeps_project_memory_without_a_task_graph() {
+    let (_session, turn_context) = crate::session::tests::make_session_and_context().await;
+    let project_root = turn_context.config.cwd.as_path();
+    assert!(
+        crate::cccx_task_graph_state::load_task_graph(project_root)
+            .await
+            .expect("read task graph")
+            .is_none(),
+        "test precondition: no TaskGraph"
+    );
+    crate::project_memory::ProjectMemory::new(
+        turn_context.config.codex_home.as_path(),
+        project_root,
+    )
+    .remember("retain this project memory through compaction")
+    .await
+    .expect("persist project memory");
+
+    let survivor = cccx_compaction_survivor_item(&turn_context)
+        .await
+        .expect("Main CC memory must survive compaction without a TaskGraph");
+    let ResponseItem::Message { content, .. } = survivor else {
+        panic!("expected compaction survivor message");
+    };
+    let text = content
+        .iter()
+        .find_map(|item| match item {
+            ContentItem::InputText { text } => Some(text),
+            _ => None,
+        })
+        .expect("survivor input text");
+    assert!(text.contains("retain this project memory through compaction"));
+    assert!(text.contains("\"task_graph\":null"));
+}
+
 #[test]
 fn content_items_to_text_joins_non_empty_segments() {
     let items = vec![

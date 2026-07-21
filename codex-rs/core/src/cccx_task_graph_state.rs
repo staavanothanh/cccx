@@ -5,22 +5,28 @@
 //! completion semantics.
 
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+use std::process;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
+use chrono::Utc;
 use cccx_mode::CccxModeState;
 use cccx_task_graph::ActiveAttemptMetadata;
 use cccx_task_graph::TaskGraph;
+use serde::Deserialize;
+use serde::Serialize;
 use thiserror::Error;
 use tokio::fs;
 
 const CCCX_STATE_DIR: &str = ".cccx/state";
 const TASK_GRAPH_FILE: &str = "task-graph.json";
+const STATE_WRITER_LOCK_FILE: &str = ".writer.lock";
 static STATE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PROJECT_WRITERS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
@@ -55,6 +61,8 @@ pub enum TaskGraphStateError {
     StopBlocked(Vec<String>),
     #[error("task graph mutation rejected: {0}")]
     Mutation(String),
+    #[error("state writer lease for {path} is already held by live process {pid}")]
+    WriterLeaseContended { path: PathBuf, pid: u32 },
 }
 
 pub fn task_graph_path(project_root: &Path) -> PathBuf {
@@ -76,6 +84,16 @@ pub async fn load_task_graph(
 }
 
 pub async fn save_task_graph(
+    project_root: &Path,
+    task_graph: &TaskGraph,
+) -> Result<(), TaskGraphStateError> {
+    let writer = project_writer(project_root);
+    let _process_lease = writer.lock().await;
+    let _state_lease = StateWriterLease::acquire(project_root).await?;
+    write_task_graph(project_root, task_graph).await
+}
+
+async fn write_task_graph(
     project_root: &Path,
     task_graph: &TaskGraph,
 ) -> Result<(), TaskGraphStateError> {
@@ -112,10 +130,11 @@ where
     F: FnOnce(&mut TaskGraph) -> Result<T, TaskGraphStateError>,
 {
     let writer = project_writer(project_root);
-    let _lease = writer.lock().await;
+    let _process_lease = writer.lock().await;
+    let _state_lease = StateWriterLease::acquire(project_root).await?;
     let mut graph = load_task_graph(project_root).await?.unwrap_or(initial);
     let result = mutate(&mut graph)?;
-    save_task_graph(project_root, &graph).await?;
+    write_task_graph(project_root, &graph).await?;
     Ok(result)
 }
 
@@ -156,11 +175,174 @@ fn project_writer(project_root: &Path) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
+fn state_dir_path(project_root: &Path) -> PathBuf {
+    project_root.join(CCCX_STATE_DIR)
+}
+
+fn state_writer_lock_path(project_root: &Path) -> PathBuf {
+    state_dir_path(project_root).join(STATE_WRITER_LOCK_FILE)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StateWriterLeaseRecord {
+    pid: u32,
+    token: String,
+    acquired_at: String,
+}
+
+struct StateWriterLease {
+    path: PathBuf,
+    token: String,
+}
+
+impl StateWriterLease {
+    async fn acquire(project_root: &Path) -> Result<Self, TaskGraphStateError> {
+        let state_dir = state_dir_path(project_root);
+        fs::create_dir_all(&state_dir)
+            .await
+            .map_err(|source| TaskGraphStateError::CreateDir {
+                path: state_dir.clone(),
+                source,
+            })?;
+
+        let path = state_writer_lock_path(project_root);
+        let token = format!(
+            "{}-{}",
+            process::id(),
+            STATE_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let record = StateWriterLeaseRecord {
+            pid: process::id(),
+            token: token.clone(),
+            acquired_at: Utc::now().to_rfc3339(),
+        };
+        let bytes = serde_json::to_vec(&record).map_err(TaskGraphStateError::Serialize)?;
+
+        match Self::try_create(&path, &bytes).await {
+            Ok(()) => {
+                return Ok(Self { path, token });
+            }
+            Err(source) if source.kind() == ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                return Err(TaskGraphStateError::Write { path, source });
+            }
+        }
+
+        let live_pid = live_lease_pid(&path).await?;
+        if process_is_live(live_pid) {
+            return Err(TaskGraphStateError::WriterLeaseContended {
+                path,
+                pid: live_pid,
+            });
+        }
+
+        fs::remove_file(&path)
+            .await
+            .map_err(|source| TaskGraphStateError::Write {
+                path: path.clone(),
+                source,
+            })?;
+        match Self::try_create(&path, &bytes).await {
+            Ok(()) => Ok(Self { path, token }),
+            Err(source) if source.kind() == ErrorKind::AlreadyExists => {
+                let live_pid = live_lease_pid(&path).await?;
+                Err(TaskGraphStateError::WriterLeaseContended {
+                    path,
+                    pid: live_pid,
+                })
+            }
+            Err(source) => Err(TaskGraphStateError::Write { path, source }),
+        }
+    }
+
+    async fn try_create(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .await?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(bytes).await?;
+        file.sync_all().await
+    }
+}
+
+impl Drop for StateWriterLease {
+    fn drop(&mut self) {
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return;
+        };
+        let Ok(record) = serde_json::from_slice::<StateWriterLeaseRecord>(&bytes) else {
+            return;
+        };
+        if record.token == self.token {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+async fn live_lease_pid(path: &Path) -> Result<u32, TaskGraphStateError> {
+    let bytes = fs::read(path)
+        .await
+        .map_err(|source| TaskGraphStateError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let record: StateWriterLeaseRecord =
+        serde_json::from_slice(&bytes).map_err(|source| TaskGraphStateError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(record.pid)
+}
+
+fn process_is_live(pid: u32) -> bool {
+    if pid == process::id() {
+        return true;
+    }
+    platform_process_is_live(pid)
+}
+
+#[cfg(windows)]
+fn platform_process_is_live(pid: u32) -> bool {
+    let Ok(output) = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+    else {
+        return true;
+    };
+    if !output.status.success() {
+        return true;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let pid_field = format!("\",\"{pid}\",");
+    stdout
+        .lines()
+        .any(|line| line.starts_with('"') && line.contains(&pid_field))
+}
+
+#[cfg(unix)]
+fn platform_process_is_live(pid: u32) -> bool {
+    let pid = pid as libc::pid_t;
+    // SAFETY: kill(pid, 0) does not send a signal; it only asks the OS whether
+    // a process with this pid is visible to the current process.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn platform_process_is_live(_pid: u32) -> bool {
+    true
+}
+
 async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), TaskGraphStateError> {
     let sequence = STATE_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = path.with_file_name(format!(
         ".{}.{}.tmp",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("state"),
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state"),
         sequence
     ));
     fs::write(&temporary, bytes)
@@ -239,7 +421,8 @@ pub async fn save_mode_state(
     // the same per-project lease as graph mutations so a mode write cannot
     // interleave with a lifecycle transaction for the same project.
     let writer = project_writer(project_root);
-    let _lease = writer.lock().await;
+    let _process_lease = writer.lock().await;
+    let _state_lease = StateWriterLease::acquire(project_root).await?;
     let path = mode_state_path(project_root);
     let Some(parent) = path.parent() else {
         return Err(TaskGraphStateError::Write {
@@ -261,10 +444,10 @@ pub async fn save_mode_state(
 mod tests {
     use std::collections::BTreeMap;
 
+    use cccx_policy::MainMode;
     use cccx_task_graph::TaskNode;
     use cccx_task_graph::TaskStatus;
     use cccx_task_graph::VerificationSpec;
-    use cccx_policy::MainMode;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -324,10 +507,14 @@ mod tests {
     async fn incomplete_temporary_write_leaves_previous_task_graph_readable() {
         let temp_dir = TempDir::new().expect("temp dir");
         let graph = TaskGraph::new("graph-1", "persist");
-        save_task_graph(temp_dir.path(), &graph).await.expect("save graph");
+        save_task_graph(temp_dir.path(), &graph)
+            .await
+            .expect("save graph");
         let path = task_graph_path(temp_dir.path());
         let temporary = path.with_file_name(".task-graph.json.crash.tmp");
-        fs::write(&temporary, b"{ incomplete").await.expect("write interrupted temp");
+        fs::write(&temporary, b"{ incomplete")
+            .await
+            .expect("write interrupted temp");
 
         assert_eq!(
             load_task_graph(temp_dir.path())
@@ -362,23 +549,131 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_state_writer_lease_fails_closed_on_contention() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let _held = StateWriterLease::acquire(temp_dir.path())
+            .await
+            .expect("first lease");
+
+        assert!(matches!(
+            StateWriterLease::acquire(temp_dir.path()).await,
+            Err(TaskGraphStateError::WriterLeaseContended { pid, .. })
+                if pid == std::process::id()
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_state_writer_lease_from_dead_process_is_recovered() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let state_dir = state_dir_path(temp_dir.path());
+        fs::create_dir_all(&state_dir).await.expect("state dir");
+        let lock_path = state_writer_lock_path(temp_dir.path());
+        let stale_record = StateWriterLeaseRecord {
+            pid: 999_999,
+            token: "dead-owner".to_string(),
+            acquired_at: "2026-07-21T00:00:00Z".to_string(),
+        };
+        fs::write(
+            &lock_path,
+            serde_json::to_vec(&stale_record).expect("lease json"),
+        )
+        .await
+        .expect("stale lock");
+
+        let graph = TaskGraph::new("graph-1", "stale lease recovery");
+        save_task_graph(temp_dir.path(), &graph)
+            .await
+            .expect("save after stale lock");
+
+        assert_eq!(
+            load_task_graph(temp_dir.path())
+                .await
+                .expect("load graph")
+                .expect("graph exists"),
+            graph
+        );
+        assert!(
+            !lock_path.exists(),
+            "the recovered writer lease must be released after the write"
+        );
+    }
+
+    #[tokio::test]
+    async fn interprocess_state_writer_lease_fails_closed_on_contention() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let ready_path = temp_dir.path().join("child-ready");
+        let release_path = temp_dir.path().join("child-release");
+        let mut child = std::process::Command::new(std::env::current_exe().expect("current exe"))
+            .arg("state_writer_lease_child_process_entrypoint")
+            .env("CCCX_STATE_LEASE_CHILD_ROOT", temp_dir.path())
+            .env("CCCX_STATE_LEASE_CHILD_READY", &ready_path)
+            .env("CCCX_STATE_LEASE_CHILD_RELEASE", &release_path)
+            .spawn()
+            .expect("spawn lease holder child");
+
+        wait_for_path(&ready_path);
+        let child_pid = child.id();
+        assert!(matches!(
+            StateWriterLease::acquire(temp_dir.path()).await,
+            Err(TaskGraphStateError::WriterLeaseContended { pid, .. }) if pid == child_pid
+        ));
+
+        std::fs::write(&release_path, b"release").expect("release child");
+        let status = child.wait().expect("wait child");
+        assert!(status.success(), "lease holder child failed: {status}");
+    }
+
+    #[tokio::test]
+    async fn state_writer_lease_child_process_entrypoint() {
+        let Some(root) = std::env::var_os("CCCX_STATE_LEASE_CHILD_ROOT") else {
+            return;
+        };
+        let ready_path =
+            PathBuf::from(std::env::var_os("CCCX_STATE_LEASE_CHILD_READY").expect("ready path"));
+        let release_path = PathBuf::from(
+            std::env::var_os("CCCX_STATE_LEASE_CHILD_RELEASE").expect("release path"),
+        );
+        let root = PathBuf::from(root);
+        let _lease = StateWriterLease::acquire(&root).await.expect("child lease");
+        std::fs::write(&ready_path, b"ready").expect("signal ready");
+        for _ in 0..100 {
+            if release_path.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for release marker");
+    }
+
+    fn wait_for_path(path: &Path) {
+        for _ in 0..100 {
+            if path.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("timed out waiting for {}", path.display());
+    }
+
+    #[tokio::test]
     async fn task_goal_condition_is_persisted_without_verifying_the_task() {
         let temp_dir = TempDir::new().expect("temp dir");
         let mut graph = TaskGraph::new("graph-1", "goal");
         graph
             .add_task(TaskNode::new("T1", "first", verification_spec()))
             .expect("add task");
-        save_task_graph(temp_dir.path(), &graph).await.expect("save graph");
-        set_task_goal_condition(
-            temp_dir.path(),
-            "T1",
-            "focused tests must pass".to_string(),
-        )
-        .await
-        .expect("set goal");
+        save_task_graph(temp_dir.path(), &graph)
+            .await
+            .expect("save graph");
+        set_task_goal_condition(temp_dir.path(), "T1", "focused tests must pass".to_string())
+            .await
+            .expect("set goal");
         let restored = load_task_graph(temp_dir.path()).await.unwrap().unwrap();
         let task = &restored.tasks["T1"];
-        assert_eq!(task.goal_condition.as_deref(), Some("focused tests must pass"));
+        assert_eq!(
+            task.goal_condition.as_deref(),
+            Some("focused tests must pass")
+        );
         assert_eq!(task.goal_condition_met, None);
         assert!(!task.is_verified());
     }
@@ -408,8 +703,12 @@ mod tests {
                 },
             )
             .expect("start attempt");
-        save_task_graph(temp_dir.path(), &graph).await.expect("save graph");
-        let active = load_active_attempts(temp_dir.path()).await.expect("load active");
+        save_task_graph(temp_dir.path(), &graph)
+            .await
+            .expect("save graph");
+        let active = load_active_attempts(temp_dir.path())
+            .await
+            .expect("load active");
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].attempt_id, "attempt-1");
         assert_eq!(active[0].logical_session_id, "logical-1");
@@ -430,12 +729,14 @@ mod tests {
         let (graph_write, mode_write) = tokio::join!(graph_write, mode_write);
         graph_write.expect("graph transaction");
         mode_write.expect("mode transaction");
-        assert!(load_task_graph(temp_dir.path())
-            .await
-            .expect("load graph")
-            .expect("graph exists")
-            .tasks
-            .contains_key("T1"));
+        assert!(
+            load_task_graph(temp_dir.path())
+                .await
+                .expect("load graph")
+                .expect("graph exists")
+                .tasks
+                .contains_key("T1")
+        );
         assert!(matches!(
             load_mode_state(temp_dir.path())
                 .await

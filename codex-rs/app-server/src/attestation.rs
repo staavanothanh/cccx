@@ -7,6 +7,7 @@ use codex_app_server_protocol::AttestationGenerateResponse;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_core::AttestationContext;
 use codex_core::AttestationProvider;
+use codex_core::BypassSandboxAttestationFuture;
 use codex_core::GenerateAttestationFuture;
 use serde::Serialize;
 use tokio::time::Duration;
@@ -57,6 +58,20 @@ impl AttestationProvider for AppServerAttestationProvider {
             .await
             .and_then(|value| HeaderValue::from_bytes(value.as_bytes()).ok())
         })
+    }
+
+    fn bypass_sandbox_attestation_for(
+        &self,
+        _context: AttestationContext,
+    ) -> BypassSandboxAttestationFuture<'_> {
+        // The app-server `AttestationGenerate` capability produces an opaque
+        // upstream model-request attestation header. It does not prove that the
+        // local tool executor for this thread is isolated by an OS sandbox.
+        // Until the app-server protocol exposes a backend-verified sandbox
+        // isolation proof bound to the current thread/session, Bypass must stay
+        // fail-closed rather than treating model attestation as local sandbox
+        // attestation.
+        Box::pin(async { None })
     }
 }
 
@@ -172,8 +187,14 @@ fn app_server_attestation_header_value(
 #[cfg(test)]
 mod tests {
     use super::AppServerAttestationStatus;
+    use super::AppServerAttestationProvider;
     use super::app_server_attestation_header_value;
+    use crate::thread_state::ThreadStateManager;
+    use codex_core::AttestationContext;
+    use codex_core::AttestationProvider;
+    use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
+    use std::sync::Weak;
 
     #[test]
     fn app_server_attestation_header_value_wraps_opaque_client_payloads() {
@@ -216,5 +237,21 @@ mod tests {
             ),
             Some(r#"{"v":1,"s":4}"#.to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn app_server_provider_does_not_mint_bypass_sandbox_attestation() {
+        let provider = AppServerAttestationProvider {
+            outgoing: Weak::new(),
+            thread_state_manager: ThreadStateManager::new(),
+        };
+
+        let attestation = provider
+            .bypass_sandbox_attestation_for(AttestationContext {
+                thread_id: ThreadId::default(),
+            })
+            .await;
+
+        assert_eq!(attestation, None);
     }
 }

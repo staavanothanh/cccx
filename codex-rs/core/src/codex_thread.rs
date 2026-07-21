@@ -475,11 +475,14 @@ impl CodexThread {
     }
 
     /// Start a sequential batch for safe CCCX permission requests.
-    pub async fn begin_cccx_safe_permission_batch(&self) -> Result<bool, String> {
+    pub async fn begin_cccx_safe_permission_batch(
+        &self,
+        request_ids: Vec<String>,
+    ) -> Result<bool, String> {
         self.session
             .services
             .agent_control
-            .begin_cccx_safe_batch()
+            .begin_cccx_safe_batch(request_ids)
             .await
     }
 
