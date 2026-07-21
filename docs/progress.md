@@ -3053,11 +3053,10 @@ cargo +1.95.0 test -p codex-exec p11_task_update_maps_typed_cccx_runtime_notific
 cargo +1.95.0 test -p codex-exec p11_task_update_maps_only_typed_task_graph_runtime_event --lib -j 1 -- --test-threads=1
 ```
 
-Still open in Phase 7: a production retry counter connected to the retry loop,
-an explicit 9router fallback metadata contract, and fully wiring the existing
-catalog resolver (user > role preset > typed suggestion > session default >
-inherit main requested) with capability-profile validation. These remain open
-rather than being inferred from current model strings.
+Still open in Phase 7: fully wiring a trusted user-only per-spawn override,
+the owner catalog's real capability profiles, and `inherit_main_effective`
+from a prior factual gateway route. These remain open rather than being
+inferred from current model strings.
 
 ### 2026-07-21 — Typed spawn model-route resolution
 
@@ -3084,3 +3083,27 @@ Remaining model-route work: richer owner catalog capability profiles are not
 available in the current opaque-ID catalog, so capability-profile matching
 cannot honestly be claimed yet. `inherit_main_effective` also remains
 fail-closed until a prior factual gateway effective route is available.
+
+### 2026-07-21 — Turn-scoped gateway retry and transport-fallback provenance
+
+- Gateway provenance now has a `ModelClientSession` scope in addition to its
+  worker thread identity. A retryable failure records its retry count in that
+  scope; the succeeding attempt merges only retry and locally observed
+  transport-fallback facts before terminal persistence. A subsequent prompt
+  gets a new scope and cannot inherit stale retry data.
+- The existing WebSocket-to-HTTP fallback is recorded as
+  `responses_websocket->responses_http` in a separate
+  `transport_fallbacks` field. It is intentionally not placed in
+  `fallback_chain`, which remains reserved for factual 9router downstream
+  route/provider metadata.
+- Router effective route/provider/model are still never inferred from the
+  configured opaque model ID. The updated aggregate therefore adds only facts
+  CCCX itself observed: retry count and its transport transition.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 test -p cccx-provider-gateway provenance --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-core cccx_gateway_provenance_ --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-core cccx_gateway_provenance_state::tests:: --lib -j 1 -- --test-threads=1
+```

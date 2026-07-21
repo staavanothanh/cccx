@@ -715,6 +715,7 @@ async fn cccx_gateway_provenance_is_persisted_only_after_stream_terminal() -> an
     let recorder = super::CccxGatewayAttemptRecorder {
         project_root: project.path().to_path_buf(),
         thread_id: "child-terminal".to_string(),
+        attempt_scope_id: "turn-terminal".to_string(),
         provenance,
     };
     let api_stream = futures::stream::iter([Ok(ResponseEvent::Completed {
@@ -754,6 +755,7 @@ async fn cccx_gateway_provenance_records_only_observed_server_model_at_terminal(
     let recorder = super::CccxGatewayAttemptRecorder {
         project_root: project.path().to_path_buf(),
         thread_id: "child-observed-model".to_string(),
+        attempt_scope_id: "turn-observed-model".to_string(),
         provenance: cccx_provider_gateway::provenance::GatewayProvenance::new(
             "oc/deepseek-v4-flash-free".to_string(),
         ),

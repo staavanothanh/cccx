@@ -593,6 +593,10 @@ pub struct ModelClient {
 pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
+    /// Stable for this `ModelClientSession` (one Codex turn), and deliberately
+    /// distinct from the thread id. It prevents retry provenance from one
+    /// user prompt being merged into a later prompt on the same thread.
+    gateway_provenance_scope_id: String,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -803,6 +807,7 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
+            gateway_provenance_scope_id: uuid::Uuid::new_v4().to_string(),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -1855,6 +1860,7 @@ impl ModelClientSession {
             .map(|provenance| CccxGatewayAttemptRecorder {
                 project_root: self.client.state.project_root.clone(),
                 thread_id: self.client.state.thread_id.to_string(),
+                attempt_scope_id: self.gateway_provenance_scope_id.clone(),
                 provenance,
             })
     }
@@ -2400,7 +2406,9 @@ impl ModelClientSession {
                 Ok(())
             }
             Ok(WebsocketStreamOutcome::FallbackToHttp) => {
-                self.try_switch_fallback_transport(session_telemetry, model_info);
+                if self.try_switch_fallback_transport(session_telemetry, model_info) {
+                    self.record_gateway_transport_fallback().await;
+                }
                 Ok(())
             }
             Err(err) => Err(err),
@@ -2449,7 +2457,9 @@ impl ModelClientSession {
                     {
                         WebsocketStreamOutcome::Stream(stream) => return Ok(stream),
                         WebsocketStreamOutcome::FallbackToHttp => {
-                            self.try_switch_fallback_transport(session_telemetry, model_info);
+                            if self.try_switch_fallback_transport(session_telemetry, model_info) {
+                                self.record_gateway_transport_fallback().await;
+                            }
                         }
                     }
                 }
@@ -2495,6 +2505,37 @@ impl ModelClientSession {
             .force_http_fallback(session_telemetry, model_info);
         self.websocket_session = WebsocketSession::default();
         activated
+    }
+
+    pub(crate) async fn record_gateway_retry(&self) {
+        if !codex_features::cccx_mvp::provider_boundary_active() {
+            return;
+        }
+        if let Err(error) = crate::cccx_gateway_provenance_state::record_gateway_retry(
+            &self.client.state.project_root,
+            &self.client.state.thread_id.to_string(),
+            &self.gateway_provenance_scope_id,
+        )
+        .await
+        {
+            warn!(%error, "cccx: failed to persist provider gateway retry provenance");
+        }
+    }
+
+    pub(crate) async fn record_gateway_transport_fallback(&self) {
+        if !codex_features::cccx_mvp::provider_boundary_active() {
+            return;
+        }
+        if let Err(error) = crate::cccx_gateway_provenance_state::record_gateway_transport_fallback(
+            &self.client.state.project_root,
+            &self.client.state.thread_id.to_string(),
+            &self.gateway_provenance_scope_id,
+            "responses_websocket->responses_http",
+        )
+        .await
+        {
+            warn!(%error, "cccx: failed to persist provider gateway transport fallback");
+        }
     }
 }
 
@@ -2572,6 +2613,7 @@ const STREAM_DROPPED_REASON: &str = "response stream dropped before provider ter
 struct CccxGatewayAttemptRecorder {
     project_root: PathBuf,
     thread_id: String,
+    attempt_scope_id: String,
     provenance: cccx_provider_gateway::provenance::GatewayProvenance,
 }
 
@@ -2588,10 +2630,21 @@ impl CccxGatewayAttemptRecorder {
     }
 
     async fn persist_terminal(&mut self, status: &str) {
+        if let Err(error) = crate::cccx_gateway_provenance_state::merge_attempt_aggregation(
+            &self.project_root,
+            &self.thread_id,
+            &self.attempt_scope_id,
+            &mut self.provenance,
+        )
+        .await
+        {
+            warn!(%error, thread_id = %self.thread_id, "cccx: failed to merge provider gateway retry provenance");
+        }
         self.provenance.record_stream_termination(status);
         if let Err(error) = crate::cccx_gateway_provenance_state::save_gateway_provenance(
             &self.project_root,
             &self.thread_id,
+            &self.attempt_scope_id,
             &self.provenance,
         )
         .await

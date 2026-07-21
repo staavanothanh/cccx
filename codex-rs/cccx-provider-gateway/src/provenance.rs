@@ -8,6 +8,11 @@ pub struct GatewayProvenance {
     pub effective_model: Option<String>,
     pub upstream_request_id: Option<String>,
     pub fallback_chain: Vec<String>,
+    /// Client-observed transport transitions. This is deliberately separate
+    /// from `fallback_chain`, which is reserved for factual router/provider
+    /// fallback metadata.
+    #[serde(default)]
+    pub transport_fallbacks: Vec<String>,
     pub retry_count: u32,
     /// Which `FallbackPolicyId` 9router applied for this request.
     pub fallback_policy_id: Option<crate::FallbackPolicyId>,
@@ -27,6 +32,7 @@ impl GatewayProvenance {
             effective_model: None,
             upstream_request_id: None,
             fallback_chain: Vec::new(),
+            transport_fallbacks: Vec::new(),
             retry_count: 0,
             fallback_policy_id: None,
             wire_api: None,
@@ -36,6 +42,16 @@ impl GatewayProvenance {
 
     pub fn record_retry(&mut self) {
         self.retry_count += 1;
+    }
+
+    pub fn record_transport_fallback(&mut self, transition: &str) {
+        if !self
+            .transport_fallbacks
+            .iter()
+            .any(|item| item == transition)
+        {
+            self.transport_fallbacks.push(transition.to_string());
+        }
     }
 
     pub fn record_effective(&mut self, route_id: String, provider: String, model: String) {
@@ -133,6 +149,7 @@ mod tests {
         let mut provenance = GatewayProvenance::new("oc/deepseek-v4-flash-free".to_string());
         provenance.record_fallback_policy(crate::FallbackPolicyId::Strict);
         provenance.record_wire_api("chat_completions");
+        provenance.record_transport_fallback("responses_websocket->responses_http");
         provenance.record_stream_termination("completed");
 
         assert_eq!(
@@ -143,6 +160,10 @@ mod tests {
         assert_eq!(
             provenance.stream_termination_status.as_deref(),
             Some("completed")
+        );
+        assert_eq!(
+            provenance.transport_fallbacks,
+            vec!["responses_websocket->responses_http"]
         );
     }
 

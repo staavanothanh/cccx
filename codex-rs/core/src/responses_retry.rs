@@ -34,6 +34,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
             &turn_context.model_info,
         )
     {
+        client_session.record_gateway_transport_fallback().await;
         sess.send_event(
             turn_context,
             EventMsg::Warning(WarningEvent {
@@ -47,6 +48,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
 
     if *retries < max_retries {
         *retries += 1;
+        client_session.record_gateway_retry().await;
         let retry_count = *retries;
         let delay = retry_delay_for_stream_error(
             &err,
@@ -140,10 +142,7 @@ mod tests {
 
     #[test]
     fn retry_after_overrides_cccx_gateway_backoff() {
-        let err = CodexErr::Stream(
-            "rate limited".to_string(),
-            Some(Duration::from_secs(23)),
-        );
+        let err = CodexErr::Stream("rate limited".to_string(), Some(Duration::from_secs(23)));
 
         assert_eq!(
             retry_delay_for_stream_error(&err, 1, true),
