@@ -698,7 +698,10 @@ async fn response_stream_eof_after_completed_is_clean_terminal() -> anyhow::Resu
         }
     }
 
-    assert!(saw_completed, "mapped stream should forward response.completed");
+    assert!(
+        saw_completed,
+        "mapped stream should forward response.completed"
+    );
     Ok(())
 }
 
@@ -736,8 +739,68 @@ async fn cccx_gateway_provenance_is_persisted_only_after_stream_terminal() -> an
     )
     .await?
     .expect("terminal stream should persist provenance");
-    assert_eq!(stored.stream_termination_status.as_deref(), Some("completed"));
+    assert_eq!(
+        stored.stream_termination_status.as_deref(),
+        Some("completed")
+    );
     assert_eq!(stored.wire_api.as_deref(), Some("chat_completions"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn cccx_gateway_provenance_records_only_observed_server_model_at_terminal()
+-> anyhow::Result<()> {
+    let project = TempDir::new()?;
+    let recorder = super::CccxGatewayAttemptRecorder {
+        project_root: project.path().to_path_buf(),
+        thread_id: "child-observed-model".to_string(),
+        provenance: cccx_provider_gateway::provenance::GatewayProvenance::new(
+            "oc/deepseek-v4-flash-free".to_string(),
+        ),
+    };
+    let (tx_event, rx_event) = tokio::sync::mpsc::channel(4);
+    tx_event
+        .send(Ok(ResponseEvent::ServerModel(
+            "observed-router-model".to_string(),
+        )))
+        .await?;
+    tx_event
+        .send(Ok(ResponseEvent::Completed {
+            response_id: "resp-observed-model".to_string(),
+            token_usage: None,
+            end_turn: Some(true),
+        }))
+        .await?;
+    drop(tx_event);
+    let (mut stream, _) = super::map_response_stream(
+        codex_api::ResponseStream {
+            rx_event,
+            upstream_request_id: Some("upstream-observed-id".to_string()),
+        },
+        test_session_telemetry(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        Some(recorder),
+    );
+
+    while stream.next().await.is_some() {}
+
+    let stored = super::super::cccx_gateway_provenance_state::load_gateway_provenance(
+        project.path(),
+        "child-observed-model",
+    )
+    .await?
+    .expect("terminal stream should persist provenance");
+    assert_eq!(
+        stored.effective_model.as_deref(),
+        Some("observed-router-model")
+    );
+    assert_eq!(stored.effective_route_id, None);
+    assert_eq!(stored.effective_provider, None);
+    assert_eq!(
+        stored.upstream_request_id.as_deref(),
+        Some("upstream-observed-id")
+    );
     Ok(())
 }
 
@@ -749,7 +812,9 @@ async fn response_stream_error_after_completed_is_ignored() -> anyhow::Result<()
             token_usage: None,
             end_turn: Some(true),
         }),
-        Err(ApiError::Stream("late disconnect after completed".to_string())),
+        Err(ApiError::Stream(
+            "late disconnect after completed".to_string(),
+        )),
     ]);
     let (mut stream, _) = super::map_response_events(
         Some("req-123".to_string()),

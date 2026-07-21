@@ -1,4 +1,5 @@
 use super::*;
+use crate::exec_events::TodoListItem;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::HashMap;
@@ -227,42 +228,34 @@ fn p11_error_event_maps_to_headless_error_envelope() {
 }
 
 #[test]
-fn p11_task_update_maps_todo_runtime_events() {
+fn p11_task_update_maps_only_typed_task_graph_runtime_event() {
     let processor = EventProcessorWithJsonOutput::new(None);
 
-    let started =
-        processor.map_thread_event_to_envelopes(ThreadEvent::ItemStarted(ItemStartedEvent {
-            item: ExecThreadItem {
-                id: "task-list-1".to_string(),
-                details: ThreadItemDetails::TodoList(TodoListItem {
-                    items: vec![TodoItem {
-                        text: "write tests".to_string(),
-                        completed: false,
-                    }],
-                }),
-            },
-        }));
-    let completed =
+    let todo =
         processor.map_thread_event_to_envelopes(ThreadEvent::ItemCompleted(ItemCompletedEvent {
             item: ExecThreadItem {
-                id: "task-list-1".to_string(),
+                id: "model-todo-list".to_string(),
                 details: ThreadItemDetails::TodoList(TodoListItem { items: Vec::new() }),
             },
         }));
+    assert!(
+        todo.is_empty(),
+        "model todo lists are not TaskGraph evidence"
+    );
 
-    let cccx_headless::HeadlessEvent::TaskUpdate(start_payload) = &started[0].event else {
-        panic!("expected task-update, got {:?}", started[0].event);
+    let updates = processor.map_thread_event_to_envelopes(ThreadEvent::TaskUpdate(
+        crate::exec_events::TaskUpdateEvent {
+            task_id: "task-auth".to_string(),
+            status: "verified".to_string(),
+            verified: true,
+        },
+    ));
+    let cccx_headless::HeadlessEvent::TaskUpdate(payload) = &updates[0].event else {
+        panic!("expected task-update, got {:?}", updates[0].event);
     };
-    assert_eq!(start_payload.task_id, "task-list-1");
-    assert_eq!(start_payload.status, "running");
-    assert!(!start_payload.verified);
-
-    let cccx_headless::HeadlessEvent::TaskUpdate(done_payload) = &completed[0].event else {
-        panic!("expected task-update, got {:?}", completed[0].event);
-    };
-    assert_eq!(done_payload.task_id, "task-list-1");
-    assert_eq!(done_payload.status, "completed");
-    assert!(done_payload.verified);
+    assert_eq!(payload.task_id, "task-auth");
+    assert_eq!(payload.status, "verified");
+    assert!(payload.verified);
 }
 
 #[test]
@@ -335,6 +328,29 @@ fn p11_agent_update_maps_typed_cccx_runtime_notification_with_model_route() {
         payload.model_route.fallback_chain,
         vec!["provider:model".to_string()]
     );
+}
+
+#[test]
+fn p11_task_update_maps_typed_cccx_runtime_notification() {
+    let mut processor = EventProcessorWithJsonOutput::new(None);
+    let collected = processor.collect_thread_events(ServerNotification::CccxRuntimeTaskUpdate(
+        codex_app_server_protocol::CccxRuntimeTaskUpdateNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            task_id: "task-auth".to_string(),
+            status: "blocked".to_string(),
+            verified: false,
+        },
+    ));
+
+    assert_eq!(collected.status, CodexStatus::Running);
+    let envelopes = processor.map_thread_event_to_envelopes(collected.events[0].clone());
+    let cccx_headless::HeadlessEvent::TaskUpdate(payload) = &envelopes[0].event else {
+        panic!("expected task-update, got {:?}", envelopes[0].event);
+    };
+    assert_eq!(payload.task_id, "task-auth");
+    assert_eq!(payload.status, "blocked");
+    assert!(!payload.verified);
 }
 
 #[test]

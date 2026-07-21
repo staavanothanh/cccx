@@ -1624,6 +1624,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
         | EventMsg::CollabResumeBegin(_)
         | EventMsg::CollabResumeEnd(_)
         | EventMsg::CccxRuntimeAgentUpdate(_)
+        | EventMsg::CccxRuntimeTaskUpdate(_)
         | EventMsg::SubAgentActivity(_) => None,
     }
 }
@@ -2142,7 +2143,7 @@ async fn try_run_sampling_request(
                     {
                         Ok(output_result) => output_result,
                         Err(err) => break Err(err),
-                };
+                    };
                 if let Some(tool_future) = output_result.tool_future {
                     tool_execution_enqueued = true;
                     in_flight.push_back(tool_future);

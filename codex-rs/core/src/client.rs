@@ -1850,11 +1850,13 @@ impl ModelClientSession {
                 "cccx: recorded provider gateway provenance"
             );
         }
-        provenance.take().map(|provenance| CccxGatewayAttemptRecorder {
-            project_root: self.client.state.project_root.clone(),
-            thread_id: self.client.state.thread_id.to_string(),
-            provenance,
-        })
+        provenance
+            .take()
+            .map(|provenance| CccxGatewayAttemptRecorder {
+                project_root: self.client.state.project_root.clone(),
+                thread_id: self.client.state.thread_id.to_string(),
+                provenance,
+            })
     }
 
     /// Streams a turn via the OpenAI Responses API.
@@ -2178,6 +2180,11 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
+            let (gateway_bridge, mut gateway_provenance) =
+                self.begin_gateway_provenance(model_info);
+            // WebSocket is also an LLM surface. Keep the 9router-only boundary
+            // identical to the HTTP Responses and chat-completions transports.
+            self.check_cccx_gateway_fail_closed(&gateway_bridge)?;
             let request_session_telemetry = if warmup {
                 // `generate=false` prewarm is connection setup, not an inference request.
                 session_telemetry.clone()
@@ -2273,8 +2280,10 @@ impl ModelClientSession {
                     self.websocket_session.connection_reused(),
                     Some(Arc::clone(&self.turn_state)),
                 )
-                .await
-                .map_err(|err| {
+                .await;
+            let stream_result = match stream_result {
+                Ok(stream) => stream,
+                Err(err) => {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
@@ -2283,14 +2292,27 @@ impl ModelClientSession {
                         response_debug_context.request_id.as_deref(),
                         /*output_items*/ &[],
                     );
-                    err
-                })?;
+                    if let Some(mut recorder) = self.finalize_gateway_provenance(
+                        &gateway_bridge,
+                        &mut gateway_provenance,
+                        model_info,
+                    ) {
+                        recorder.persist_terminal("error").await;
+                    }
+                    return Err(err);
+                }
+            };
+            let gateway_recorder = self.finalize_gateway_provenance(
+                &gateway_bridge,
+                &mut gateway_provenance,
+                model_info,
+            );
             let (stream, last_request_rx) = map_response_stream(
                 stream_result,
                 request_session_telemetry,
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
-                None,
+                gateway_recorder,
             );
             self.websocket_session.last_response_rx = Some(last_request_rx);
             return Ok(WebsocketStreamOutcome::Stream(stream));
@@ -2554,6 +2576,17 @@ struct CccxGatewayAttemptRecorder {
 }
 
 impl CccxGatewayAttemptRecorder {
+    fn record_upstream_request_id(&mut self, request_id: Option<&str>) {
+        self.provenance.upstream_request_id = request_id.map(str::to_string);
+    }
+
+    /// Records model identity only when it was actually emitted by the
+    /// gateway's response stream.  A 9router route is opaque, so the model
+    /// observation must not be used to fabricate a provider or route id.
+    fn record_observed_server_model(&mut self, model: &str) {
+        self.provenance.record_observed_model(model.to_string());
+    }
+
     async fn persist_terminal(&mut self, status: &str) {
         self.provenance.record_stream_termination(status);
         if let Err(error) = crate::cccx_gateway_provenance_state::save_gateway_provenance(
@@ -2573,7 +2606,7 @@ fn map_response_stream(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
-    gateway_recorder: Option<CccxGatewayAttemptRecorder>,
+    mut gateway_recorder: Option<CccxGatewayAttemptRecorder>,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
     let codex_api::ResponseStream {
         rx_event,
@@ -2583,6 +2616,9 @@ fn map_response_stream(
         rx_event,
         upstream_request_id: upstream_request_id.clone(),
     };
+    if let Some(recorder) = gateway_recorder.as_mut() {
+        recorder.record_upstream_request_id(upstream_request_id.as_deref());
+    }
     map_response_events(
         upstream_request_id,
         api_stream,
@@ -2645,6 +2681,26 @@ where
                 break;
             };
             match event {
+                Ok(ResponseEvent::ServerModel(model)) => {
+                    if let Some(recorder) = gateway_recorder.as_mut() {
+                        recorder.record_observed_server_model(&model);
+                    }
+                    if tx_event
+                        .send(Ok(ResponseEvent::ServerModel(model)))
+                        .await
+                        .is_err()
+                    {
+                        inference_trace_attempt.record_cancelled(
+                            STREAM_DROPPED_REASON,
+                            upstream_request_id,
+                            &items_added,
+                        );
+                        if let Some(recorder) = gateway_recorder.as_mut() {
+                            recorder.persist_terminal("cancelled").await;
+                        }
+                        return;
+                    }
+                }
                 Ok(ResponseEvent::OutputItemDone(item)) => {
                     items_added.push(item.clone());
                     if tx_event

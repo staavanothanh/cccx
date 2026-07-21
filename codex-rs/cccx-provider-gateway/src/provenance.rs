@@ -66,6 +66,16 @@ impl GatewayProvenance {
         }
     }
 
+    /// Record a model label observed on the wire without treating it as router
+    /// fallback metadata. Responses-style streams can repeat model events; the
+    /// first one is the only factual value available unless 9router later
+    /// supplies an explicit route/provider transition.
+    pub fn record_observed_model(&mut self, model: String) {
+        if self.effective_model.is_none() {
+            self.effective_model = Some(model);
+        }
+    }
+
     pub fn record_fallback_policy(&mut self, policy: crate::FallbackPolicyId) {
         self.fallback_policy_id = Some(policy);
     }
@@ -146,6 +156,21 @@ mod tests {
         assert_eq!(provenance.effective_provider, None);
         assert_eq!(provenance.effective_model, None);
         assert!(provenance.fallback_chain.is_empty());
+    }
+
+    #[test]
+    fn observed_stream_models_preserve_the_first_value_without_inventing_fallback() {
+        let mut provenance = GatewayProvenance::new("9router/requested".to_string());
+        provenance.record_observed_model("first-observed".to_string());
+        provenance.record_observed_model("later-observed".to_string());
+
+        assert_eq!(
+            provenance.effective_model.as_deref(),
+            Some("first-observed")
+        );
+        assert!(provenance.fallback_chain.is_empty());
+        assert!(provenance.effective_route_id.is_none());
+        assert!(provenance.effective_provider.is_none());
     }
 
     #[test]

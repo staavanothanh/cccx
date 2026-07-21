@@ -3,11 +3,12 @@ use crate::protocol::item_builders::build_command_execution_begin_item;
 use crate::protocol::item_builders::build_command_execution_end_item;
 use crate::protocol::item_builders::convert_patch_changes;
 use crate::protocol::v2::AgentMessageDeltaNotification;
+use crate::protocol::v2::CccxRuntimeAgentModelRoute;
+use crate::protocol::v2::CccxRuntimeAgentUpdateNotification;
+use crate::protocol::v2::CccxRuntimeTaskUpdateNotification;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
-use crate::protocol::v2::CccxRuntimeAgentModelRoute;
-use crate::protocol::v2::CccxRuntimeAgentUpdateNotification;
 use crate::protocol::v2::CommandExecutionOutputDeltaNotification;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
@@ -209,6 +210,15 @@ pub fn item_event_to_server_notification(
                     fallback_chain: update.model_route.fallback_chain,
                 },
                 permission_request_id: update.permission_request_id,
+            })
+        }
+        EventMsg::CccxRuntimeTaskUpdate(update) => {
+            ServerNotification::CccxRuntimeTaskUpdate(CccxRuntimeTaskUpdateNotification {
+                thread_id,
+                turn_id,
+                task_id: update.task_id,
+                status: update.status,
+                verified: update.verified,
             })
         }
         EventMsg::CollabWaitingBegin(begin_event) => {
@@ -488,6 +498,7 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::CccxRuntimeAgentModelRoute as CoreCccxRuntimeAgentModelRoute;
     use codex_protocol::protocol::CccxRuntimeAgentUpdateEvent;
+    use codex_protocol::protocol::CccxRuntimeTaskUpdateEvent;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
@@ -663,5 +674,27 @@ mod tests {
         assert_eq!(payload.model_route.selection_source, "explicit");
         assert_eq!(payload.model_route.requested_route_id, "9router/requested");
         assert_eq!(payload.model_route.effective_route_id, "unknown");
+    }
+
+    #[test]
+    fn cccx_runtime_task_update_maps_to_typed_server_notification() {
+        let notification = item_event_to_server_notification(
+            EventMsg::CccxRuntimeTaskUpdate(CccxRuntimeTaskUpdateEvent {
+                task_id: "task-auth".to_string(),
+                status: "verified".to_string(),
+                verified: true,
+            }),
+            "thread-1",
+            "turn-1",
+        );
+
+        let ServerNotification::CccxRuntimeTaskUpdate(payload) = notification else {
+            panic!("expected cccx runtime task update notification");
+        };
+        assert_eq!(payload.thread_id, "thread-1");
+        assert_eq!(payload.turn_id, "turn-1");
+        assert_eq!(payload.task_id, "task-auth");
+        assert_eq!(payload.status, "verified");
+        assert!(payload.verified);
     }
 }

@@ -1445,6 +1445,12 @@ pub enum EventMsg {
     /// collab prompts, thread ids, or UI display strings.
     CccxRuntimeAgentUpdate(CccxRuntimeAgentUpdateEvent),
 
+    /// CCCX TaskGraph state after an authoritative runtime transition.
+    ///
+    /// This is emitted only after the TaskGraph transaction has committed; it
+    /// must not be synthesized from an upstream todo list or terminal prose.
+    CccxRuntimeTaskUpdate(CccxRuntimeTaskUpdateEvent),
+
     TurnDiff(TurnDiffEvent),
 
     /// List of voices supported by realtime conversation streams.
@@ -4330,6 +4336,14 @@ pub struct CccxRuntimeAgentUpdateEvent {
     pub model_route: CccxRuntimeAgentModelRoute,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CccxRuntimeTaskUpdateEvent {
+    pub task_id: String,
+    pub status: String,
+    pub verified: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

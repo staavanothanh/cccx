@@ -158,13 +158,6 @@ impl EventProcessorWithJsonOutput {
                     message: err.message.clone(),
                     recoverable: true,
                 })],
-                ThreadItemDetails::TodoList(_) => {
-                    vec![HeadlessEvent::TaskUpdate(TaskUpdatePayload {
-                        task_id: item.item.id.clone(),
-                        status: "completed".to_string(),
-                        verified: true,
-                    })]
-                }
                 ThreadItemDetails::CollabToolCall(_) => Vec::new(),
                 _ => Vec::new(),
             },
@@ -176,6 +169,13 @@ impl EventProcessorWithJsonOutput {
                 vec![HeadlessEvent::AgentUpdate(Self::agent_update_payload(
                     update,
                 ))]
+            }
+            ThreadEvent::TaskUpdate(ref update) => {
+                vec![HeadlessEvent::TaskUpdate(TaskUpdatePayload {
+                    task_id: update.task_id.clone(),
+                    status: update.status.clone(),
+                    verified: update.verified,
+                })]
             }
             // ThreadStarted, TurnStarted, TurnCompleted, TurnFailed, and
             // non-mapped items are execution details; terminal is emitted
@@ -191,18 +191,10 @@ impl EventProcessorWithJsonOutput {
 
     fn map_started_or_updated_item_to_headless_events(
         &self,
-        item: &ExecThreadItem,
-        status: &str,
+        _item: &ExecThreadItem,
+        _status: &str,
     ) -> Vec<HeadlessEvent> {
-        match &item.details {
-            ThreadItemDetails::TodoList(_) => vec![HeadlessEvent::TaskUpdate(TaskUpdatePayload {
-                task_id: item.id.clone(),
-                status: status.to_string(),
-                verified: false,
-            })],
-            ThreadItemDetails::CollabToolCall(_) => Vec::new(),
-            _ => Vec::new(),
-        }
+        Vec::new()
     }
 
     fn agent_update_payload(update: &AgentUpdateEvent) -> AgentUpdatePayload {
@@ -689,6 +681,16 @@ impl EventProcessorWithJsonOutput {
                     },
                     permission_request_id: notification.permission_request_id,
                 }));
+                CodexStatus::Running
+            }
+            ServerNotification::CccxRuntimeTaskUpdate(notification) => {
+                events.push(ThreadEvent::TaskUpdate(
+                    crate::exec_events::TaskUpdateEvent {
+                        task_id: notification.task_id,
+                        status: notification.status,
+                        verified: notification.verified,
+                    },
+                ));
                 CodexStatus::Running
             }
             ServerNotification::ThreadTokenUsageUpdated(notification) => {

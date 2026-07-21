@@ -187,7 +187,8 @@ pub(super) fn server_notification_thread_target(
         | ServerNotification::AccountLoginCompleted(_)
         // The CCCX update is forwarded to the headless/app event consumers
         // with a logical worker id, not an upstream ThreadId.
-        | ServerNotification::CccxRuntimeAgentUpdate(_) => None,
+        | ServerNotification::CccxRuntimeAgentUpdate(_)
+        | ServerNotification::CccxRuntimeTaskUpdate(_) => None,
     };
 
     match thread_id {

@@ -131,6 +131,7 @@ pub use exec_events::ThreadEvent;
 pub use exec_events::ThreadItem as ExecThreadItem;
 pub use exec_events::ThreadItemDetails;
 pub use exec_events::ThreadStartedEvent;
+pub use exec_events::TaskUpdateEvent;
 pub use exec_events::TodoItem;
 pub use exec_events::TodoListItem;
 pub use exec_events::TurnCompletedEvent;
@@ -1426,6 +1427,9 @@ fn should_process_notification(
             notification.thread_id == thread_id && notification.turn_id == turn_id
         }
         ServerNotification::CccxRuntimeAgentUpdate(notification) => {
+            notification.thread_id == thread_id && notification.turn_id == turn_id
+        }
+        ServerNotification::CccxRuntimeTaskUpdate(notification) => {
             notification.thread_id == thread_id && notification.turn_id == turn_id
         }
         ServerNotification::ThreadTokenUsageUpdated(notification) => {

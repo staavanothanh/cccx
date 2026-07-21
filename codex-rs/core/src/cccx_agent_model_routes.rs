@@ -35,7 +35,9 @@ pub async fn set_agent_model_route(
     validate_key(route).map_err(|_| AgentModelRouteStoreError::InvalidRoute(route.into()))?;
     let path = codex_home.join(ROUTES_FILE);
     let mut routes = read_routes_file(&path).await?;
-    routes.routes.insert(normalize_preset(preset), route.to_string());
+    routes
+        .routes
+        .insert(normalize_preset(preset), route.to_string());
     tokio::fs::create_dir_all(codex_home).await?;
     let data = serde_json::to_vec_pretty(&routes)?;
     tokio::fs::write(path, data).await?;
@@ -57,6 +59,22 @@ pub async fn route_for_work_role(
         .get(&role_key)
         .cloned()
         .map(|route_id| ModelRouteSelection::Explicit { route_id }))
+}
+
+/// Resolves the role-preset layer without overriding a direct route selected
+/// for this spawn. The WorkSpec is the typed spawn request, so an explicit
+/// route there is the highest-priority caller input; a role preset only
+/// supplies the configured fallback for inherited routes.
+pub fn apply_role_preset(
+    requested: ModelRouteSelection,
+    role_preset: Option<ModelRouteSelection>,
+) -> ModelRouteSelection {
+    match requested {
+        ModelRouteSelection::Explicit { .. } => requested,
+        ModelRouteSelection::InheritMainRequested | ModelRouteSelection::InheritMainEffective => {
+            role_preset.unwrap_or(requested)
+        }
+    }
 }
 
 fn validate_key(value: &str) -> Result<(), ()> {
@@ -99,10 +117,14 @@ mod tests {
     #[tokio::test]
     async fn route_for_work_role_reads_normalized_preset() {
         let home = tempdir().unwrap();
-        set_agent_model_route(home.path(), "cx_implementer", "oc/deepseek-v4").await.unwrap();
+        set_agent_model_route(home.path(), "cx_implementer", "oc/deepseek-v4")
+            .await
+            .unwrap();
 
         assert_eq!(
-            route_for_work_role(home.path(), &WorkRole::Implementer).await.unwrap(),
+            route_for_work_role(home.path(), &WorkRole::Implementer)
+                .await
+                .unwrap(),
             Some(ModelRouteSelection::Explicit {
                 route_id: "oc/deepseek-v4".to_string()
             })
@@ -112,7 +134,42 @@ mod tests {
     #[tokio::test]
     async fn route_store_rejects_empty_or_control_values() {
         let home = tempdir().unwrap();
-        assert!(set_agent_model_route(home.path(), "", "oc/model").await.is_err());
-        assert!(set_agent_model_route(home.path(), "implementer", "oc/\nmodel").await.is_err());
+        assert!(
+            set_agent_model_route(home.path(), "", "oc/model")
+                .await
+                .is_err()
+        );
+        assert!(
+            set_agent_model_route(home.path(), "implementer", "oc/\nmodel")
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_work_spec_route_wins_over_role_preset() {
+        let explicit = ModelRouteSelection::Explicit {
+            route_id: "9router/user-override".to_string(),
+        };
+        let preset = Some(ModelRouteSelection::Explicit {
+            route_id: "9router/role-preset".to_string(),
+        });
+
+        assert_eq!(apply_role_preset(explicit.clone(), preset), explicit);
+    }
+
+    #[test]
+    fn role_preset_replaces_inherited_route() {
+        let preset = ModelRouteSelection::Explicit {
+            route_id: "9router/role-preset".to_string(),
+        };
+
+        assert_eq!(
+            apply_role_preset(
+                ModelRouteSelection::InheritMainRequested,
+                Some(preset.clone())
+            ),
+            preset
+        );
     }
 }

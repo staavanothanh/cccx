@@ -424,6 +424,7 @@ impl CodexThread {
             display_name,
             model_route_summary,
             gateway_provenance: None,
+            tool_call_sequence_digest: checkpoint.tool_call_sequence_digest.clone(),
             parent_capabilities: Some(parent),
         });
         let spawned = self

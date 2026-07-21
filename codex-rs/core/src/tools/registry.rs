@@ -707,6 +707,16 @@ impl ToolRegistry {
                         invocation.turn.record_cccx_read(path, &bytes).await;
                     }
                 }
+                let _ = invocation
+                    .session
+                    .services
+                    .agent_control
+                    .record_cccx_successful_tool_call(
+                        invocation.session.thread_id,
+                        &result.call_id,
+                        &tool_name_flat,
+                    )
+                    .await;
                 // A resumable CCCX worker checkpoints after every successful
                 // bounded tool step, not only edits. The registry is the one
                 // common PostToolUse boundary for shell, MCP, and file tools;

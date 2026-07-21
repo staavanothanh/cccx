@@ -3026,13 +3026,35 @@ cargo +1.95.0 check -p codex-core -j 1
 cargo +1.95.0 test -p codex-core prepare_resume_rejects_completed_and_accepts_interrupted_worker --lib -j 1 -- --test-threads=1
 ```
 
-### Open Phase 7 evidence boundary
+### 2026-07-21 — Phase 7/11 evidence boundaries narrowed with runtime proof
 
-- Verified that effective model metadata can originate in raw Responses SSE
-  headers, but `codex_api::ResponseStream` normalizes it away before
-  `core::map_response_stream`; `finalize_gateway_provenance` consequently
-  cannot truthfully record it today. CCCX correctly keeps provider/route/model
-  `unknown` rather than inferring them from requested route strings.
-- Completing this item needs a typed cross-crate stream metadata carrier plus
-  a local 9router SSE contract test. Do not claim factual effective provenance
-  until that carrier reaches the terminal gateway recorder.
+- The existing Responses stream already carries a factual `ServerModel` event
+  into `core::map_response_stream`. CCCX now records the first model observed
+  on that event in the same gateway provenance attempt and persists it only at
+  stream terminal. It does not infer route/provider from a configured 9router
+  id, and repeated model labels do not fabricate a fallback chain.
+- Successful CCCX worker tool completions now append a rolling SHA-256 digest
+  at the shared post-tool boundary. The digest contains only previous digest,
+  call id and canonical tool name—never tool input/output—and survives a
+  checkpoint/resume before being placed in terminal Artifact provenance.
+- `TaskUpdate` no longer derives from a model TodoList. After a persisted
+  TaskGraph transition, core emits `CccxRuntimeTaskUpdate`; app-server and
+  `cccx exec` map that typed event to headless JSONL. Legacy TodoList remains a
+  presentation item and cannot claim verification.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 test -p cccx-provider-gateway observed_stream_models_preserve_the_first_value_without_inventing_fallback --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-core successful_tool_calls_are_checkpointed_as_a_secret_free_sequence_digest --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-core cccx_gateway_provenance_records_only_observed_server_model_at_terminal --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-core p7_provenance_carries_only_the_runtime_tool_sequence_digest --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-exec p11_task_update_maps_typed_cccx_runtime_notification --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-exec p11_task_update_maps_only_typed_task_graph_runtime_event --lib -j 1 -- --test-threads=1
+```
+
+Still open in Phase 7: a production retry counter connected to the retry loop,
+an explicit 9router fallback metadata contract, and fully wiring the existing
+catalog resolver (user > role preset > typed suggestion > session default >
+inherit main requested) with capability-profile validation. These remain open
+rather than being inferred from current model strings.

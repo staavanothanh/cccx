@@ -389,6 +389,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::CollabResumeEnd(_)
                     | EventMsg::SubAgentActivity(_)
                     | EventMsg::CccxRuntimeAgentUpdate(_)
+                    | EventMsg::CccxRuntimeTaskUpdate(_)
                     | EventMsg::RealtimeConversationStarted(_)
                     | EventMsg::RealtimeConversationSdp(_)
                     | EventMsg::RealtimeConversationRealtime(_)

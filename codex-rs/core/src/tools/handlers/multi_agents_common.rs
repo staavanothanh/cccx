@@ -280,13 +280,14 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
                 .to_string(),
         ));
     };
-    if let Some(route) =
+    let role_preset =
         crate::cccx_agent_model_routes::route_for_work_role(&config.codex_home, &work_spec.role)
             .await
-            .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?
-    {
-        work_spec.model_route = route;
-    }
+            .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+    work_spec.model_route = crate::cccx_agent_model_routes::apply_role_preset(
+        work_spec.model_route.clone(),
+        role_preset,
+    );
 
     #[allow(deprecated)]
     let project_root = turn.cwd.clone().to_path_buf();
@@ -315,16 +316,28 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
             ]
         })
         .collect();
+    let parent_model_routes = cccx_provider_gateway::LocalConfigCatalog::load_from_home_or_current(
+        &config.codex_home,
+        &turn.model_info.slug,
+    )
+    .map_err(|error| {
+        FunctionCallError::RespondToModel(format!(
+            "cccx could not load the configured 9router model catalog before spawn: {error}"
+        ))
+    })?
+    .available_models
+    .into_iter()
+    .collect();
 
     // Parent capability is captured from the live turn registry, never from
     // the child's requested WorkSpec. A child can only receive the strict
     // intersection at this exact spawn boundary.
     let parent = parent_capability_set_for_work_spec(
         &project_root,
-        &turn.model_info.slug,
         &work_spec,
         parent_allowed_tools,
         parent_allowed_mcp_tools,
+        parent_model_routes,
     );
     crate::cccx_spawn::apply_cccx_harness_to_config(config, &parent, &work_spec)
         .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
@@ -340,6 +353,7 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
         display_name,
         model_route_summary: route_summary,
         gateway_provenance: None,
+        tool_call_sequence_digest: None,
         parent_capabilities: Some(parent),
     })))
 }

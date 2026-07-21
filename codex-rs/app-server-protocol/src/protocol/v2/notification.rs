@@ -81,3 +81,14 @@ pub struct CccxRuntimeAgentUpdateNotification {
     #[ts(optional)]
     pub permission_request_id: Option<String>,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxRuntimeTaskUpdateNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub task_id: String,
+    pub status: String,
+    pub verified: bool,
+}

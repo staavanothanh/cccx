@@ -37,6 +37,9 @@ pub enum ThreadEvent {
     /// CCCX runtime-owned worker metadata, emitted from WorkSpec/runtime state.
     #[serde(rename = "agent.update")]
     AgentUpdate(AgentUpdateEvent),
+    /// CCCX TaskGraph state after a committed runtime transition.
+    #[serde(rename = "task.update")]
+    TaskUpdate(TaskUpdateEvent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -338,4 +341,13 @@ pub struct TodoItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct TodoListItem {
     pub items: Vec<TodoItem>,
+}
+
+/// Authoritative CCCX TaskGraph state. Unlike a model-maintained todo list,
+/// this is emitted only after the runtime has committed a TaskGraph transition.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct TaskUpdateEvent {
+    pub task_id: String,
+    pub status: String,
+    pub verified: bool,
 }

@@ -15,12 +15,13 @@ use cccx_protocol::{
 use cccx_provider_gateway::FallbackPolicyId;
 use cccx_provider_gateway::provenance::GatewayProvenance;
 use cccx_task_graph::{
-    AttemptRecord, TaskGraph, TaskNode, VerificationSpec, WorkerRecord, WorkerStatus,
+    AttemptRecord, TaskGraph, TaskNode, TaskStatus, VerificationSpec, WorkerRecord, WorkerStatus,
 };
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CccxRuntimeAgentModelRoute;
 use codex_protocol::protocol::CccxRuntimeAgentUpdateEvent;
+use codex_protocol::protocol::CccxRuntimeTaskUpdateEvent;
 
 use crate::artifact_collector::ArtifactCollector;
 use crate::cccx_task_graph_state;
@@ -44,6 +45,10 @@ pub(crate) struct CccxSpawnRuntime {
     pub(crate) display_name: String,
     pub(crate) model_route_summary: String,
     pub(crate) gateway_provenance: Option<GatewayProvenance>,
+    /// Rolling digest of successful tool completions for this worker attempt.
+    /// It deliberately contains only stable tool identity and call id, never
+    /// tool input or output, so provenance is useful without retaining secrets.
+    pub(crate) tool_call_sequence_digest: Option<String>,
     /// Capability ceiling captured from the live Main CC at spawn. It is
     /// persisted with checkpoints so resume never derives authority from the
     /// child WorkSpec itself.
@@ -74,6 +79,14 @@ impl CccxSpawnRuntime {
 #[derive(Clone)]
 struct CccxAttemptState {
     work_spec: WorkSpec,
+}
+
+/// The TaskGraph transition that has already been persisted. Keeping this
+/// separate from a worker's terminal prose prevents callers from reporting a
+/// task as verified before `record_verification` has committed.
+pub(crate) struct CccxRuntimeCompletion {
+    pub(crate) task_update: CccxRuntimeTaskUpdateEvent,
+    pub(crate) verification_error: Option<String>,
 }
 
 impl CccxRuntimeState {
@@ -333,6 +346,29 @@ impl CccxRuntimeRegistry {
             .map(|runtime| runtime.work_spec.clone())
     }
 
+    /// Record an actual successful tool completion from the common registry
+    /// boundary. Returns false for non-CCCX sessions, which keeps this hook
+    /// transparent to the upstream runtime.
+    pub(crate) fn record_successful_tool_call(
+        &mut self,
+        child_thread_id: ThreadId,
+        call_id: &str,
+        tool_name: &str,
+    ) -> bool {
+        let Some(runtime) = self.by_thread.get_mut(&child_thread_id.to_string()) else {
+            return false;
+        };
+        use sha2::{Digest, Sha256};
+        let prior = runtime
+            .tool_call_sequence_digest
+            .as_deref()
+            .unwrap_or("cccx-tool-sequence-v1");
+        let payload = format!("{prior}\u{0}{call_id}\u{0}{tool_name}");
+        runtime.tool_call_sequence_digest =
+            Some(format!("sha256:{:x}", Sha256::digest(payload.as_bytes())));
+        true
+    }
+
     /// Persist a resumable snapshot while a bounded worker is still active.
     /// This is intentionally best-effort at the tool boundary: a successful
     /// edit must not be reported as failed merely because checkpoint storage
@@ -359,6 +395,7 @@ impl CccxRuntimeRegistry {
             base_commit: runtime.work_spec.base_revision.git_head.clone(),
             base_working_tree_digest: runtime.work_spec.base_revision.working_tree_digest.clone(),
             parent_capabilities: runtime.parent_capabilities.clone(),
+            tool_call_sequence_digest: runtime.tool_call_sequence_digest.clone(),
         };
         crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
             .await
@@ -371,9 +408,9 @@ impl CccxRuntimeRegistry {
         child_thread_id: ThreadId,
         status_summary: String,
         success: bool,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<CccxRuntimeCompletion>, String> {
         let Some(runtime) = self.by_thread.remove(&child_thread_id.to_string()) else {
-            return Ok(false);
+            return Ok(None);
         };
         if !success {
             let checkpoint = SubagentCheckpoint {
@@ -394,6 +431,7 @@ impl CccxRuntimeRegistry {
                     .working_tree_digest
                     .clone(),
                 parent_capabilities: runtime.parent_capabilities.clone(),
+                tool_call_sequence_digest: runtime.tool_call_sequence_digest.clone(),
             };
             crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
                 .await
@@ -432,6 +470,7 @@ impl CccxRuntimeRegistry {
                 &runtime.model_route_summary,
                 &status_summary,
                 gateway_provenance.as_ref(),
+                runtime.tool_call_sequence_digest.as_deref(),
             ),
         );
 
@@ -452,43 +491,46 @@ impl CccxRuntimeRegistry {
             }
         }
         let initial = TaskGraph::new("cccx-runtime", "cccx runtime graph");
-        cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
-            let mut state = CccxRuntimeState::new(graph.clone());
-            state.track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
-            // A terminal worker status is an Artifact, not independent verification evidence.
-            state
-                .complete(artifact, None, None)
-                .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
-            if let Some(run) = verification_run {
-                use sha2::{Digest, Sha256};
-                let task_id = runtime.work_spec.task_id.clone();
-                let artifact_digest =
-                    format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
-                let task = state.task_graph().tasks.get(&task_id).ok_or_else(|| {
-                    cccx_task_graph_state::TaskGraphStateError::Mutation(format!(
-                        "unknown cccx task `{task_id}`"
-                    ))
-                })?;
-                let record = GoalEvaluator::evaluate_execution(
-                    task,
-                    &child_thread_id.to_string(),
-                    run.command,
-                    run.protected_input_digest,
-                    artifact_digest,
-                );
+        let task_update =
+            cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
+                let mut state = CccxRuntimeState::new(graph.clone());
                 state
-                    .record_harness_verification(&task_id, &child_thread_id.to_string(), record)
+                    .track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
+                // A terminal worker status is an Artifact, not independent verification evidence.
+                state
+                    .complete(artifact, None, None)
                     .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
-            }
-            *graph = state.task_graph.clone();
-            Ok(())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-        if let Some(error) = verification_error {
-            return Err(error);
-        }
-        Ok(true)
+                if let Some(run) = verification_run {
+                    use sha2::{Digest, Sha256};
+                    let task_id = runtime.work_spec.task_id.clone();
+                    let artifact_digest =
+                        format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
+                    let task = state.task_graph().tasks.get(&task_id).ok_or_else(|| {
+                        cccx_task_graph_state::TaskGraphStateError::Mutation(format!(
+                            "unknown cccx task `{task_id}`"
+                        ))
+                    })?;
+                    let record = GoalEvaluator::evaluate_execution(
+                        task,
+                        &child_thread_id.to_string(),
+                        run.command,
+                        run.protected_input_digest,
+                        artifact_digest,
+                    );
+                    state
+                        .record_harness_verification(&task_id, &child_thread_id.to_string(), record)
+                        .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
+                }
+                *graph = state.task_graph.clone();
+                task_update_from_graph(graph, &runtime.work_spec.task_id)
+                    .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Some(CccxRuntimeCompletion {
+            task_update,
+            verification_error,
+        }))
     }
 
     /// Persist a terminal user/CC cancellation. Unlike an interrupted worker,
@@ -498,9 +540,9 @@ impl CccxRuntimeRegistry {
         &mut self,
         child_thread_id: ThreadId,
         reason: String,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<CccxRuntimeTaskUpdateEvent>, String> {
         let Some(runtime) = self.by_thread.remove(&child_thread_id.to_string()) else {
-            return Ok(false);
+            return Ok(None);
         };
         let gateway_provenance = match runtime.gateway_provenance {
             Some(provenance) => Some(provenance),
@@ -524,21 +566,52 @@ impl CccxRuntimeRegistry {
                 &runtime.model_route_summary,
                 &reason,
                 gateway_provenance.as_ref(),
+                runtime.tool_call_sequence_digest.as_deref(),
             ),
         );
         let initial = TaskGraph::new("cccx-runtime", "cccx runtime graph");
-        cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
-            let mut state = CccxRuntimeState::new(graph.clone());
-            state.track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
-            state
-                .complete(artifact, None, None)
-                .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
-            *graph = state.task_graph.clone();
-            Ok(())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-        Ok(true)
+        let task_update =
+            cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
+                let mut state = CccxRuntimeState::new(graph.clone());
+                state
+                    .track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
+                state
+                    .complete(artifact, None, None)
+                    .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
+                *graph = state.task_graph.clone();
+                task_update_from_graph(graph, &runtime.work_spec.task_id)
+                    .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Some(task_update))
+    }
+}
+
+fn task_update_from_graph(
+    graph: &TaskGraph,
+    task_id: &str,
+) -> Result<CccxRuntimeTaskUpdateEvent, String> {
+    let task = graph
+        .tasks
+        .get(task_id)
+        .ok_or_else(|| format!("unknown cccx task `{task_id}`"))?;
+    Ok(CccxRuntimeTaskUpdateEvent {
+        task_id: task.task_id.clone(),
+        status: task_status_label(&task.status).to_string(),
+        verified: task.is_verified(),
+    })
+}
+
+fn task_status_label(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Pending => "pending",
+        TaskStatus::InProgress => "in_progress",
+        TaskStatus::Blocked => "blocked",
+        TaskStatus::Interrupted => "interrupted",
+        TaskStatus::Cancelled => "cancelled",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Verified => "verified",
     }
 }
 
@@ -595,28 +668,23 @@ pub(crate) fn cccx_agent_status_label(status: &AgentStatus) -> &'static str {
 
 /// Build a ParentCapabilitySet for WorkSpec projection.
 ///
-/// Phase 3 fix: `parent_allowed_tools` and `parent_allowed_mcp_tools` are
-/// the actual Main CC's available tools/MCP from its runtime Config, NOT
-/// the WorkSpec's own allowed_tools. Previously, the function cloned
-/// `work_spec.allowed_tools` into the parent capability, making the
-/// intersection with itself a no-op (implementer-issues §2).
+/// The tool, MCP, and model route sets are snapshots of the live Main CC
+/// capability boundary, never values requested by the child WorkSpec. In
+/// particular, an explicit child route must already be present in the local
+/// 9router catalog before projection can admit it.
 pub(crate) fn parent_capability_set_for_work_spec(
     project_root: &Path,
-    main_model_slug: &str,
     work_spec: &WorkSpec,
     parent_allowed_tools: BTreeSet<String>,
     parent_allowed_mcp_tools: BTreeSet<String>,
+    parent_model_routes: BTreeSet<String>,
 ) -> cccx_protocol::ParentCapabilitySet {
-    let mut model_routes = BTreeSet::from([main_model_slug.to_string()]);
-    if let ModelRouteSelection::Explicit { route_id } = &work_spec.model_route {
-        model_routes.insert(route_id.clone());
-    }
     cccx_protocol::ParentCapabilitySet {
         tools: parent_allowed_tools,
         mcp_tools: parent_allowed_mcp_tools,
         writable_roots: BTreeSet::from([project_root.display().to_string()]),
         protected_paths: work_spec.scope.protected_paths.clone(),
-        model_routes,
+        model_routes: parent_model_routes,
         permission_ceiling: PermissionPolicy::Allow,
     }
 }
@@ -626,6 +694,7 @@ fn provenance_for_runtime(
     route_id: &str,
     status_summary: &str,
     gateway: Option<&GatewayProvenance>,
+    tool_call_sequence_digest: Option<&str>,
 ) -> ArtifactProvenance {
     use sha2::{Digest, Sha256};
     let mut sorted_tools: Vec<_> = work_spec.allowed_tools.iter().collect();
@@ -674,7 +743,7 @@ fn provenance_for_runtime(
             .unwrap_or_default(),
         input_digest,
         output_digest,
-        tool_call_sequence_digest: None,
+        tool_call_sequence_digest: tool_call_sequence_digest.map(str::to_string),
         stream_termination_status: gateway
             .and_then(|gateway| gateway.stream_termination_status.clone()),
     }
@@ -828,6 +897,7 @@ mod tests {
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            tool_call_sequence_digest: None,
             parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
@@ -835,12 +905,15 @@ mod tests {
             .register_spawn(child_thread_id, runtime)
             .await
             .unwrap();
-        assert!(
-            registry
-                .complete_spawn(child_thread_id, "worker completed".to_string(), true)
-                .await
-                .unwrap()
-        );
+        let completion = registry
+            .complete_spawn(child_thread_id, "worker completed".to_string(), true)
+            .await
+            .unwrap()
+            .expect("terminal worker must emit a persisted TaskGraph update");
+        assert_eq!(completion.task_update.task_id, "T1");
+        assert_eq!(completion.task_update.status, "verified");
+        assert!(completion.task_update.verified);
+        assert!(completion.verification_error.is_none());
         let graph = cccx_task_graph_state::load_task_graph(project.path())
             .await
             .unwrap()
@@ -864,6 +937,7 @@ mod tests {
             display_name: "worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            tool_call_sequence_digest: None,
             parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
@@ -896,6 +970,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn successful_tool_calls_are_checkpointed_as_a_secret_free_sequence_digest() {
+        let project = tempfile::TempDir::new().unwrap();
+        let child_thread_id = ThreadId::new();
+        let runtime = CccxSpawnRuntime {
+            project_root: project.path().to_path_buf(),
+            logical_session_id: "logical-tool-provenance".to_string(),
+            work_spec: work_spec(),
+            display_name: "worker".to_string(),
+            model_route_summary: "9router/test".to_string(),
+            gateway_provenance: None,
+            tool_call_sequence_digest: None,
+            parent_capabilities: None,
+        };
+        let mut registry = CccxRuntimeRegistry::default();
+        registry
+            .register_spawn(child_thread_id, runtime)
+            .await
+            .unwrap();
+
+        assert!(registry.record_successful_tool_call(child_thread_id, "call-1", "shell_command"));
+        assert!(registry.record_successful_tool_call(child_thread_id, "call-2", "apply_patch"));
+        assert!(
+            registry
+                .checkpoint_spawn(child_thread_id, "apply_patch completed".to_string())
+                .await
+                .unwrap()
+        );
+
+        let checkpoint =
+            crate::checkpoint::load_checkpoint(project.path(), "logical-tool-provenance")
+                .await
+                .unwrap()
+                .expect("checkpoint should exist");
+        let digest = checkpoint
+            .tool_call_sequence_digest
+            .expect("successful tool sequence must be checkpointed");
+        assert!(digest.starts_with("sha256:"));
+        assert_eq!(digest.len(), "sha256:".len() + 64);
+        assert!(!digest.contains("shell_command"));
+        assert!(!digest.contains("call-1"));
+        assert!(!registry.record_successful_tool_call(ThreadId::new(), "call-3", "shell_command"));
+    }
+
+    #[tokio::test]
     async fn prepare_resume_rejects_completed_and_accepts_interrupted_worker() {
         let project = tempfile::TempDir::new().unwrap();
         let child_thread_id = ThreadId::new();
@@ -906,6 +1024,7 @@ mod tests {
             display_name: "a1-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            tool_call_sequence_digest: None,
             parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
@@ -954,6 +1073,7 @@ mod tests {
             display_name: "a1-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            tool_call_sequence_digest: None,
             parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
@@ -996,6 +1116,7 @@ mod tests {
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            tool_call_sequence_digest: None,
             parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
@@ -1003,12 +1124,13 @@ mod tests {
             .register_spawn(child_thread_id, runtime)
             .await
             .unwrap();
-        assert!(
-            registry
-                .complete_spawn(child_thread_id, "worker completed".to_string(), true)
-                .await
-                .unwrap()
-        );
+        let completion = registry
+            .complete_spawn(child_thread_id, "worker completed".to_string(), true)
+            .await
+            .unwrap()
+            .expect("failed verification still commits a TaskGraph transition");
+        assert_eq!(completion.task_update.status, "blocked");
+        assert!(!completion.task_update.verified);
         let graph = cccx_task_graph_state::load_task_graph(project.path())
             .await
             .unwrap()
@@ -1037,6 +1159,7 @@ mod tests {
             display_name: "interrupted-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            tool_call_sequence_digest: None,
             parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
@@ -1049,6 +1172,7 @@ mod tests {
                 .complete_spawn(child_thread_id, "provider disconnected".to_string(), false)
                 .await
                 .unwrap()
+                .is_some()
         );
 
         let checkpoint = crate::checkpoint::load_checkpoint(project.path(), "logical-interrupted")
@@ -1076,6 +1200,7 @@ mod tests {
             display_name: "cancelled-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            tool_call_sequence_digest: None,
             parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
@@ -1088,6 +1213,7 @@ mod tests {
                 .cancel_spawn(child_thread_id, "user cancelled".to_string())
                 .await
                 .unwrap()
+                .is_some()
         );
         assert!(
             crate::checkpoint::load_checkpoint(project.path(), &child_thread_id.to_string())
@@ -1132,10 +1258,10 @@ mod tests {
 
         let parent = parent_capability_set_for_work_spec(
             project_root,
-            main_model,
             &ws,
             parent_tools.clone(),
             parent_mcp.clone(),
+            BTreeSet::from([main_model.to_string()]),
         );
 
         // Phase 3: parent.tools must be the ACTUAL parent tools, not the
@@ -1160,10 +1286,10 @@ mod tests {
 
         let parent = parent_capability_set_for_work_spec(
             project_root,
-            "9router/main",
             &ws,
             parent_tools,
             parent_mcp,
+            BTreeSet::from(["9router/main".to_string()]),
         );
 
         // The projection should be empty because WorkSpec ∩ parent = ∅
@@ -1173,6 +1299,27 @@ mod tests {
             "WorkSpec tools ∩ empty parent = empty. Got: {:?}",
             projection.allowed_tools
         );
+    }
+
+    #[test]
+    fn p7_parent_catalog_does_not_admit_a_route_solely_requested_by_work_spec() {
+        let mut ws = work_spec();
+        ws.model_route = ModelRouteSelection::Explicit {
+            route_id: "9router/unconfigured-route".to_string(),
+        };
+        let parent = parent_capability_set_for_work_spec(
+            std::path::Path::new("D:/repo"),
+            &ws,
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::from(["9router/main".to_string()]),
+        );
+
+        assert!(matches!(
+            cccx_protocol::project_child_config(&ws, &parent),
+            Err(cccx_protocol::ProtocolError::ModelRouteNotAllowed(route))
+                if route == "9router/unconfigured-route"
+        ));
     }
 
     // ── Phase 5 tests ──
@@ -1187,6 +1334,7 @@ mod tests {
             &ws,
             "9router/test-route",
             "test completed: 3/3 passed",
+            None,
             None,
         );
 
@@ -1230,8 +1378,8 @@ mod tests {
         ws2.objective = "build and test with coverage".to_string();
         ws2.allowed_tools = BTreeSet::from(["edit".to_string(), "apply_patch".to_string()]);
 
-        let prov1 = provenance_for_runtime(&ws1, "route-1", "status A", None);
-        let prov2 = provenance_for_runtime(&ws2, "route-1", "status A", None);
+        let prov1 = provenance_for_runtime(&ws1, "route-1", "status A", None, None);
+        let prov2 = provenance_for_runtime(&ws2, "route-1", "status A", None, None);
 
         // Different input payloads → different input digests
         assert_ne!(
@@ -1240,7 +1388,8 @@ mod tests {
         );
 
         // Different status_summary → different output_digest (Phase 5 audit fix)
-        let prov3 = provenance_for_runtime(&ws1, "route-1", "status B: different output", None);
+        let prov3 =
+            provenance_for_runtime(&ws1, "route-1", "status B: different output", None, None);
         assert_ne!(
             prov1.output_digest, prov3.output_digest,
             "Phase 5 audit: output_digest MUST change when status_summary changes"
@@ -1252,7 +1401,7 @@ mod tests {
     #[test]
     fn p5_effective_route_unknown_when_no_gateway_evidence() {
         let ws = work_spec();
-        let prov = provenance_for_runtime(&ws, "9router/requested-route", "completed", None);
+        let prov = provenance_for_runtime(&ws, "9router/requested-route", "completed", None, None);
 
         // When gateway_request_id is None, effective_route_id must be "unknown", not "9router/requested-route"
         assert_eq!(
@@ -1277,10 +1426,21 @@ mod tests {
     #[test]
     fn p5_audit_provenance_passes_digest_format_validation() {
         let ws = work_spec();
-        let prov = provenance_for_runtime(&ws, "route", "completed successfully", None);
+        let prov = provenance_for_runtime(&ws, "route", "completed successfully", None, None);
         // Runtime provenance MUST pass the protocol's digest format checker
         prov.verify_digest_format()
             .expect("Phase 5: runtime provenance digest must pass verify_digest_format");
+    }
+
+    #[test]
+    fn p7_provenance_carries_only_the_runtime_tool_sequence_digest() {
+        let ws = work_spec();
+        let digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let provenance = provenance_for_runtime(&ws, "route", "completed", None, Some(digest));
+        assert_eq!(
+            provenance.tool_call_sequence_digest.as_deref(),
+            Some(digest)
+        );
     }
 
     /// Phase 5 audit: test helper provenance (hardcoded "sha256:i" / "sha256:o") also passes
@@ -1516,6 +1676,7 @@ mod tests {
             display_name: "task-implementer".to_string(),
             model_route_summary: "9router/cx-implementer".to_string(),
             gateway_provenance: None,
+            tool_call_sequence_digest: None,
             parent_capabilities: None,
         };
 
@@ -1555,6 +1716,7 @@ mod tests {
             display_name: "task-tester".to_string(),
             model_route_summary: "parent-main".to_string(),
             gateway_provenance: Some(gateway),
+            tool_call_sequence_digest: None,
             parent_capabilities: None,
         };
 

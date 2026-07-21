@@ -30,6 +30,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -150,14 +151,19 @@ impl AgentControl {
             .complete_spawn(child_thread_id, status_summary, success)
             .await
         {
-            Ok(true) => {
+            Ok(Some(completion)) => {
                 let _ = self.cccx_runtime_active.fetch_update(
                     Ordering::Relaxed,
                     Ordering::Relaxed,
                     |count| count.checked_sub(1),
                 );
+                self.emit_cccx_task_update_to_parent(child_thread_id, completion.task_update)
+                    .await;
+                if let Some(error) = completion.verification_error {
+                    warn!(%error, %child_thread_id, "cccx: verification command failed after TaskGraph transition");
+                }
             }
-            Ok(false) => {}
+            Ok(None) => {}
             Err(error) => {
                 warn!(%error, %child_thread_id, "cccx: failed to record subagent artifact");
             }
@@ -178,6 +184,20 @@ impl AgentControl {
             .await
     }
 
+    /// Best-effort provenance hook called only after a tool has completed.
+    pub(crate) async fn record_cccx_successful_tool_call(
+        &self,
+        child_thread_id: ThreadId,
+        call_id: &str,
+        tool_name: &str,
+    ) -> bool {
+        self.cccx_runtime.lock().await.record_successful_tool_call(
+            child_thread_id,
+            call_id,
+            tool_name,
+        )
+    }
+
     /// Record the terminal cancellation of one CCCX worker attempt.
     ///
     /// The worker session performs this immediately before it aborts itself,
@@ -191,20 +211,59 @@ impl AgentControl {
         self.cccx_permission_queue
             .cancel_agent_requests(&child_thread_id.to_string())
             .await;
-        let cancelled = self
+        let task_update = self
             .cccx_runtime
             .lock()
             .await
             .cancel_spawn(child_thread_id, reason)
             .await?;
-        if cancelled {
+        if let Some(task_update) = task_update {
             let _ = self.cccx_runtime_active.fetch_update(
                 Ordering::Relaxed,
                 Ordering::Relaxed,
                 |count| count.checked_sub(1),
             );
+            self.emit_cccx_task_update_to_parent(child_thread_id, task_update)
+                .await;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(cancelled)
+    }
+
+    /// Deliver an authoritative TaskGraph transition on the parent session's
+    /// event stream. A worker's own session is not the headless controller,
+    /// so emitting there would make `cccx exec --json` miss the transition.
+    async fn emit_cccx_task_update_to_parent(
+        &self,
+        child_thread_id: ThreadId,
+        update: codex_protocol::protocol::CccxRuntimeTaskUpdateEvent,
+    ) {
+        let Ok(state) = self.upgrade() else {
+            return;
+        };
+        let Ok(child_thread) = state.get_thread(child_thread_id).await else {
+            return;
+        };
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id, ..
+        }) = child_thread.session_source.clone()
+        else {
+            return;
+        };
+        let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+            return;
+        };
+        parent_thread
+            .session
+            .send_event_raw(Event {
+                // The child thread is the stable origin for this runtime
+                // lifecycle event; the notification itself is delivered on
+                // the parent stream above.
+                id: child_thread_id.to_string(),
+                msg: EventMsg::CccxRuntimeTaskUpdate(update),
+            })
+            .await;
     }
 
     pub(crate) fn has_active_cccx_runtime(&self) -> bool {

@@ -182,6 +182,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         // CCCX worker state is persisted in its TaskGraph/runtime store; this
         // event is a live UI/headless update and must not duplicate it in a
         // rollout transcript.
-        | EventMsg::CccxRuntimeAgentUpdate(_) => false,
+        | EventMsg::CccxRuntimeAgentUpdate(_)
+        | EventMsg::CccxRuntimeTaskUpdate(_) => false,
     }
 }

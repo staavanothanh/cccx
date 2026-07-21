@@ -32,6 +32,9 @@ pub struct SubagentCheckpoint {
     /// Live Main CC capability ceiling captured at the original spawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_capabilities: Option<cccx_protocol::ParentCapabilitySet>,
+    /// Rolling digest of successful tool calls completed before this snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_sequence_digest: Option<String>,
 }
 
 #[derive(Debug)]
@@ -188,6 +191,7 @@ mod tests {
             base_commit: None,
             base_working_tree_digest: None,
             parent_capabilities: None,
+            tool_call_sequence_digest: None,
         };
         save_checkpoint(dir.path(), &ck).await.unwrap();
         let loaded = load_checkpoint(dir.path(), "a1-sess")
@@ -221,6 +225,7 @@ mod tests {
             base_commit: Some("head-1".to_string()),
             base_working_tree_digest: None,
             parent_capabilities: None,
+            tool_call_sequence_digest: None,
         };
 
         assert!(matches!(
@@ -246,6 +251,7 @@ mod tests {
             base_commit: Some("old-head".to_string()),
             base_working_tree_digest: None,
             parent_capabilities: None,
+            tool_call_sequence_digest: None,
         };
 
         assert!(matches!(
@@ -276,6 +282,7 @@ mod tests {
             base_commit: Some("abc1234".to_string()),
             base_working_tree_digest: Some("sha256:tree".to_string()),
             parent_capabilities: None,
+            tool_call_sequence_digest: None,
         };
         save_checkpoint(dir.path(), &ck).await.unwrap();
 
@@ -314,6 +321,7 @@ mod tests {
             base_commit: Some("same-head".to_string()),
             base_working_tree_digest: None,
             parent_capabilities: None,
+            tool_call_sequence_digest: None,
         };
 
         // Even with matching base_commit, a 6+ month old checkpoint is stale
@@ -341,6 +349,7 @@ mod tests {
             base_commit: Some("head-abc".to_string()),
             base_working_tree_digest: Some("sha256:tree-a".to_string()),
             parent_capabilities: None,
+            tool_call_sequence_digest: None,
         };
 
         assert!(matches!(
@@ -365,6 +374,7 @@ mod tests {
             base_commit: Some("head-abc".to_string()),
             base_working_tree_digest: Some("sha256:tree-a".to_string()),
             parent_capabilities: None,
+            tool_call_sequence_digest: None,
         };
 
         assert!(matches!(
@@ -395,6 +405,7 @@ mod tests {
             base_commit: None, // old format
             base_working_tree_digest: None,
             parent_capabilities: None,
+            tool_call_sequence_digest: None,
         };
 
         assert!(matches!(

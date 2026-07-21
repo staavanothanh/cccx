@@ -408,7 +408,8 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::CollabResumeBegin(_)
         | EventMsg::CollabResumeEnd(_)
-        | EventMsg::CccxRuntimeAgentUpdate(_) => None,
+        | EventMsg::CccxRuntimeAgentUpdate(_)
+        | EventMsg::CccxRuntimeTaskUpdate(_) => None,
     }
 }
 
@@ -494,7 +495,8 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::CollabResumeBegin(_)
         | EventMsg::CollabResumeEnd(_)
         | EventMsg::SubAgentActivity(_)
-        | EventMsg::CccxRuntimeAgentUpdate(_) => None,
+        | EventMsg::CccxRuntimeAgentUpdate(_)
+        | EventMsg::CccxRuntimeTaskUpdate(_) => None,
     }
 }
 

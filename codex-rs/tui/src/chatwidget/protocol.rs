@@ -148,7 +148,8 @@ impl ChatWidget {
             // registry. This notification carries a logical worker id rather
             // than a thread id, so it must not be treated as a thread-local
             // transcript item here.
-            ServerNotification::CccxRuntimeAgentUpdate(_) => {}
+            ServerNotification::CccxRuntimeAgentUpdate(_)
+            | ServerNotification::CccxRuntimeTaskUpdate(_) => {}
             ServerNotification::ModelVerification(notification) => {
                 self.on_app_server_model_verification(&notification.verifications)
             }
