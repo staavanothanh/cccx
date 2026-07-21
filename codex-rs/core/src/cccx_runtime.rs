@@ -9,11 +9,11 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-use cccx_provider_gateway::provenance::GatewayProvenance;
-use cccx_provider_gateway::FallbackPolicyId;
 use cccx_protocol::{
     Artifact, ArtifactProvenance, ArtifactStatus, ModelRouteSelection, PermissionPolicy, WorkSpec,
 };
+use cccx_provider_gateway::FallbackPolicyId;
+use cccx_provider_gateway::provenance::GatewayProvenance;
 use cccx_task_graph::{
     AttemptRecord, TaskGraph, TaskNode, VerificationSpec, WorkerRecord, WorkerStatus,
 };
@@ -24,8 +24,8 @@ use codex_protocol::protocol::CccxRuntimeAgentUpdateEvent;
 
 use crate::artifact_collector::ArtifactCollector;
 use crate::cccx_task_graph_state;
-use crate::checkpoint::SubagentCheckpoint;
 use crate::checkpoint::CheckpointValidation;
+use crate::checkpoint::SubagentCheckpoint;
 use crate::goal_evaluator::GoalEvaluator;
 use crate::verification_runner::run_verification;
 
@@ -44,6 +44,10 @@ pub(crate) struct CccxSpawnRuntime {
     pub(crate) display_name: String,
     pub(crate) model_route_summary: String,
     pub(crate) gateway_provenance: Option<GatewayProvenance>,
+    /// Capability ceiling captured from the live Main CC at spawn. It is
+    /// persisted with checkpoints so resume never derives authority from the
+    /// child WorkSpec itself.
+    pub(crate) parent_capabilities: Option<cccx_protocol::ParentCapabilitySet>,
 }
 
 impl CccxSpawnRuntime {
@@ -258,12 +262,20 @@ impl CccxRuntimeRegistry {
         let checkpoint = crate::checkpoint::load_checkpoint(project_root, logical_session_id)
             .await
             .map_err(|error| format!("failed to load CCCX checkpoint: {error}"))?
-            .ok_or_else(|| format!("no checkpoint exists for CCCX worker `{logical_session_id}`"))?;
+            .ok_or_else(|| {
+                format!("no checkpoint exists for CCCX worker `{logical_session_id}`")
+            })?;
         if worker.worker.status != WorkerStatus::Resumable {
-            return Err(format!("CCCX worker `{logical_session_id}` is {:?}, not resumable", worker.worker.status));
+            return Err(format!(
+                "CCCX worker `{logical_session_id}` is {:?}, not resumable",
+                worker.worker.status
+            ));
         }
         if checkpoint.attempt_id != worker.attempt_id {
-            return Err(format!("checkpoint attempt `{}` does not match worker attempt `{}`", checkpoint.attempt_id, worker.attempt_id));
+            return Err(format!(
+                "checkpoint attempt `{}` does not match worker attempt `{}`",
+                checkpoint.attempt_id, worker.attempt_id
+            ));
         }
         if checkpoint.work_spec.is_none() || checkpoint.display_name.is_none() {
             return Err("checkpoint predates resumable CCCX worker metadata; create a new WorkSpec attempt instead".to_string());
@@ -276,8 +288,12 @@ impl CccxRuntimeRegistry {
         ) {
             CheckpointValidation::Valid => Ok(checkpoint),
             CheckpointValidation::NeedsRevalidation { .. } if revalidate => Ok(checkpoint),
-            CheckpointValidation::NeedsRevalidation { .. } => Err("checkpoint requires --revalidate because the base revision changed".to_string()),
-            CheckpointValidation::Stale { reason, .. } => Err(format!("checkpoint is not resumable: {reason}")),
+            CheckpointValidation::NeedsRevalidation { .. } => Err(
+                "checkpoint requires --revalidate because the base revision changed".to_string(),
+            ),
+            CheckpointValidation::Stale { reason, .. } => {
+                Err(format!("checkpoint is not resumable: {reason}"))
+            }
         }
     }
     pub(crate) async fn register_spawn(
@@ -342,6 +358,7 @@ impl CccxRuntimeRegistry {
             checkpointed_at: chrono::Utc::now().to_rfc3339(),
             base_commit: runtime.work_spec.base_revision.git_head.clone(),
             base_working_tree_digest: runtime.work_spec.base_revision.working_tree_digest.clone(),
+            parent_capabilities: runtime.parent_capabilities.clone(),
         };
         crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
             .await
@@ -376,6 +393,7 @@ impl CccxRuntimeRegistry {
                     .base_revision
                     .working_tree_digest
                     .clone(),
+                parent_capabilities: runtime.parent_capabilities.clone(),
             };
             crate::checkpoint::save_checkpoint(&runtime.project_root, &checkpoint)
                 .await
@@ -810,6 +828,7 @@ mod tests {
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -845,6 +864,7 @@ mod tests {
             display_name: "worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -886,19 +906,41 @@ mod tests {
             display_name: "a1-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
-        registry.register_spawn(child_thread_id, runtime).await.unwrap();
+        registry
+            .register_spawn(child_thread_id, runtime)
+            .await
+            .unwrap();
         registry
             .complete_spawn(child_thread_id, "transport lost".to_string(), false)
             .await
             .unwrap();
-        assert!(CccxRuntimeRegistry::prepare_resume(
-            project.path(), "logical-resume", "head", None, 60, true
-        ).await.is_ok());
-        assert!(CccxRuntimeRegistry::prepare_resume(
-            project.path(), "a1-worker", "head", None, 60, true
-        ).await.is_ok());
+        assert!(
+            CccxRuntimeRegistry::prepare_resume(
+                project.path(),
+                "logical-resume",
+                "head",
+                None,
+                60,
+                true
+            )
+            .await
+            .is_ok()
+        );
+        assert!(
+            CccxRuntimeRegistry::prepare_resume(
+                project.path(),
+                "a1-worker",
+                "head",
+                None,
+                60,
+                true
+            )
+            .await
+            .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -912,9 +954,13 @@ mod tests {
             display_name: "a1-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
-        registry.register_spawn(child_thread_id, runtime).await.unwrap();
+        registry
+            .register_spawn(child_thread_id, runtime)
+            .await
+            .unwrap();
 
         let graph = cccx_task_graph_state::load_task_graph(project.path())
             .await
@@ -950,6 +996,7 @@ mod tests {
             display_name: "verification-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -990,6 +1037,7 @@ mod tests {
             display_name: "interrupted-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -1028,6 +1076,7 @@ mod tests {
             display_name: "cancelled-worker".to_string(),
             model_route_summary: "9router/test".to_string(),
             gateway_provenance: None,
+            parent_capabilities: None,
         };
         let mut registry = CccxRuntimeRegistry::default();
         registry
@@ -1467,6 +1516,7 @@ mod tests {
             display_name: "task-implementer".to_string(),
             model_route_summary: "9router/cx-implementer".to_string(),
             gateway_provenance: None,
+            parent_capabilities: None,
         };
 
         let update = runtime.agent_update_event("running", Some("approval-7".to_string()));
@@ -1477,7 +1527,10 @@ mod tests {
         assert_eq!(update.status, "running");
         assert_eq!(update.permission_request_id.as_deref(), Some("approval-7"));
         assert_eq!(update.model_route.selection_source, "explicit");
-        assert_eq!(update.model_route.requested_route_id, "9router/cx-implementer");
+        assert_eq!(
+            update.model_route.requested_route_id,
+            "9router/cx-implementer"
+        );
         assert_eq!(update.model_route.effective_route_id, "unknown");
         assert!(update.model_route.fallback_chain.is_empty());
     }
@@ -1502,11 +1555,15 @@ mod tests {
             display_name: "task-tester".to_string(),
             model_route_summary: "parent-main".to_string(),
             gateway_provenance: Some(gateway),
+            parent_capabilities: None,
         };
 
         let update = runtime.agent_update_event("completed", None);
 
-        assert_eq!(update.model_route.selection_source, "inherit_main_effective");
+        assert_eq!(
+            update.model_route.selection_source,
+            "inherit_main_effective"
+        );
         assert_eq!(update.model_route.requested_route_id, "9router/requested");
         assert_eq!(update.model_route.effective_route_id, "9router/effective");
         assert_eq!(

@@ -340,6 +340,7 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
         display_name,
         model_route_summary: route_summary,
         gateway_provenance: None,
+        parent_capabilities: Some(parent),
     })))
 }
 
@@ -356,8 +357,10 @@ pub(crate) fn enforce_cccx_fork_policy(
     let Some(work_spec) = work_spec else {
         return Ok(());
     };
-    if matches!(work_spec.fork_policy, cccx_protocol::ForkPolicy::WorkSpecOnly)
-        && includes_parent_context
+    if matches!(
+        work_spec.fork_policy,
+        cccx_protocol::ForkPolicy::WorkSpecOnly
+    ) && includes_parent_context
     {
         return Err(FunctionCallError::RespondToModel(
             "cccx work_spec_only workers cannot fork parent history; use fork_turns=none and pass bounded state through WorkSpec/Artifact".to_string(),

@@ -3010,3 +3010,18 @@ Validation (green):
 cargo +1.95.0 test -p codex-core cccx_mcp_projection -j 1 --lib -- --test-threads=1
 cargo +1.95.0 test -p codex-core cccx_tool_projection_filters_mcp_runtime_tools -j 1 --lib -- --test-threads=1
 ```
+
+## 2026-07-21 — Resume preserves the spawn-time parent capability ceiling
+
+- A CCCX spawn now captures the live Main CC `ParentCapabilitySet` and writes
+  it into both active runtime state and every checkpoint path.
+- Resume reads that immutable snapshot and fails closed for older checkpoints
+  that lack it; it no longer reconstructs a parent capability set from the
+  child WorkSpec, which would allow privilege self-assertion.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 check -p codex-core -j 1
+cargo +1.95.0 test -p codex-core prepare_resume_rejects_completed_and_accepts_interrupted_worker --lib -j 1 -- --test-threads=1
+```

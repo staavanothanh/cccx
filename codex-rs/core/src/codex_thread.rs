@@ -2,7 +2,6 @@ use crate::agent::AgentStatus;
 use crate::agent::control::SpawnAgentOptions;
 use crate::cccx_runtime::CccxRuntimeRegistry;
 use crate::cccx_runtime::CccxSpawnRuntime;
-use crate::cccx_runtime::parent_capability_set_for_work_spec;
 use crate::config::ConstraintResult;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
@@ -266,10 +265,7 @@ impl CodexThread {
 
     /// Resolve a stable CCCX worker identity to its current native incarnation.
     /// This is root-scoped: callers cannot select an arbitrary native thread.
-    pub async fn cccx_worker_thread_id(
-        &self,
-        worker_identifier: &str,
-    ) -> Result<ThreadId, String> {
+    pub async fn cccx_worker_thread_id(&self, worker_identifier: &str) -> Result<ThreadId, String> {
         let config = self.config().await;
         let graph = crate::cccx_task_graph_state::load_task_graph(&config.cwd)
             .await
@@ -379,7 +375,8 @@ impl CodexThread {
             .await
             .map(|sha| sha.0)
             .unwrap_or_default();
-        let current_working_tree_digest = cccx_current_working_tree_digest(config.cwd.as_path()).await;
+        let current_working_tree_digest =
+            cccx_current_working_tree_digest(config.cwd.as_path()).await;
         let checkpoint = CccxRuntimeRegistry::prepare_resume(
             &config.cwd,
             worker_identifier,
@@ -401,13 +398,9 @@ impl CodexThread {
             .model
             .clone()
             .unwrap_or_else(|| "inherit-main".to_string());
-        let parent = parent_capability_set_for_work_spec(
-            &config.cwd,
-            &model_route_summary,
-            &work_spec,
-            work_spec.allowed_tools.clone(),
-            work_spec.allowed_mcp_tools.clone(),
-        );
+        let parent = checkpoint.parent_capabilities.clone().ok_or_else(|| {
+            "checkpoint is missing the live parent capability snapshot; create a new WorkSpec from Main CC instead of resuming".to_string()
+        })?;
         crate::cccx_spawn::apply_cccx_harness_to_config(&mut config, &parent, &work_spec)
             .map_err(|error| error.to_string())?;
         let resume_input = format!(
@@ -431,6 +424,7 @@ impl CodexThread {
             display_name,
             model_route_summary,
             gateway_provenance: None,
+            parent_capabilities: Some(parent),
         });
         let spawned = self
             .session
