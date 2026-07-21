@@ -14,7 +14,15 @@ fn filtered_presets(_model_catalog: &ModelCatalog) -> Vec<CollaborationModeMask>
 fn cycle_presets(_model_catalog: &ModelCatalog) -> Vec<CollaborationModeMask> {
     builtin_collaboration_mode_presets()
         .into_iter()
-        .filter(|mask| mask.mode.is_some_and(ModeKind::is_cycle_visible))
+        // CCCX keeps dangerous modes out of the shortcut cycle. They remain
+        // visible and accessible through explicit slash commands, where their
+        // confirmation/attestation gates are enforced by core.
+        .filter(|mask| {
+            matches!(
+                mask.mode,
+                Some(ModeKind::Plan | ModeKind::Default | ModeKind::AcceptEdits | ModeKind::Auto)
+            )
+        })
         .collect()
 }
 

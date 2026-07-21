@@ -1366,7 +1366,7 @@ async fn collab_mode_shift_tab_cycles_only_when_idle() {
 }
 
 #[tokio::test]
-async fn cccx_shift_tab_cycles_all_modes_and_requests_risky_modes_without_optimistic_local_mode() {
+async fn cccx_shift_tab_cycles_only_safe_modes_without_requesting_risky_modes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
@@ -1381,30 +1381,12 @@ async fn cccx_shift_tab_cycles_all_modes_and_requests_risky_modes_without_optimi
     }
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Auto);
-    assert_eq!(
-        next_thread_collaboration_mode_update(&mut rx),
-        ModeKind::DontAsk
-    );
-    let dont_ask_mask =
-        collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::DontAsk)
-            .expect("expected DontAsk collaboration mask");
-    chat.set_collaboration_mask(dont_ask_mask);
-
-    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::DontAsk);
-    assert_eq!(
-        next_thread_collaboration_mode_update(&mut rx),
-        ModeKind::Bypass
-    );
-    let bypass_mask =
-        collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Bypass)
-            .expect("expected Bypass collaboration mask");
-    chat.set_collaboration_mask(bypass_mask);
-
-    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
     assert_eq!(next_thread_collaboration_mode_update(&mut rx), ModeKind::Plan);
+
+    // Risky modes are still available by explicit command, but never via
+    // Shift+Tab. No extra event must have been requested in between.
+    assert!(rx.try_recv().is_err());
 }
 
 #[tokio::test]

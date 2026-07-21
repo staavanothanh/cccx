@@ -125,19 +125,18 @@ impl CccxModeState {
         Ok(())
     }
 
-    /// Shift+Tab cycle: Plan → Default → AcceptEdits → Auto → DontAsk
-    /// → Bypass → Plan...
+    /// Shift+Tab is deliberately limited to the four safe modes:
+    /// Plan → Default → AcceptEdits → Auto → Plan.
     ///
-    /// Risky targets still require the dedicated transition entry points:
-    /// [`confirm_mode`] for DontAsk and [`attest_mode`] for Bypass.
+    /// `DontAsk` and `Bypass` are only reachable through their explicit
+    /// slash-command transitions, so a keyboard cycle can never request a
+    /// high-risk mode by accident (design.md §8).
     pub fn next_in_cycle(&self) -> MainMode {
         match self.current.clone() {
             MainMode::Plan => MainMode::Default,
             MainMode::Default => MainMode::AcceptEdits,
             MainMode::AcceptEdits => MainMode::Auto,
-            MainMode::Auto => MainMode::DontAsk,
-            MainMode::DontAsk => MainMode::Bypass,
-            MainMode::Bypass => MainMode::Plan,
+            MainMode::Auto | MainMode::DontAsk | MainMode::Bypass => MainMode::Plan,
         }
     }
 
@@ -232,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_cycle_includes_all_six_modes_with_risky_transition_gates() {
+    fn shift_tab_cycle_only_visits_the_four_safe_modes() {
         let mut state = CccxModeState::new(MainMode::Plan);
         assert_eq!(state.next_in_cycle(), MainMode::Default);
         state.change_mode(MainMode::Default).unwrap();
@@ -240,19 +239,12 @@ mod tests {
         state.change_mode(MainMode::AcceptEdits).unwrap();
         assert_eq!(state.next_in_cycle(), MainMode::Auto);
         state.change_mode(MainMode::Auto).unwrap();
-        assert_eq!(state.next_in_cycle(), MainMode::DontAsk);
-        let dont_ask = state.next_in_cycle();
-        assert!(matches!(
-            state.change_mode(dont_ask),
-            Err(ModeTransitionError::DontAskRequiresConfirm)
-        ));
+        assert_eq!(state.next_in_cycle(), MainMode::Plan);
+
+        // Risky modes cannot be entered by the cycle. Once explicitly entered,
+        // the next shortcut returns to the safe cycle.
         state.confirm_mode().unwrap();
-        assert_eq!(state.next_in_cycle(), MainMode::Bypass);
-        let bypass = state.next_in_cycle();
-        assert!(matches!(
-            state.change_mode(bypass),
-            Err(ModeTransitionError::BypassRequiresAttestation)
-        ));
+        assert_eq!(state.next_in_cycle(), MainMode::Plan);
         let attestation = BypassModeAttestation::backend_sandbox_isolation();
         state.attest_mode(&attestation).unwrap();
         assert_eq!(state.next_in_cycle(), MainMode::Plan);

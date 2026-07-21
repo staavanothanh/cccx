@@ -2938,3 +2938,19 @@ cargo llvm-cov -p cccx-protocol -p cccx-harness-cc -p cccx-harness-cx -p cccx-mo
 - The lowest individual owned crate is `cccx-policy` at 68.56% line coverage;
   aggregate gate passes, while its unexercised edge cases remain a candidate
   for future focused tests rather than a reason to misstate per-crate parity.
+
+## 2026-07-21 — Design-alignment follow-up: safe Shift+Tab cycle
+
+- Reconciled an implementation drift against `docs/design.md` §8 and the final
+  completion gate: the shortcut had included `DontAsk` and `Bypass`. It now
+  cycles only `Plan → Default → AcceptEdits → Auto → Plan`.
+- Risky modes remain available only via explicit slash commands, where core
+  applies confirmation (`DontAsk`) and backend sandbox-isolation attestation
+  (`Bypass`).
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 test -p cccx-mode shift_tab_cycle_only_visits_the_four_safe_modes -j 1
+cargo +1.95.0 test -p codex-tui cccx_shift_tab_cycles_only_safe_modes_without_requesting_risky_modes --lib -j 1
+```
