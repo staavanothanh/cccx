@@ -10,6 +10,7 @@ use cccx_headless::ErrorPayload;
 use cccx_headless::HeadlessEvent;
 use cccx_headless::HeadlessEventEnvelope;
 use cccx_headless::ModelRoutePayload;
+use cccx_headless::PermissionRequestPayload;
 use cccx_headless::TaskUpdatePayload;
 use cccx_headless::TerminalPayload;
 use cccx_headless::TerminalStatus;
@@ -172,7 +173,9 @@ impl EventProcessorWithJsonOutput {
                 recoverable: false,
             })],
             ThreadEvent::AgentUpdate(ref update) => {
-                vec![HeadlessEvent::AgentUpdate(Self::agent_update_payload(update))]
+                vec![HeadlessEvent::AgentUpdate(Self::agent_update_payload(
+                    update,
+                ))]
             }
             // ThreadStarted, TurnStarted, TurnCompleted, TurnFailed, and
             // non-mapped items are execution details; terminal is emitted
@@ -237,6 +240,23 @@ impl EventProcessorWithJsonOutput {
         self.envelope(HeadlessEvent::ApprovalDenied(ApprovalDeniedPayload {
             request_id,
             reason: "headless approval default is deny".to_string(),
+        }))
+    }
+
+    fn permission_request_envelope(
+        &self,
+        request_id: String,
+        agent_display_name: String,
+        action: String,
+        scope: String,
+        risk: String,
+    ) -> HeadlessEventEnvelope {
+        self.envelope(HeadlessEvent::PermissionRequest(PermissionRequestPayload {
+            request_id,
+            agent_display_name,
+            action,
+            scope,
+            risk,
         }))
     }
 
@@ -803,12 +823,44 @@ impl EventProcessor for EventProcessorWithJsonOutput {
     #[allow(clippy::print_stdout)]
     fn on_approval_denied(&mut self, request_id: String) {
         self.cccx_exit_code = 2;
-        let line = serde_json::to_string(&self.approval_denied_envelope(request_id)).unwrap_or_else(|err| {
+        let line = serde_json::to_string(&self.approval_denied_envelope(request_id))
+            .unwrap_or_else(|err| {
+                json!({
+                    "schemaVersion": cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION,
+                    "type": "error",
+                    "payload": {
+                        "message": format!("failed to serialize approval denial: {err}"),
+                        "recoverable": false,
+                    },
+                })
+                .to_string()
+            });
+        debug_assert!(cccx_headless::assert_stdout_lines_are_json(&line).is_ok());
+        println!("{line}");
+    }
+
+    #[allow(clippy::print_stdout)]
+    fn on_permission_request(
+        &mut self,
+        request_id: String,
+        agent_display_name: String,
+        action: String,
+        scope: String,
+        risk: String,
+    ) {
+        let line = serde_json::to_string(&self.permission_request_envelope(
+            request_id,
+            agent_display_name,
+            action,
+            scope,
+            risk,
+        ))
+        .unwrap_or_else(|err| {
             json!({
                 "schemaVersion": cccx_headless::CCCX_HEADLESS_EVENT_SCHEMA_VERSION,
                 "type": "error",
                 "payload": {
-                    "message": format!("failed to serialize approval denial: {err}"),
+                    "message": format!("failed to serialize permission request: {err}"),
                     "recoverable": false,
                 },
             })

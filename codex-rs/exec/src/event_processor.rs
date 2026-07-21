@@ -31,6 +31,20 @@ pub(crate) trait EventProcessor {
     /// Called from handle_server_request when exec rejects an approval.
     /// EventProcessorWithJsonOutput overrides to track exit_code=2.
     fn on_approval_denied(&mut self, _request_id: String) {}
+
+    /// cccx: headless output reports an approval request before the mandatory
+    /// denial, so JSONL consumers can distinguish the requested action from
+    /// the terminal decision. Human output deliberately keeps its existing
+    /// behavior.
+    fn on_permission_request(
+        &mut self,
+        _request_id: String,
+        _agent_display_name: String,
+        _action: String,
+        _scope: String,
+        _risk: String,
+    ) {
+    }
 }
 
 pub(crate) fn handle_last_message(last_agent_message: Option<&str>, output_file: &Path) {

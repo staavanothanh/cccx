@@ -353,6 +353,40 @@ fn p11_permission_denial_emits_approval_denied_envelope_and_exit_code_2() {
 }
 
 #[test]
+fn p11_permission_request_precedes_headless_denial_with_typed_payload() {
+    let mut processor = EventProcessorWithJsonOutput::new(None);
+    processor.cccx_session_id = Some("session-1".to_string());
+    processor.cccx_turn_id = Some("turn-1".to_string());
+
+    let envelope = processor.permission_request_envelope(
+        "approval-2".to_string(),
+        "worker-1".to_string(),
+        "command".to_string(),
+        "git status".to_string(),
+        "medium".to_string(),
+    );
+    let cccx_headless::HeadlessEvent::PermissionRequest(payload) = envelope.event else {
+        panic!("expected permission-request envelope");
+    };
+    assert_eq!(payload.request_id, "approval-2");
+    assert_eq!(payload.agent_display_name, "worker-1");
+    assert_eq!(payload.action, "command");
+    assert_eq!(payload.scope, "git status");
+    assert_eq!(payload.risk, "medium");
+
+    EventProcessor::on_permission_request(
+        &mut processor,
+        "approval-2".to_string(),
+        "worker-1".to_string(),
+        "command".to_string(),
+        "git status".to_string(),
+        "medium".to_string(),
+    );
+    EventProcessor::on_approval_denied(&mut processor, "approval-2".to_string());
+    assert_eq!(processor.cccx_exit_code, 2);
+}
+
+#[test]
 fn p11_cancel_terminal_event_uses_cancelled_status_and_exit_code_3() {
     let mut processor = EventProcessorWithJsonOutput::new(None);
 

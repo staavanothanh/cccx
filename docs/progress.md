@@ -2974,3 +2974,23 @@ Validation (green):
 cargo +1.95.0 check -p codex-core -j 1
 cargo +1.95.0 test -p codex-core elicitation_holders_tests --lib -j 1 -- --test-threads=1
 ```
+
+## 2026-07-21 — Headless permission-request event is now real
+
+- Closed the Phase 11 visibility gap in `cccx exec`: before the mandatory
+  headless denial, the event processor now emits typed
+  `cccx.exec_event.v1` `permission-request` JSONL derived from the exact
+  typed app-server approval request. It is not inferred from model text,
+  tool output, or a UI prompt.
+- Command, file-change, legacy `apply_patch`, legacy exec, and permission
+  profile approval requests are normalized to stable request id, thread-backed
+  display id, action, bounded scope summary, and conservative risk. Requests
+  that are not approvals remain absent.
+- The existing mandatory deny follows the request and still gives terminal
+  exit code `2`; human output is unchanged.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 test -p codex-exec p11_permission_request_precedes_headless_denial_with_typed_payload -j 1 --lib -- --test-threads=1
+```

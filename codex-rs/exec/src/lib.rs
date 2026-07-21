@@ -993,13 +993,22 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
                 let mut approval_denied_request_id = None;
+                if let Some(permission) = cccx_permission_request_from_server_request(&request) {
+                    event_processor.on_permission_request(
+                        permission.request_id,
+                        permission.agent_display_name,
+                        permission.action,
+                        permission.scope,
+                        permission.risk,
+                    );
+                }
                 handle_server_request(
                     &client,
                     request,
                     &mut error_seen,
                     &mut approval_denied_request_id,
                 )
-                    .await;
+                .await;
                 if let Some(request_id) = approval_denied_request_id {
                     event_processor.on_approval_denied(request_id);
                 }
@@ -1071,6 +1080,87 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+struct CccxPermissionRequest {
+    request_id: String,
+    agent_display_name: String,
+    action: String,
+    scope: String,
+    risk: String,
+}
+
+/// Derive headless permission telemetry from the typed app-server request that
+/// will be denied by `exec`; never infer it from tool output or a UI prompt.
+fn cccx_permission_request_from_server_request(
+    request: &ServerRequest,
+) -> Option<CccxPermissionRequest> {
+    match request {
+        ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+            Some(CccxPermissionRequest {
+                request_id: request_id.to_string(),
+                agent_display_name: params.thread_id.clone(),
+                action: "command".to_string(),
+                scope: params.command.clone().unwrap_or_else(|| {
+                    params
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "command execution".to_string())
+                }),
+                risk: if params.additional_permissions.is_some()
+                    || params.network_approval_context.is_some()
+                {
+                    "high"
+                } else {
+                    "medium"
+                }
+                .to_string(),
+            })
+        }
+        ServerRequest::FileChangeRequestApproval { request_id, params } => {
+            Some(CccxPermissionRequest {
+                request_id: request_id.to_string(),
+                agent_display_name: params.thread_id.clone(),
+                action: "file_change".to_string(),
+                scope: params
+                    .grant_root
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .or_else(|| params.reason.clone())
+                    .unwrap_or_else(|| "file change".to_string()),
+                risk: "medium".to_string(),
+            })
+        }
+        ServerRequest::ApplyPatchApproval { request_id, params } => Some(CccxPermissionRequest {
+            request_id: request_id.to_string(),
+            agent_display_name: params.conversation_id.to_string(),
+            action: "file_change".to_string(),
+            scope: "apply_patch".to_string(),
+            risk: "medium".to_string(),
+        }),
+        ServerRequest::ExecCommandApproval { request_id, params } => Some(CccxPermissionRequest {
+            request_id: request_id.to_string(),
+            agent_display_name: params.conversation_id.to_string(),
+            action: "command".to_string(),
+            scope: "exec command".to_string(),
+            risk: "high".to_string(),
+        }),
+        ServerRequest::PermissionsRequestApproval { request_id, params } => {
+            Some(CccxPermissionRequest {
+                request_id: request_id.to_string(),
+                agent_display_name: params.thread_id.clone(),
+                action: "permissions".to_string(),
+                scope: "permission profile change".to_string(),
+                risk: "high".to_string(),
+            })
+        }
+        ServerRequest::McpServerElicitationRequest { .. }
+        | ServerRequest::ToolRequestUserInput { .. }
+        | ServerRequest::DynamicToolCall { .. }
+        | ServerRequest::ChatgptAuthTokensRefresh { .. }
+        | ServerRequest::AttestationGenerate { .. }
+        | ServerRequest::CurrentTimeRead { .. } => None,
+    }
 }
 
 fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
