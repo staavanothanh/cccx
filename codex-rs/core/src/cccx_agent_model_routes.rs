@@ -113,6 +113,28 @@ pub fn resolve_spawn_model_route_with_agent_suggestion(
     role_preset: Option<ModelRouteSelection>,
     tool_model_suggestion: Option<&str>,
 ) -> Result<ResolvedSpawnModelRoute, AgentModelRouteStoreError> {
+    resolve_spawn_model_route_with_agent_suggestion_and_main_effective(
+        catalog,
+        main_requested_route_id,
+        None,
+        requested,
+        role_preset,
+        tool_model_suggestion,
+    )
+}
+
+/// Resolves at the Main CC scheduler boundary with only factual effective
+/// route metadata observed from an earlier 9router request. Callers must pass
+/// `None` when the gateway did not report one; deriving it from a requested
+/// opaque route is forbidden.
+pub fn resolve_spawn_model_route_with_agent_suggestion_and_main_effective(
+    catalog: &LocalConfigCatalog,
+    main_requested_route_id: &str,
+    main_effective_route_id: Option<&str>,
+    requested: &ModelRouteSelection,
+    role_preset: Option<ModelRouteSelection>,
+    tool_model_suggestion: Option<&str>,
+) -> Result<ResolvedSpawnModelRoute, AgentModelRouteStoreError> {
     let work_spec_suggestion = explicit_route_id(requested).map(str::to_string);
     let tool_model_suggestion = tool_model_suggestion
         .map(str::trim)
@@ -144,9 +166,7 @@ pub fn resolve_spawn_model_route_with_agent_suggestion(
             agent_suggested_route_id,
             session_default_subagent_model,
             main_requested_route_id: Some(main_requested_route_id.to_string()),
-            // Effective route is deliberately unavailable at the scheduler
-            // boundary until 9router has reported it on a previous attempt.
-            main_effective_route_id: None,
+            main_effective_route_id: main_effective_route_id.map(str::to_string),
         })?;
     Ok(ResolvedSpawnModelRoute {
         route_id: resolved.route.route_id,
@@ -351,5 +371,21 @@ mod tests {
             error,
             AgentModelRouteStoreError::ConflictingAgentSuggestion { .. }
         ));
+    }
+
+    #[test]
+    fn inherited_effective_route_uses_only_factual_gateway_metadata() {
+        let resolved = resolve_spawn_model_route_with_agent_suggestion_and_main_effective(
+            &catalog(),
+            "9router/main",
+            Some("9router/role"),
+            &ModelRouteSelection::InheritMainEffective,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(resolved.route_id, "9router/role");
+        assert_eq!(resolved.selection_source, "inherit_main_effective");
     }
 }

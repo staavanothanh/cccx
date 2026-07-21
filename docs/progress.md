@@ -3084,6 +3084,22 @@ available in the current opaque-ID catalog, so capability-profile matching
 cannot honestly be claimed yet. `inherit_main_effective` also remains
 fail-closed until a prior factual gateway effective route is available.
 
+### 2026-07-21 — Factual `inherit_main_effective` at the scheduler boundary
+
+- Spawn now loads the last persisted gateway provenance for the live Main
+  thread and supplies `effective_route_id` to the model-route resolver only
+  when 9router actually reported it. Requested route strings are never used
+  as a substitute.
+- `inherit_main_effective` therefore resolves only to an owner-configured
+  catalog route backed by factual metadata. In the normal opaque/unknown case
+  it continues to fail closed with the resolver's missing/unknown route error.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 test -p codex-core cccx_agent_model_routes::tests:: --lib -j 1 -- --test-threads=1
+```
+
 ### 2026-07-21 — Turn-scoped gateway retry and transport-fallback provenance
 
 - Gateway provenance now has a `ModelClientSession` scope in addition to its

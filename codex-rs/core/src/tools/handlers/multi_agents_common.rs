@@ -279,6 +279,8 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
                 .to_string(),
         ));
     };
+    #[allow(deprecated)]
+    let project_root = turn.cwd.clone().to_path_buf();
     let role_preset =
         crate::cccx_agent_model_routes::route_for_work_role(&config.codex_home, &work_spec.role)
             .await
@@ -293,10 +295,25 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
                 "cccx could not load the configured 9router model catalog before spawn: {error}"
             ))
         })?;
+    // The requested model is always known locally. An effective route is only
+    // eligible for `inherit_main_effective` after 9router has actually
+    // reported it on this Main thread; unknown remains fail-closed.
+    let main_effective_route_id = crate::cccx_gateway_provenance_state::load_gateway_provenance(
+        &project_root,
+        &session.thread_id().to_string(),
+    )
+    .await
+    .map_err(|error| {
+        FunctionCallError::RespondToModel(format!(
+            "cccx could not load Main gateway provenance before spawn: {error}"
+        ))
+    })?
+    .and_then(|provenance| provenance.effective_route_id);
     let resolved_model_route =
-        crate::cccx_agent_model_routes::resolve_spawn_model_route_with_agent_suggestion(
+        crate::cccx_agent_model_routes::resolve_spawn_model_route_with_agent_suggestion_and_main_effective(
             &configured_model_catalog,
             &turn.model_info.slug,
+            main_effective_route_id.as_deref(),
             &work_spec.model_route,
             role_preset,
             agent_model_suggestion,
@@ -307,8 +324,6 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
     };
     work_spec.fallback_policy_id = resolved_model_route.fallback_policy_id.clone();
 
-    #[allow(deprecated)]
-    let project_root = turn.cwd.clone().to_path_buf();
     let parent_router = built_tools(session, step_context, cancellation_token)
         .await
         .map_err(|error| {
