@@ -2920,6 +2920,21 @@ cargo +1.95.0 build -p cccx-cli --bin cccx -j 1
 Results: cccx-owned crates green; `codex-exec` integration 42/42; core cccx
 seam 103/103; TUI cccx seam 13/13; binary smoke green. The only remaining
 build diagnostic is an existing `codex-tui` dead-code warning in
-`bottom_pane`, outside the cccx change surface. Coverage collection remains a
-separate disk-heavy release activity because the `llvm-cov` target directory
-has not been provisioned in this run.
+`bottom_pane`, outside the cccx change surface.
+
+### Coverage gate
+
+After reclaiming only stale build artifacts (`codex-rs/target` and the shared
+target's `debug/incremental` cache), coverage ran in the separate
+`D:\\cargo-targets\\cccx-llvmcov` target:
+
+```powershell
+cargo llvm-cov -p cccx-protocol -p cccx-harness-cc -p cccx-harness-cx -p cccx-mode -p cccx-policy -p cccx-provider-gateway -p cccx-task-graph -p cccx-ux -p cccx-headless --summary-only
+```
+
+- Total line coverage: **87.72%** (3,529 / 4,023 lines executed), exceeding
+  the 80% gate.
+- Total region coverage: 88.21%; function coverage: 85.34%.
+- The lowest individual owned crate is `cccx-policy` at 68.56% line coverage;
+  aggregate gate passes, while its unexercised edge cases remain a candidate
+  for future focused tests rather than a reason to misstate per-crate parity.
