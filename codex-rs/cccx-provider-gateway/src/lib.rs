@@ -36,6 +36,7 @@ pub enum ModelRouteSelectionSource {
     UserOverride,
     RolePreset,
     AgentSuggested,
+    SessionDefault,
     InheritMainRequested,
     InheritMainEffective,
     GlobalDefault,
@@ -141,7 +142,7 @@ impl<'a> ModelRouteResolver<'a> {
             } else if let Some(default) = request.session_default_subagent_model.clone() {
                 match default {
                     SubagentModelRouteRequest::RouteId(route_id) => {
-                        (ModelRouteSelectionSource::GlobalDefault, route_id)
+                        (ModelRouteSelectionSource::SessionDefault, route_id)
                     }
                     SubagentModelRouteRequest::InheritMainRequested => (
                         ModelRouteSelectionSource::InheritMainRequested,
@@ -364,6 +365,11 @@ pub struct LocalConfigCatalog {
     pub default_model: String,
     /// All model IDs available for selection (including `default_model`).
     pub available_models: Vec<String>,
+    /// Optional owner-configured default for spawned subagents. This is not
+    /// the Main model default: it participates after role presets and agent
+    /// suggestions, before inherit-main resolution.
+    #[serde(default)]
+    pub default_subagent_model: Option<String>,
     /// The fallback policy ID to use for all routes.
     pub fallback_policy_id: FallbackPolicyId,
     #[serde(default)]
@@ -383,6 +389,7 @@ impl LocalConfigCatalog {
         Self {
             default_model: current_model.clone(),
             available_models: vec![current_model],
+            default_subagent_model: None,
             fallback_policy_id: FallbackPolicyId::Strict,
             fetched_at: None,
             source: Some("current_config".to_string()),
@@ -399,17 +406,17 @@ impl LocalConfigCatalog {
         if !path.exists() {
             return Ok(Self::from_current_model(current_model));
         }
-        let contents = std::fs::read_to_string(&path).map_err(|source| {
-            ProviderGatewayError::CatalogRead {
+        let contents =
+            std::fs::read_to_string(&path).map_err(|source| ProviderGatewayError::CatalogRead {
+                path: path.display().to_string(),
+                source,
+            })?;
+        let mut catalog: Self = serde_json::from_str(&contents).map_err(|source| {
+            ProviderGatewayError::CatalogParse {
                 path: path.display().to_string(),
                 source,
             }
         })?;
-        let mut catalog: Self =
-            serde_json::from_str(&contents).map_err(|source| ProviderGatewayError::CatalogParse {
-                path: path.display().to_string(),
-                source,
-            })?;
         catalog.normalize(current_model);
         Ok(catalog)
     }
@@ -423,7 +430,10 @@ impl LocalConfigCatalog {
         self.available_models.dedup();
 
         if !current_model.trim().is_empty()
-            && !self.available_models.iter().any(|model| model == &current_model)
+            && !self
+                .available_models
+                .iter()
+                .any(|model| model == &current_model)
         {
             self.available_models.push(current_model.clone());
         }
@@ -435,6 +445,11 @@ impl LocalConfigCatalog {
         {
             self.default_model = current_model;
         }
+        self.default_subagent_model = self.default_subagent_model.take().filter(|model| {
+            self.available_models
+                .iter()
+                .any(|available| available == model)
+        });
     }
 
     /// Returns the models that should appear in the `/model` popup, keyed by
@@ -695,6 +710,7 @@ mod local_catalog_tests {
             r#"{
   "default_model": "oc/deepseek-v4-pro",
   "available_models": ["oc/deepseek-v4-pro", "oc/deepseek-v4-pro", ""],
+  "default_subagent_model": "oc/deepseek-v4-pro",
   "fallback_policy_id": "strict",
   "fetched_at": "2026-07-20T00:00:00Z",
   "source": "test",
@@ -711,6 +727,10 @@ mod local_catalog_tests {
         assert_eq!(
             catalog.available_models,
             vec!["oc/deepseek-v4-pro", "oc/deepseek-v4-flash-free"]
+        );
+        assert_eq!(
+            catalog.default_subagent_model.as_deref(),
+            Some("oc/deepseek-v4-pro")
         );
         assert_eq!(catalog.source.as_deref(), Some("test"));
 
@@ -731,6 +751,7 @@ mod local_catalog_tests {
                 "oc/deepseek-v4-flash-free".to_string(),
                 "oc/deepseek-v4-pro".to_string(),
             ],
+            default_subagent_model: None,
             fallback_policy_id: FallbackPolicyId::Strict,
             fetched_at: None,
             source: Some("test".to_string()),
@@ -759,6 +780,7 @@ mod local_catalog_tests {
         let catalog = LocalConfigCatalog {
             default_model: "unknown/model".to_string(),
             available_models: vec!["unknown/model".to_string()],
+            default_subagent_model: None,
             fallback_policy_id: FallbackPolicyId::Strict,
             fetched_at: None,
             source: None,

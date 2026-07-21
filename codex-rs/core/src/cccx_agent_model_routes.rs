@@ -150,12 +150,19 @@ pub fn resolve_spawn_model_route_with_agent_suggestion_and_main_effective(
         });
     }
     let agent_suggested_route_id = tool_model_suggestion.or(work_spec_suggestion);
-    let session_default_subagent_model = match requested {
-        ModelRouteSelection::InheritMainEffective => {
-            Some(SubagentModelRouteRequest::InheritMainEffective)
-        }
-        ModelRouteSelection::InheritMainRequested | ModelRouteSelection::Explicit { .. } => None,
-    };
+    let session_default_subagent_model = catalog
+        .default_subagent_model
+        .as_ref()
+        .cloned()
+        .map(SubagentModelRouteRequest::RouteId)
+        .or_else(|| match requested {
+            ModelRouteSelection::InheritMainEffective => {
+                Some(SubagentModelRouteRequest::InheritMainEffective)
+            }
+            ModelRouteSelection::InheritMainRequested | ModelRouteSelection::Explicit { .. } => {
+                None
+            }
+        });
     let catalog = model_route_catalog(catalog);
     let resolved =
         ModelRouteResolver::new(&catalog).resolve_subagent_route(ModelRouteResolveRequest {
@@ -208,6 +215,7 @@ fn selection_source_label(source: ModelRouteSelectionSource) -> &'static str {
         ModelRouteSelectionSource::UserOverride => "user_override",
         ModelRouteSelectionSource::RolePreset => "role_preset",
         ModelRouteSelectionSource::AgentSuggested => "agent_suggested",
+        ModelRouteSelectionSource::SessionDefault => "session_default",
         ModelRouteSelectionSource::InheritMainRequested => "inherit_main_requested",
         ModelRouteSelectionSource::InheritMainEffective => "inherit_main_effective",
         ModelRouteSelectionSource::GlobalDefault => "global_default",
@@ -299,6 +307,7 @@ mod tests {
                 "9router/role".to_string(),
                 "9router/suggested".to_string(),
             ],
+            default_subagent_model: None,
             fallback_policy_id: FallbackPolicyId::Strict,
             fetched_at: None,
             source: None,
@@ -387,5 +396,22 @@ mod tests {
 
         assert_eq!(resolved.route_id, "9router/role");
         assert_eq!(resolved.selection_source, "inherit_main_effective");
+    }
+
+    #[test]
+    fn owner_default_subagent_model_precedes_inherit_main_requested() {
+        let mut catalog = catalog();
+        catalog.default_subagent_model = Some("9router/role".to_string());
+
+        let resolved = resolve_spawn_model_route(
+            &catalog,
+            "9router/main",
+            &ModelRouteSelection::InheritMainRequested,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(resolved.route_id, "9router/role");
+        assert_eq!(resolved.selection_source, "session_default");
     }
 }

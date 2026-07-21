@@ -3117,6 +3117,25 @@ Validation (green):
 cargo +1.95.0 check -p codex-core -j 1
 ```
 
+### 2026-07-21 — Owner default subagent model in the 9router catalog
+
+- `CCCX_HOME/cccx-model-catalog.json` now accepts optional
+  `default_subagent_model`. It is a separate owner setting from
+  `default_model` for Main and must name a route in `available_models`.
+- Route resolution priority is now factual and explicit: trusted user-only
+  override (when a future UI/API supplies one) → role preset → agent
+  suggestion → `default_subagent_model` → inherit Main requested/effective →
+  catalog global default. The persisted selection label is `session_default`.
+- Missing/invalid default entries do not create an arbitrary model route; the
+  normal catalog fallback path remains in force.
+
+Validation (green):
+
+```powershell
+cargo +1.95.0 test -p cccx-provider-gateway --lib -j 1 -- --test-threads=1
+cargo +1.95.0 test -p codex-core cccx_agent_model_routes::tests:: --lib -j 1 -- --test-threads=1
+```
+
 ### 2026-07-21 — Turn-scoped gateway retry and transport-fallback provenance
 
 - Gateway provenance now has a `ModelClientSession` scope in addition to its
