@@ -215,6 +215,8 @@ Exit: compact và restart đều phục hồi đúng authority/state.
 
 Cover Gate **22–23**, hoàn tất user-facing proof cho Gate 6/15/16.
 
+**Trạng thái 2026-07-22: COMPLETE — Gate 22 PASS; Gate 23 regression PASS.**
+
 - Status line lấy live core state.
 - `/agents`, `/tasks`, `/permissions`, `/mcp`, `/model`, `/remember` phản ánh runtime thật.
 - Network retry UX đúng attempt/backoff/status.

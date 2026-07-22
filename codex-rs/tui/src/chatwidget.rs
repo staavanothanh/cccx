@@ -505,6 +505,22 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) session_telemetry: SessionTelemetry,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CccxPermissionStatus {
+    active_request_id: Option<String>,
+    queued_count: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CccxTaskGraphStatusCache {
+    path: PathBuf,
+    modified: Option<std::time::SystemTime>,
+    file_len: u64,
+    verified_tasks: usize,
+    total_tasks: usize,
+    worker_rows: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ExternalEditorState {
     #[default]
@@ -689,6 +705,10 @@ pub(crate) struct ChatWidget {
     current_rollout_path: Option<PathBuf>,
     // Current working directory (if known)
     current_cwd: Option<PathBuf>,
+    // Authoritative projection returned by the root-owned cccx permission queue.
+    cccx_permission_status: CccxPermissionStatus,
+    // File-identity cache keeps repeated footer refreshes off the TUI hot path.
+    cccx_task_graph_status_cache: Option<CccxTaskGraphStatusCache>,
     // App-server-backed command runner for status-line workspace metadata lookups.
     workspace_command_runner: Option<WorkspaceCommandRunner>,
     // Instruction source files loaded for the current session, supplied by app-server.

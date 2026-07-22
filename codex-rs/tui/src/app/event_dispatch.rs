@@ -451,8 +451,27 @@ impl App {
                     self.chat_widget.pre_draw_tick();
                     self.render_chat_widget_frame(tui)?;
                 }
+                let refresh_cccx_permission_status = matches!(
+                    &op,
+                    AppCommand::ResolveCccxPermission { .. }
+                        | AppCommand::BeginCccxSafePermissionBatch { .. }
+                        | AppCommand::ExecApproval { .. }
+                        | AppCommand::PatchApproval { .. }
+                        | AppCommand::ResolveElicitation { .. }
+                        | AppCommand::UserInputAnswer { .. }
+                        | AppCommand::RequestPermissionsResponse { .. }
+                );
+                let cccx_permission_thread_id = self
+                    .primary_thread_id
+                    .or_else(|| self.current_displayed_thread_id());
                 self.chat_widget.prepare_local_op_submission(&op);
                 self.submit_active_thread_op(app_server, op).await?;
+                if refresh_cccx_permission_status
+                    && let Some(thread_id) = cccx_permission_thread_id
+                {
+                    self.app_event_tx
+                        .send(AppEvent::RefreshCccxPermissionStatus { thread_id });
+                }
             }
             AppEvent::RetrySafetyBufferedTurn {
                 thread_id,
@@ -892,6 +911,33 @@ impl App {
                     Err(error) => self.chat_widget.add_error_message(format!(
                         "/goal — could not save condition for task `{task_id}`: {error}"
                     )),
+                }
+            }
+            AppEvent::RefreshCccxPermissionStatus { thread_id } => {
+                if self
+                    .primary_thread_id
+                    .is_some_and(|primary_thread_id| primary_thread_id != thread_id)
+                {
+                    tracing::debug!(%thread_id, "ignoring stale cccx permission status refresh");
+                    return Ok(AppRunControl::Continue);
+                }
+                match app_server.cccx_permission_list(thread_id).await {
+                    Ok(response) => {
+                        let mut active_request_id = None;
+                        let mut queued_count = 0usize;
+                        for request in response.requests {
+                            if request.status.eq_ignore_ascii_case("active") {
+                                active_request_id = Some(request.request_id);
+                            } else if request.status.eq_ignore_ascii_case("queued") {
+                                queued_count += 1;
+                            }
+                        }
+                        self.chat_widget
+                            .set_cccx_permission_status(active_request_id, queued_count);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, %thread_id, "failed to refresh cccx permission status");
+                    }
                 }
             }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {

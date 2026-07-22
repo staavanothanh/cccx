@@ -71,6 +71,13 @@ impl App {
                     .resolve_notification(&notification.request_id)
                 {
                     self.chat_widget.dismiss_app_server_request(&request);
+                    if let Some(thread_id) = self
+                        .primary_thread_id
+                        .or_else(|| self.current_displayed_thread_id())
+                    {
+                        self.app_event_tx
+                            .send(AppEvent::RefreshCccxPermissionStatus { thread_id });
+                    }
                 }
             }
             ServerNotification::McpServerStatusUpdated(_) => {
@@ -223,6 +230,20 @@ impl App {
             tracing::warn!("ignoring threadless app-server request");
             return;
         };
+
+        if matches!(
+            &request,
+            ServerRequest::CommandExecutionRequestApproval { .. }
+                | ServerRequest::FileChangeRequestApproval { .. }
+                | ServerRequest::PermissionsRequestApproval { .. }
+                | ServerRequest::McpServerElicitationRequest { .. }
+                | ServerRequest::ToolRequestUserInput { .. }
+        ) {
+            self.app_event_tx
+                .send(AppEvent::RefreshCccxPermissionStatus {
+                    thread_id: self.primary_thread_id.unwrap_or(thread_id),
+                });
+        }
 
         let result =
             if self.primary_thread_id == Some(thread_id) || self.primary_thread_id.is_none() {

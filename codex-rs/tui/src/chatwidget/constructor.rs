@@ -214,6 +214,8 @@ impl ChatWidget {
             feedback,
             current_rollout_path: None,
             current_cwd,
+            cccx_permission_status: Default::default(),
+            cccx_task_graph_status_cache: None,
             workspace_command_runner,
             instruction_source_paths: Vec::new(),
             session_network_proxy: None,

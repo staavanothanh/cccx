@@ -2703,6 +2703,141 @@ async fn status_line_invalid_items_warn_once() {
 }
 
 #[tokio::test]
+async fn cccx_status_line_uses_task_graph_and_live_permission_queue() {
+    use cccx_task_graph::AttemptRecord;
+    use cccx_task_graph::TaskGraph;
+    use cccx_task_graph::TaskNode;
+    use cccx_task_graph::TaskStatus;
+    use cccx_task_graph::VerificationSpec;
+    use cccx_task_graph::WorkerRecord;
+    use cccx_task_graph::WorkerStatus;
+    use std::collections::BTreeSet;
+
+    let project = tempfile::tempdir().expect("create project fixture");
+    let state_dir = project.path().join(".cccx").join("state");
+    std::fs::create_dir_all(&state_dir).expect("create cccx state directory");
+    let mut graph = TaskGraph::new("graph-status", "status fixture");
+    for (task_id, status) in [
+        ("task-verified", TaskStatus::Verified),
+        ("task-running", TaskStatus::InProgress),
+    ] {
+        graph
+            .add_task(TaskNode {
+                task_id: task_id.to_string(),
+                objective: format!("objective for {task_id}"),
+                goal_condition: None,
+                goal_condition_met: None,
+                correction_required: None,
+                blocked_by: BTreeSet::new(),
+                status: status.clone(),
+                verification_spec: VerificationSpec {
+                    command: None,
+                    commands: Vec::new(),
+                    protected_paths: BTreeSet::new(),
+                    protected_digests: Default::default(),
+                    verification_policy_id: None,
+                    spec_digest: format!("digest-{task_id}"),
+                },
+                attempts: Vec::new(),
+                verified_at: (status == TaskStatus::Verified).then(|| "now".to_string()),
+            })
+            .expect("add task fixture");
+    }
+    graph
+        .tasks
+        .get_mut("task-running")
+        .expect("running task fixture")
+        .attempts
+        .push(AttemptRecord {
+            attempt_id: "attempt-1".to_string(),
+            work_spec_id: "work-spec-1".to_string(),
+            worker: WorkerRecord {
+                logical_session_id: "logical-session-1".to_string(),
+                // Legacy graphs omitted this field; the footer must use attempt_id.
+                worker_incarnation_id: String::new(),
+                display_name: "a1-status-proof".to_string(),
+                role: "CX implementer".to_string(),
+                status: WorkerStatus::Running,
+                model_route_summary: "oc/test-model".to_string(),
+            },
+            artifact_ids: Vec::new(),
+            verification_records: Vec::new(),
+        });
+    std::fs::write(
+        state_dir.join("task-graph.json"),
+        serde_json::to_vec(&graph).expect("serialize graph fixture"),
+    )
+    .expect("write graph fixture");
+
+    let nested_cwd = project.path().join("src").join("nested");
+    std::fs::create_dir_all(&nested_cwd).expect("create nested cwd fixture");
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.current_cwd = Some(nested_cwd);
+    chat.set_cccx_permission_status(Some("pr-17".to_string()), 2);
+    chat.refresh_status_line();
+
+    let status = status_line_text(&chat).expect("cccx status line");
+    assert!(
+        status.contains("tasks:1/2"),
+        "missing TaskGraph progress: {status}"
+    );
+    assert!(
+        status.contains("perm:pr-17 active + 2 queued"),
+        "missing live permission queue: {status}"
+    );
+    assert!(
+        !status.contains("Workspace"),
+        "status must not substitute a static permission profile for queue state: {status}"
+    );
+
+    chat.show_welcome_banner = false;
+    let width = 140;
+    let height = chat.desired_height(width);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("create terminal");
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("render cccx worker footer");
+    let rendered = normalized_backend_snapshot(terminal.backend());
+    assert!(rendered.contains("a1-status-proof"), "{rendered}");
+    assert!(rendered.contains("logical:logical-session-1"), "{rendered}");
+    assert!(rendered.contains("task:task-running"), "{rendered}");
+    assert!(rendered.contains("incarnation:attempt-1"), "{rendered}");
+    assert!(rendered.contains("CX implementer"), "{rendered}");
+    assert!(rendered.contains("[Running]"), "{rendered}");
+
+    chat.set_cccx_permission_status(None, 0);
+    chat.refresh_status_line();
+    assert!(
+        status_line_text(&chat)
+            .expect("cccx status line")
+            .contains("perm:none")
+    );
+
+    std::fs::write(
+        state_dir.join("task-graph.json"),
+        b"not valid task graph json",
+    )
+    .expect("corrupt graph fixture");
+    chat.refresh_status_line();
+    assert!(
+        status_line_text(&chat)
+            .expect("cccx status line")
+            .contains("tasks:0/0")
+    );
+    let height = chat.desired_height(width);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("create terminal");
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("render cccx status after corrupt graph");
+    assert!(
+        !normalized_backend_snapshot(terminal.backend()).contains("a1-status-proof"),
+        "stale worker footer must clear when the TaskGraph is invalid"
+    );
+}
+
+#[tokio::test]
 async fn status_line_context_used_renders_labeled_percent() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());

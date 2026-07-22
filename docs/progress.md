@@ -4023,3 +4023,66 @@ cargo +1.95.0 test -p codex-core --test all "cccx_final_gate::" -j 1 -- --test-t
   project-scoped files; the production path boundary remains fail-closed.
 - Final Phase 6 status: Gate **20 PASS**. Overall ledger: **22/25 PASS**; Gates
   **22, 24 and 25** remain for Phases 7–8.
+
+## 2026-07-22 — Final-gate Phase 7 complete
+
+### Gate 22 PASS: live TUI, retry UX and secure input
+
+- The fixed cccx status line now reads verified/total progress and active worker
+  projections from the persisted TaskGraph, while permission state comes from
+  the root-owned app-server queue. It no longer substitutes the static sandbox
+  profile for queue state. Queue refresh occurs on incoming native prompts,
+  local decisions and externally resolved requests, and stale refreshes from a
+  previous root thread are ignored.
+- TaskGraph discovery works from nested working directories. Repeated footer
+  refreshes use a path/mtime/size cache rather than reparsing up to 4 MiB on the
+  TUI hot path. Missing, malformed and oversized graphs clear the projection.
+- Active/resumable worker sublines carry display name, logical session ID, task
+  ID, worker incarnation (with legacy attempt-ID fallback), role, objective and
+  textual status. Eight rows are shown; overflow is summarized with
+  `/agents list`, so the composer cannot be displaced and identity never depends on
+  color.
+- `/agents`, `/permissions`, `/tasks`, `/goal`, `/mcp`, `/model`, `/remember`,
+  mode and help tests dispatch through real runtime events/services. Shift+Tab
+  remains restricted to safe modes; owner-disabled Bypass behavior is
+  unchanged.
+- Stream errors restore the retry indicator and show attempt/error details
+  without creating replay history state. Secure config rejects inline values,
+  masks input, emits no transcript history cell, consumes the response locally
+  before normal op submission, and persists through the encrypted local secret
+  manager without plaintext under `CCCX_HOME`.
+- Independent review found five issues: stale queue status after external
+  resolution, cross-thread refresh overwrite, unbounded worker rows, missing
+  legacy incarnation fallback and repeated synchronous TaskGraph parsing. All
+  five were fixed before the final validation run.
+
+Validation used Rust 1.95.0, `RUST_MIN_STACK=33554432` and the shared
+`D:\cargo-targets\cccx` target:
+
+```powershell
+cargo +1.95.0 test -p cccx-ux
+# 14 passed; 0 failed
+
+cargo +1.95.0 test -p codex-tui cccx
+# 19 passed; 0 failed
+
+cargo +1.95.0 test -p codex-tui secure_input
+# 3 passed; 0 failed
+
+cargo +1.95.0 test -p codex-tui stream_error
+# 3 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --lib stored_key_is_not_written_as_plaintext_under_cccx_home
+# 1 passed; 0 failed
+
+cargo +1.95.0 test -p cccx-headless
+# 10 unit + 6 E2E passed; 0 failed
+
+cargo +1.95.0 test -p codex-exec cccx_jsonl
+# 15 passed; 0 failed
+```
+
+- Gate 23 remains PASS: JSONL sequence/terminal-last/default-deny and exit-code
+  regressions are green.
+- Final Phase 7 status: Gate **22 PASS**, Gate **23 remains PASS**. Overall
+  ledger: **23/25 PASS**; Gates **24 and 25** remain for Phase 8.

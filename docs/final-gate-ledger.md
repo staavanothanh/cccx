@@ -37,7 +37,7 @@ interactive/TUI events and headless JSONL where a gate crosses either surface.
 | 19 | PASS | Responses/Chat stream, retry, auth and terminal attempts persist factual provenance | Metadata omission remains `unknown`; post-tool disconnect never replays | gateway/provenance |
 | 20 | PASS | Compact/restart restores typed memory, ADR, WorkSpec/Artifact/checkpoint, MCP-health and stale-read refs | Child/alias ADR writes deny or become proposals; forged TaskGraph and raw output cannot grant durable authority | compact/memory/ADR/MCP |
 | 21 | PASS | Spawned CX catalog contains only trusted compatible plugin grants | CC-only/native grant does not leak | plugins/spawn |
-| 22 | PARTIAL | TUI commands/status/network/secure input use live state | Secret absent from parser/history/log/telemetry | TUI/secure config |
+| 22 | PASS | TUI commands/status/network/secure input use live state | Secret absent from parser/history/log/telemetry | TUI/secure config |
 | 23 | PASS | Preserve JSONL terminal-last/exit-code regression | Headless approval defaults deny | headless/exec |
 | 24 | PARTIAL | cccx-owned aggregate line coverage is at least 80% | Runtime seams retain negative tests | release validation |
 | 25 | PARTIAL | Tracked generated-source allowlist passes | target, logs, local state and secrets are untracked | repository hygiene |

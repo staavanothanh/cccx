@@ -183,11 +183,13 @@ impl ChatWidget {
                 .status_line_context_used_percent()
                 .unwrap_or(0)
                 .clamp(0, 100);
-            let permissions = permissions_display(&self.config);
+            let (verified_tasks, total_tasks, worker_rows) = self.cccx_task_graph_status();
+            self.bottom_pane.set_cccx_worker_rows(worker_rows);
+            let permissions = self.cccx_permission_status_text();
             let state = self.run_state_status_text();
             self.set_status_line(Some(
                 format!(
-                    "[cccx] mode:{mode}  harness:CC  model:{model}  ctx:{context_percent}%  perm:{permissions}  status:{state}"
+                    "[cccx] mode:{mode}  harness:CC  model:{model}  tasks:{verified_tasks}/{total_tasks}  ctx:{context_percent}%  perm:{permissions}  status:{state}"
                 )
                 .into(),
             ));
@@ -220,6 +222,135 @@ impl ChatWidget {
             .then(|| self.status_line_pull_request_url())
             .flatten();
         self.set_status_line_hyperlink(hyperlink_url);
+    }
+
+    pub(crate) fn set_cccx_permission_status(
+        &mut self,
+        active_request_id: Option<String>,
+        queued_count: usize,
+    ) {
+        self.cccx_permission_status.active_request_id = active_request_id;
+        self.cccx_permission_status.queued_count = queued_count;
+        self.refresh_status_surfaces();
+    }
+
+    fn cccx_permission_status_text(&self) -> String {
+        match (
+            self.cccx_permission_status.active_request_id.as_deref(),
+            self.cccx_permission_status.queued_count,
+        ) {
+            (None, 0) => "none".to_string(),
+            (Some(request_id), queued) => format!("{request_id} active + {queued} queued"),
+            (None, queued) => format!("{queued} queued"),
+        }
+    }
+
+    fn cccx_task_graph_status(&mut self) -> (usize, usize, Vec<String>) {
+        const MAX_TASK_GRAPH_BYTES: u64 = 4 * 1024 * 1024;
+
+        let Some(cwd) = self.current_cwd.clone() else {
+            self.cccx_task_graph_status_cache = None;
+            return (0, 0, Vec::new());
+        };
+        let project_root = cwd
+            .ancestors()
+            .find(|ancestor| {
+                ancestor
+                    .join(".cccx")
+                    .join("state")
+                    .join("task-graph.json")
+                    .is_file()
+            })
+            .map(Path::to_path_buf)
+            .or_else(|| self.status_line_project_root_for_cwd(&cwd))
+            .unwrap_or_else(|| cwd.clone());
+        let path = project_root
+            .join(".cccx")
+            .join("state")
+            .join("task-graph.json");
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            self.cccx_task_graph_status_cache = None;
+            return (0, 0, Vec::new());
+        };
+        let modified = metadata.modified().ok();
+        if let Some(cache) = self.cccx_task_graph_status_cache.as_ref()
+            && cache.path == path
+            && cache.modified == modified
+            && cache.file_len == metadata.len()
+        {
+            return (
+                cache.verified_tasks,
+                cache.total_tasks,
+                cache.worker_rows.clone(),
+            );
+        }
+        if metadata.len() > MAX_TASK_GRAPH_BYTES {
+            tracing::warn!(
+                path = %path.display(),
+                bytes = metadata.len(),
+                "ignoring oversized cccx TaskGraph status projection"
+            );
+            self.cccx_task_graph_status_cache = Some(CccxTaskGraphStatusCache {
+                path,
+                modified,
+                file_len: metadata.len(),
+                ..Default::default()
+            });
+            return (0, 0, Vec::new());
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            self.cccx_task_graph_status_cache = None;
+            return (0, 0, Vec::new());
+        };
+        let Ok(graph) = serde_json::from_slice::<cccx_task_graph::TaskGraph>(&bytes) else {
+            self.cccx_task_graph_status_cache = Some(CccxTaskGraphStatusCache {
+                path,
+                modified,
+                file_len: metadata.len(),
+                ..Default::default()
+            });
+            return (0, 0, Vec::new());
+        };
+        let verified = graph
+            .tasks
+            .values()
+            .filter(|task| task.is_verified())
+            .count();
+        let mut worker_rows = Vec::new();
+        for task in graph.tasks.values() {
+            let Some(attempt) = task.attempts.iter().rev().find(|attempt| {
+                matches!(
+                    attempt.worker.status,
+                    cccx_task_graph::WorkerStatus::Running
+                        | cccx_task_graph::WorkerStatus::Waiting
+                        | cccx_task_graph::WorkerStatus::Interrupted
+                        | cccx_task_graph::WorkerStatus::Resumable
+                )
+            }) else {
+                continue;
+            };
+            let worker = &attempt.worker;
+            worker_rows.push(format!(
+                "{} logical:{} task:{} incarnation:{} [{:?}] {} \"{}\"",
+                compact_worker_field(&worker.display_name, 32),
+                compact_worker_field(&worker.logical_session_id, 40),
+                compact_worker_field(&task.task_id, 32),
+                compact_worker_field(worker.worker_incarnation_id(&attempt.attempt_id), 40),
+                worker.status,
+                compact_worker_field(&worker.role, 32),
+                compact_worker_field(&task.objective, 72),
+            ));
+        }
+        let status = (verified, graph.tasks.len(), worker_rows);
+        self.cccx_task_graph_status_cache = Some(CccxTaskGraphStatusCache {
+            path,
+            modified,
+            file_len: metadata.len(),
+            verified_tasks: status.0,
+            total_tasks: status.1,
+            worker_rows: status.2.clone(),
+        });
+        status
     }
 
     /// Clears the terminal title Codex most recently wrote, if any.
@@ -1110,6 +1241,16 @@ fn matches_window_label(window: &RateLimitWindowDisplay, label: &str) -> bool {
         .and_then(get_limits_duration)
         .as_deref()
         == Some(label)
+}
+
+fn compact_worker_field(value: &str, max_chars: usize) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
 }
 
 fn permissions_display(config: &Config) -> String {

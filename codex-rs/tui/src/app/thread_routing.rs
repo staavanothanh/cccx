@@ -665,6 +665,18 @@ impl App {
             }
             AppCommand::ListCccxPermissions => {
                 let response = app_server.cccx_permission_list(thread_id).await?;
+                let active_request_id = response
+                    .requests
+                    .iter()
+                    .find(|request| request.status.eq_ignore_ascii_case("active"))
+                    .map(|request| request.request_id.clone());
+                let queued_count = response
+                    .requests
+                    .iter()
+                    .filter(|request| request.status.eq_ignore_ascii_case("queued"))
+                    .count();
+                self.chat_widget
+                    .set_cccx_permission_status(active_request_id, queued_count);
                 let text = if response.requests.is_empty() {
                     "CCCX permission queue is empty.".to_string()
                 } else {

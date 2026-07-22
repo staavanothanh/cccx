@@ -329,6 +329,11 @@ pub(crate) enum AppEvent {
         condition: String,
     },
 
+    /// Refresh the status-line projection from the root-owned permission queue.
+    RefreshCccxPermissionStatus {
+        thread_id: ThreadId,
+    },
+
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,
