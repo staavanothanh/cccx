@@ -7,9 +7,12 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::util::backoff;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
 use tracing::warn;
+
+const CCCX_GATEWAY_MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -48,8 +51,14 @@ pub(crate) async fn handle_retryable_response_stream_error(
 
     if *retries < max_retries {
         *retries += 1;
-        client_session.record_gateway_retry().await;
         let retry_count = *retries;
+        let observed_retry_after = match &err {
+            CodexErr::Stream(_, retry_after) => *retry_after,
+            _ => None,
+        };
+        client_session
+            .record_gateway_retry_with_retry_after(observed_retry_after)
+            .await;
         let delay = retry_delay_for_stream_error(
             &err,
             retry_count,
@@ -76,6 +85,15 @@ pub(crate) async fn handle_retryable_response_stream_error(
         return Ok(());
     }
 
+    if codex_features::cccx_mvp::provider_boundary_active()
+        && let Some(request_id) = client_session.gateway_rate_limit_request_id().await
+    {
+        return Err(CodexErr::RetryLimit(RetryLimitReachedError {
+            status: http::StatusCode::TOO_MANY_REQUESTS,
+            request_id,
+        }));
+    }
+
     Err(err)
 }
 
@@ -85,7 +103,11 @@ fn retry_delay_for_stream_error(
     cccx_provider_boundary_active: bool,
 ) -> Duration {
     if let CodexErr::Stream(_, Some(requested_delay)) = err {
-        return *requested_delay;
+        return if cccx_provider_boundary_active {
+            (*requested_delay).min(CCCX_GATEWAY_MAX_RETRY_AFTER)
+        } else {
+            *requested_delay
+        };
     }
     if cccx_provider_boundary_active {
         cccx_gateway_backoff(retry_count)
@@ -147,6 +169,19 @@ mod tests {
         assert_eq!(
             retry_delay_for_stream_error(&err, 1, true),
             Duration::from_secs(23)
+        );
+    }
+
+    #[test]
+    fn cccx_retry_after_is_clamped_to_a_local_maximum() {
+        let err = CodexErr::Stream(
+            "rate limited".to_string(),
+            Some(Duration::from_secs(3_153_600_000)),
+        );
+
+        assert_eq!(
+            retry_delay_for_stream_error(&err, 1, true),
+            Duration::from_secs(60)
         );
     }
 }

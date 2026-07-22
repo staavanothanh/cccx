@@ -3,7 +3,10 @@ use codex_http_client::TransportError;
 use rand::Rng;
 use std::future::Future;
 use std::time::Duration;
+use std::time::SystemTime;
 use tokio::time::sleep;
+
+const MAX_RETRY_AFTER_DELAY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -64,10 +67,64 @@ where
                     .retry_on
                     .should_retry(&err, attempt, policy.max_attempts) =>
             {
-                sleep(backoff(policy.base_delay, attempt + 1)).await;
+                let fallback = backoff(policy.base_delay, attempt + 1);
+                sleep(retry_after_delay(&err, fallback)).await;
             }
             Err(err) => return Err(err),
         }
     }
     Err(TransportError::RetryLimit)
+}
+
+fn retry_after_delay(err: &TransportError, fallback: Duration) -> Duration {
+    let TransportError::Http {
+        status, headers, ..
+    } = err
+    else {
+        return fallback;
+    };
+    if status.as_u16() != 429 {
+        return fallback;
+    }
+    let Some(value) = headers
+        .as_ref()
+        .and_then(|headers| headers.get(http::header::RETRY_AFTER))
+        .and_then(|value| value.to_str().ok())
+    else {
+        return fallback;
+    };
+    if let Ok(seconds) = value.trim().parse::<u64>() {
+        return Duration::from_secs(seconds).min(MAX_RETRY_AFTER_DELAY);
+    }
+    httpdate::parse_http_date(value)
+        .ok()
+        .and_then(|deadline| deadline.duration_since(SystemTime::now()).ok())
+        .map(|delay| delay.min(MAX_RETRY_AFTER_DELAY))
+        .unwrap_or(fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderMap;
+
+    #[test]
+    fn retry_after_is_clamped_to_a_local_maximum() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::RETRY_AFTER,
+            http::HeaderValue::from_static("3153600000"),
+        );
+        let error = TransportError::Http {
+            status: http::StatusCode::TOO_MANY_REQUESTS,
+            url: Some("https://example.com/v1/responses".to_string()),
+            headers: Some(headers),
+            body: None,
+        };
+
+        assert_eq!(
+            retry_after_delay(&error, Duration::from_secs(1)),
+            Duration::from_secs(60)
+        );
+    }
 }

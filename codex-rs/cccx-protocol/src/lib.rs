@@ -456,6 +456,32 @@ pub struct Evidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactGatewayAttempt {
+    pub attempt_index: u32,
+    pub gateway_request_id: String,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub wire_api: Option<String>,
+    #[serde(default)]
+    pub input_digest: Option<String>,
+    #[serde(default)]
+    pub output_digest: Option<String>,
+    #[serde(default)]
+    pub http_status: Option<u16>,
+    #[serde(default)]
+    pub retry_after_ms: Option<u64>,
+    #[serde(default)]
+    pub stream_termination_status: Option<String>,
+    #[serde(default)]
+    pub upstream_request_id: Option<String>,
+    #[serde(default)]
+    pub response_id: Option<String>,
+    #[serde(default)]
+    pub observed_server_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactProvenance {
     pub producer_harness: HarnessKind,
     pub producer_role: WorkRole,
@@ -487,6 +513,11 @@ pub struct ArtifactProvenance {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_termination_status: Option<String>,
+    /// Ordered transport-attempt journal for this logical model call. The
+    /// top-level fields remain the final/aggregate compatibility view.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gateway_attempts: Vec<ArtifactGatewayAttempt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -613,6 +644,18 @@ impl ArtifactProvenance {
         validate_digest("provenance.output_digest", &self.output_digest)?;
         if let Some(digest) = &self.tool_call_sequence_digest {
             validate_digest("provenance.tool_call_sequence_digest", digest)?;
+        }
+        for attempt in &self.gateway_attempts {
+            require_non_empty(
+                "provenance.gateway_attempts.gateway_request_id",
+                &attempt.gateway_request_id,
+            )?;
+            if let Some(digest) = &attempt.input_digest {
+                validate_digest("provenance.gateway_attempts.input_digest", digest)?;
+            }
+            if let Some(digest) = &attempt.output_digest {
+                validate_digest("provenance.gateway_attempts.output_digest", digest)?;
+            }
         }
         Ok(())
     }
@@ -1308,6 +1351,7 @@ mod tests {
                 output_digest: "sha256:output".to_string(),
                 tool_call_sequence_digest: Some("sha256:tool-seq".to_string()),
                 stream_termination_status: Some("completed".to_string()),
+                gateway_attempts: Vec::new(),
             }),
             verification: Some(VerificationRecord {
                 schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),

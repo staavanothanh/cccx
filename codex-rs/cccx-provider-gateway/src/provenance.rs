@@ -1,4 +1,24 @@
-/// Provenance record for a single model call through 9router.
+/// Immutable snapshot of one HTTP/SSE transport attempt inside a logical
+/// model call. The top-level [`GatewayProvenance`] remains the aggregate/latest
+/// compatibility view used by existing Artifact consumers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayAttemptProvenance {
+    pub attempt_index: u32,
+    pub gateway_request_id: String,
+    pub endpoint: Option<String>,
+    pub wire_api: Option<String>,
+    pub input_digest: Option<String>,
+    pub output_digest: Option<String>,
+    pub http_status: Option<u16>,
+    pub retry_after_ms: Option<u64>,
+    pub stream_termination_status: Option<String>,
+    pub upstream_request_id: Option<String>,
+    pub response_id: Option<String>,
+    pub observed_server_model: Option<String>,
+}
+
+/// Provenance record for a logical model call through 9router.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GatewayProvenance {
     pub gateway_request_id: String,
@@ -20,6 +40,42 @@ pub struct GatewayProvenance {
     pub wire_api: Option<String>,
     /// Outcome of the stream: `completed`, `truncated`, `timeout`, `error`.
     pub stream_termination_status: Option<String>,
+    /// Logical model-call kind observed by cccx (for example `stream`,
+    /// `compact`, `memory_summarize`, `classifier`). This is client-side
+    /// provenance, not router metadata.
+    #[serde(default)]
+    pub call_kind: Option<String>,
+    /// Router endpoint used by the attempt, such as `/v1/responses` or
+    /// `/v1/chat/completions`.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Digest of the exact serialized payload sent by cccx.
+    #[serde(default)]
+    pub input_digest: Option<String>,
+    /// Digest of factual output observed by cccx from the gateway response.
+    #[serde(default)]
+    pub output_digest: Option<String>,
+    /// Response id emitted by the provider/gateway protocol, when present.
+    #[serde(default)]
+    pub response_id: Option<String>,
+    /// Model label observed in response headers/body/stream chunks. This is
+    /// protocol-reported output, not 9router effective route metadata.
+    #[serde(default)]
+    pub observed_server_model: Option<String>,
+    /// HTTP status observed for non-stream setup/unary calls.
+    #[serde(default)]
+    pub http_status: Option<u16>,
+    /// Retry-After observed from a real response header, in milliseconds.
+    #[serde(default)]
+    pub retry_after_ms: Option<u64>,
+    /// Attempt-local copy used when snapshotting the journal. The public field
+    /// above is also carried as the logical-call aggregate across retries.
+    #[serde(skip)]
+    current_attempt_retry_after_ms: Option<u64>,
+    /// Ordered factual snapshots for every HTTP/SSE attempt. This prevents a
+    /// successful retry from erasing the failed attempt that preceded it.
+    #[serde(default)]
+    pub attempts: Vec<GatewayAttemptProvenance>,
 }
 
 impl GatewayProvenance {
@@ -37,6 +93,47 @@ impl GatewayProvenance {
             fallback_policy_id: None,
             wire_api: None,
             stream_termination_status: None,
+            call_kind: None,
+            endpoint: None,
+            input_digest: None,
+            output_digest: None,
+            response_id: None,
+            observed_server_model: None,
+            http_status: None,
+            retry_after_ms: None,
+            current_attempt_retry_after_ms: None,
+            attempts: Vec::new(),
+        }
+    }
+
+    /// Upsert the current top-level attempt into the durable attempt journal.
+    /// Repeated seed/terminal writes update one entry instead of duplicating it.
+    pub fn synchronize_attempt_history(&mut self) {
+        let existing_index = self
+            .attempts
+            .iter()
+            .position(|attempt| attempt.gateway_request_id == self.gateway_request_id);
+        let attempt_index = existing_index
+            .map(|index| self.attempts[index].attempt_index)
+            .unwrap_or_else(|| u32::try_from(self.attempts.len()).unwrap_or(u32::MAX));
+        let snapshot = GatewayAttemptProvenance {
+            attempt_index,
+            gateway_request_id: self.gateway_request_id.clone(),
+            endpoint: self.endpoint.clone(),
+            wire_api: self.wire_api.clone(),
+            input_digest: self.input_digest.clone(),
+            output_digest: self.output_digest.clone(),
+            http_status: self.http_status,
+            retry_after_ms: self.current_attempt_retry_after_ms,
+            stream_termination_status: self.stream_termination_status.clone(),
+            upstream_request_id: self.upstream_request_id.clone(),
+            response_id: self.response_id.clone(),
+            observed_server_model: self.observed_server_model.clone(),
+        };
+        if let Some(index) = existing_index {
+            self.attempts[index] = snapshot;
+        } else {
+            self.attempts.push(snapshot);
         }
     }
 
@@ -87,8 +184,8 @@ impl GatewayProvenance {
     /// first one is the only factual value available unless 9router later
     /// supplies an explicit route/provider transition.
     pub fn record_observed_model(&mut self, model: String) {
-        if self.effective_model.is_none() {
-            self.effective_model = Some(model);
+        if self.observed_server_model.is_none() {
+            self.observed_server_model = Some(model);
         }
     }
 
@@ -102,6 +199,32 @@ impl GatewayProvenance {
 
     pub fn record_stream_termination(&mut self, status: &str) {
         self.stream_termination_status = Some(status.to_string());
+    }
+
+    pub fn record_call_site(&mut self, call_kind: &str, endpoint: &str) {
+        self.call_kind = Some(call_kind.to_string());
+        self.endpoint = Some(endpoint.to_string());
+    }
+
+    pub fn record_input_digest(&mut self, digest: String) {
+        self.input_digest = Some(digest);
+    }
+
+    pub fn record_output_digest(&mut self, digest: String) {
+        self.output_digest = Some(digest);
+    }
+
+    pub fn record_response_id(&mut self, response_id: String) {
+        self.response_id = Some(response_id);
+    }
+
+    pub fn record_http_status(&mut self, status: u16) {
+        self.http_status = Some(status);
+    }
+
+    pub fn record_retry_after_ms(&mut self, retry_after_ms: u64) {
+        self.retry_after_ms = Some(retry_after_ms);
+        self.current_attempt_retry_after_ms = Some(retry_after_ms);
     }
 }
 
@@ -186,12 +309,43 @@ mod tests {
         provenance.record_observed_model("later-observed".to_string());
 
         assert_eq!(
-            provenance.effective_model.as_deref(),
+            provenance.observed_server_model.as_deref(),
             Some("first-observed")
         );
         assert!(provenance.fallback_chain.is_empty());
         assert!(provenance.effective_route_id.is_none());
         assert!(provenance.effective_provider.is_none());
+        assert!(provenance.effective_model.is_none());
+    }
+
+    #[test]
+    fn attempt_history_upserts_one_snapshot_per_gateway_request() {
+        let mut provenance = GatewayProvenance::new("route/requested".to_string());
+        provenance.record_call_site("stream", "/v1/chat/completions");
+        provenance.record_input_digest("sha256:first".to_string());
+        provenance.synchronize_attempt_history();
+        provenance.record_stream_termination("error");
+        provenance.synchronize_attempt_history();
+
+        assert_eq!(provenance.attempts.len(), 1);
+        assert_eq!(provenance.attempts[0].attempt_index, 0);
+        assert_eq!(
+            provenance.attempts[0].stream_termination_status.as_deref(),
+            Some("error")
+        );
+
+        let prior_attempts = provenance.attempts.clone();
+        let mut retry = GatewayProvenance::new("route/requested".to_string());
+        retry.attempts = prior_attempts;
+        retry.record_call_site("stream", "/v1/chat/completions");
+        retry.synchronize_attempt_history();
+
+        assert_eq!(retry.attempts.len(), 2);
+        assert_eq!(retry.attempts[1].attempt_index, 1);
+        assert_ne!(
+            retry.attempts[0].gateway_request_id,
+            retry.attempts[1].gateway_request_id
+        );
     }
 
     #[test]
@@ -215,5 +369,30 @@ mod tests {
             truncated.stream_termination_status.as_deref(),
             Some("truncated")
         );
+    }
+
+    #[test]
+    fn provenance_records_factual_call_site_and_digests() {
+        let mut provenance = GatewayProvenance::new("route-1".to_string());
+
+        provenance.record_call_site("stream", "/v1/chat/completions");
+        provenance.record_input_digest("sha256:input".to_string());
+        provenance.record_output_digest("sha256:output".to_string());
+        provenance.record_response_id("resp-1".to_string());
+        provenance.record_observed_model("server-model".to_string());
+        provenance.record_http_status(429);
+        provenance.record_retry_after_ms(23_000);
+
+        assert_eq!(provenance.call_kind.as_deref(), Some("stream"));
+        assert_eq!(provenance.endpoint.as_deref(), Some("/v1/chat/completions"));
+        assert_eq!(provenance.input_digest.as_deref(), Some("sha256:input"));
+        assert_eq!(provenance.output_digest.as_deref(), Some("sha256:output"));
+        assert_eq!(provenance.response_id.as_deref(), Some("resp-1"));
+        assert_eq!(
+            provenance.observed_server_model.as_deref(),
+            Some("server-model")
+        );
+        assert_eq!(provenance.http_status, Some(429));
+        assert_eq!(provenance.retry_after_ms, Some(23_000));
     }
 }

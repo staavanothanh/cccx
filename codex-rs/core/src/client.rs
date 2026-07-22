@@ -105,6 +105,7 @@ use http::StatusCode as HttpStatusCode;
 use reqwest::StatusCode;
 use serde_json::Value;
 use serde_json::json;
+use sha2::Digest as Sha2Digest;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -179,7 +180,7 @@ const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 /// call, bypassing the only supported provider boundary.
 fn realtime_provider_boundary_allows(
     provider_info: &ModelProviderInfo,
-    has_provider_override: bool,
+    _has_provider_override: bool,
 ) -> Result<()> {
     let boundary_active = codex_features::cccx_mvp::provider_boundary_active();
     let bridge = ProviderGatewayBridge::new(boundary_active);
@@ -190,9 +191,9 @@ fn realtime_provider_boundary_allows(
             provider_info.name,
         )));
     }
-    if boundary_active && has_provider_override {
+    if boundary_active {
         return Err(CodexErr::InvalidRequest(
-            "cccx: realtime provider overrides are disabled; use the configured 9router route."
+            "cccx: realtime is disabled in 9router-only mode because no trusted 9router WebSocket/WebRTC endpoint is available."
                 .to_string(),
         ));
     }
@@ -904,18 +905,18 @@ impl ModelClient {
         // Phase 1: fail-closed — provider boundary cannot be disabled.
         // Mirrors the check embedded in stream_responses_api /
         // stream_chat_completions_api.
-        {
-            let enabled = codex_features::cccx_mvp::provider_boundary_active();
-            let gateway_bridge = ProviderGatewayBridge::new(enabled);
-            let provider_info = self.state.provider.info();
-            if !gateway_bridge.check_fail_closed(provider_info) {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
-                     Configure a 9router route in your cccx config. The provider boundary is always active and cannot be disabled.",
-                    provider_info.name,
-                )));
-            }
+        let enabled = codex_features::cccx_mvp::provider_boundary_active();
+        let gateway_bridge = ProviderGatewayBridge::new(enabled);
+        let provider_info = self.state.provider.info();
+        if !gateway_bridge.check_fail_closed(provider_info) {
+            return Err(CodexErr::InvalidRequest(format!(
+                "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
+                Configure a 9router route in your cccx config. The provider boundary is always active and cannot be disabled.",
+                provider_info.name,
+            )));
         }
+        let mut gateway_provenance =
+            gateway_bridge.begin_call_with_wire_api(&model_info.slug, "responses");
         let client_setup = self.current_client_setup().await?;
         let transport =
             self.build_api_transport(&client_setup.api_provider, RESPONSES_COMPACT_ENDPOINT)?;
@@ -963,6 +964,23 @@ impl ModelClient {
             prompt_cache_key: prompt_cache_key.as_deref(),
             text,
         };
+        record_gateway_attempt_request(
+            &mut gateway_provenance,
+            "compact",
+            RESPONSES_COMPACT_ENDPOINT,
+            &payload,
+        );
+        gateway_bridge.end_call(&mut gateway_provenance, None, None, None);
+        let unary_attempt_scope_id = gateway_provenance
+            .as_ref()
+            .map(|p| p.gateway_request_id.clone());
+        if let (Some(provenance), Some(attempt_scope_id)) = (
+            gateway_provenance.as_ref(),
+            unary_attempt_scope_id.as_deref(),
+        ) {
+            self.seed_unary_gateway_provenance(attempt_scope_id, provenance)
+                .await;
+        }
 
         let mut extra_headers = ApiHeaderMap::new();
         if let Ok(header_value) = HeaderValue::from_str(&responses_metadata.installation_id) {
@@ -1000,6 +1018,23 @@ impl ModelClient {
             .await
             .map_err(|error| self.state.provider.map_api_error(error));
         trace_attempt.record_result(result.as_deref());
+        if let (Some(provenance), Some(attempt_scope_id)) = (
+            gateway_provenance.as_mut(),
+            unary_attempt_scope_id.as_deref(),
+        ) {
+            if let Ok(items) = &result
+                && let Some(digest) = sha256_json_digest(items)
+            {
+                provenance.record_output_digest(digest);
+            }
+            provenance.record_stream_termination(if result.is_ok() {
+                "completed"
+            } else {
+                "error"
+            });
+            self.seed_unary_gateway_provenance(attempt_scope_id, provenance)
+                .await;
+        }
         result
     }
 
@@ -1057,18 +1092,18 @@ impl ModelClient {
         // Phase 1: fail-closed — provider boundary cannot be disabled.
         // Mirrors the check embedded in stream_responses_api /
         // stream_chat_completions_api.
-        {
-            let enabled = codex_features::cccx_mvp::provider_boundary_active();
-            let gateway_bridge = ProviderGatewayBridge::new(enabled);
-            let provider_info = self.state.provider.info();
-            if !gateway_bridge.check_fail_closed(provider_info) {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
-                     Configure a 9router route in your cccx config. The provider boundary is always active and cannot be disabled.",
-                    provider_info.name,
-                )));
-            }
+        let enabled = codex_features::cccx_mvp::provider_boundary_active();
+        let gateway_bridge = ProviderGatewayBridge::new(enabled);
+        let provider_info = self.state.provider.info();
+        if !gateway_bridge.check_fail_closed(provider_info) {
+            return Err(CodexErr::InvalidRequest(format!(
+                "cccx: 9router-only mode is active but the resolved provider '{}' is not 9router. \
+                Configure a 9router route in your cccx config. The provider boundary is always active and cannot be disabled.",
+                provider_info.name,
+            )));
         }
+        let mut gateway_provenance =
+            gateway_bridge.begin_call_with_wire_api(&model_info.slug, "responses");
         let client_setup = self.current_client_setup().await?;
         let transport =
             self.build_api_transport(&client_setup.api_provider, MEMORIES_SUMMARIZE_ENDPOINT)?;
@@ -1098,11 +1133,46 @@ impl ModelClient {
                     context: None,
                 }),
         };
+        record_gateway_attempt_request(
+            &mut gateway_provenance,
+            "memory_summarize",
+            MEMORIES_SUMMARIZE_ENDPOINT,
+            &payload,
+        );
+        gateway_bridge.end_call(&mut gateway_provenance, None, None, None);
+        let unary_attempt_scope_id = gateway_provenance
+            .as_ref()
+            .map(|p| p.gateway_request_id.clone());
+        if let (Some(provenance), Some(attempt_scope_id)) = (
+            gateway_provenance.as_ref(),
+            unary_attempt_scope_id.as_deref(),
+        ) {
+            self.seed_unary_gateway_provenance(attempt_scope_id, provenance)
+                .await;
+        }
 
-        client
+        let result = client
             .summarize_input(&payload, self.build_subagent_headers())
             .await
-            .map_err(|error| self.state.provider.map_api_error(error))
+            .map_err(|error| self.state.provider.map_api_error(error));
+        if let (Some(provenance), Some(attempt_scope_id)) = (
+            gateway_provenance.as_mut(),
+            unary_attempt_scope_id.as_deref(),
+        ) {
+            if let Ok(items) = &result
+                && let Some(digest) = sha256_memory_summaries_digest(items)
+            {
+                provenance.record_output_digest(digest);
+            }
+            provenance.record_stream_termination(if result.is_ok() {
+                "completed"
+            } else {
+                "error"
+            });
+            self.seed_unary_gateway_provenance(attempt_scope_id, provenance)
+                .await;
+        }
+        result
     }
 
     fn build_subagent_headers(&self) -> ApiHeaderMap {
@@ -1123,6 +1193,26 @@ impl ModelClient {
             );
         }
         extra_headers
+    }
+
+    async fn seed_unary_gateway_provenance(
+        &self,
+        attempt_scope_id: &str,
+        provenance: &cccx_provider_gateway::provenance::GatewayProvenance,
+    ) {
+        if !codex_features::cccx_mvp::provider_boundary_active() {
+            return;
+        }
+        if let Err(error) = crate::cccx_gateway_provenance_state::save_gateway_provenance(
+            &self.state.project_root,
+            &self.state.thread_id.to_string(),
+            attempt_scope_id,
+            provenance,
+        )
+        .await
+        {
+            warn!(%error, "cccx: failed to persist unary provider gateway provenance");
+        }
     }
 
     fn build_responses_compatibility_headers(
@@ -1379,7 +1469,8 @@ impl ModelClient {
     ///
     /// WebSocket use is controlled by provider capability and session-scoped fallback state.
     pub fn responses_websocket_enabled(&self) -> bool {
-        if !self.state.provider.info().supports_websockets
+        if codex_features::cccx_mvp::provider_boundary_active()
+            || !self.state.provider.info().supports_websockets
             || self.state.disable_websockets.load(Ordering::Relaxed)
         {
             return false;
@@ -1975,6 +2066,12 @@ impl ModelClientSession {
                 self.begin_gateway_provenance(model_info);
             // Fail-closed: refuse to make a non-9router LLM call when cccx gate is on.
             self.check_cccx_gateway_fail_closed(&gateway_bridge)?;
+            record_gateway_attempt_request(
+                &mut gateway_provenance,
+                "stream",
+                RESPONSES_ENDPOINT,
+                &request,
+            );
             self.seed_gateway_provenance(&gateway_provenance).await;
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
@@ -2007,7 +2104,7 @@ impl ModelClientSession {
                 }
                 Err(ApiError::Transport(
                     unauthorized_transport @ TransportError::Http { status, .. },
-                )) if status == StatusCode::UNAUTHORIZED => {
+                )) if status == StatusCode::UNAUTHORIZED && gateway_provenance.is_none() => {
                     let response_debug_context =
                         extract_response_debug_context(&unauthorized_transport);
                     inference_trace_attempt.record_failed(
@@ -2028,21 +2125,33 @@ impl ModelClientSession {
                     continue;
                 }
                 Err(err) => {
+                    let gateway_auth_failure = is_gateway_auth_failure(&gateway_provenance, &err);
+                    record_gateway_api_error(&mut gateway_provenance, &err);
+                    let gateway_rate_limit = gateway_rate_limit_error(&gateway_provenance, &err);
+                    let response_debug_context =
+                        extract_response_debug_context_from_api_error(&err);
                     if let Some(mut recorder) = self.finalize_gateway_provenance(
                         &gateway_bridge,
                         &mut gateway_provenance,
                         model_info,
                     ) {
+                        recorder.record_upstream_request_id(
+                            response_debug_context.request_id.as_deref(),
+                        );
                         recorder.persist_terminal("error").await;
                     }
-                    let response_debug_context =
-                        extract_response_debug_context_from_api_error(&err);
-                    let err = self.client.state.provider.map_api_error(err);
+                    let err = gateway_rate_limit
+                        .unwrap_or_else(|| self.client.state.provider.map_api_error(err));
                     inference_trace_attempt.record_failed(
                         &err,
                         response_debug_context.request_id.as_deref(),
                         /*output_items*/ &[],
                     );
+                    if gateway_auth_failure {
+                        return Err(CodexErr::InvalidRequest(format!(
+                            "9router authentication failed: {err}"
+                        )));
+                    }
                     return Err(err);
                 }
             }
@@ -2090,6 +2199,12 @@ impl ModelClientSession {
                 self.begin_gateway_provenance(model_info);
             // Fail-closed: refuse to make a non-9router LLM call when cccx gate is on.
             self.check_cccx_gateway_fail_closed(&gateway_bridge)?;
+            record_gateway_attempt_request(
+                &mut gateway_provenance,
+                "stream",
+                CHAT_COMPLETIONS_ENDPOINT,
+                &request,
+            );
             self.seed_gateway_provenance(&gateway_provenance).await;
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.record_started(&request);
@@ -2127,7 +2242,7 @@ impl ModelClientSession {
                 }
                 Err(ApiError::Transport(
                     unauthorized_transport @ TransportError::Http { status, .. },
-                )) if status == StatusCode::UNAUTHORIZED => {
+                )) if status == StatusCode::UNAUTHORIZED && gateway_provenance.is_none() => {
                     let response_debug_context =
                         extract_response_debug_context(&unauthorized_transport);
                     inference_trace_attempt.record_failed(
@@ -2153,21 +2268,33 @@ impl ModelClientSession {
                     self.record_gateway_retry().await;
                 }
                 Err(err) => {
+                    let gateway_auth_failure = is_gateway_auth_failure(&gateway_provenance, &err);
+                    record_gateway_api_error(&mut gateway_provenance, &err);
+                    let gateway_rate_limit = gateway_rate_limit_error(&gateway_provenance, &err);
+                    let response_debug_context =
+                        extract_response_debug_context_from_api_error(&err);
                     if let Some(mut recorder) = self.finalize_gateway_provenance(
                         &gateway_bridge,
                         &mut gateway_provenance,
                         model_info,
                     ) {
+                        recorder.record_upstream_request_id(
+                            response_debug_context.request_id.as_deref(),
+                        );
                         recorder.persist_terminal("error").await;
                     }
-                    let response_debug_context =
-                        extract_response_debug_context_from_api_error(&err);
-                    let err = self.client.state.provider.map_api_error(err);
+                    let err = gateway_rate_limit
+                        .unwrap_or_else(|| self.client.state.provider.map_api_error(err));
                     inference_trace_attempt.record_failed(
                         &err,
                         response_debug_context.request_id.as_deref(),
                         &[],
                     );
+                    if gateway_auth_failure {
+                        return Err(CodexErr::InvalidRequest(format!(
+                            "9router authentication failed: {err}"
+                        )));
+                    }
                     return Err(err);
                 }
             }
@@ -2230,6 +2357,12 @@ impl ModelClientSession {
             // WebSocket is also an LLM surface. Keep the 9router-only boundary
             // identical to the HTTP Responses and chat-completions transports.
             self.check_cccx_gateway_fail_closed(&gateway_bridge)?;
+            record_gateway_attempt_request(
+                &mut gateway_provenance,
+                "stream",
+                RESPONSES_ENDPOINT,
+                &request,
+            );
             self.seed_gateway_provenance(&gateway_provenance).await;
             let request_session_telemetry = if warmup {
                 // `generate=false` prewarm is connection setup, not an inference request.
@@ -2549,6 +2682,13 @@ impl ModelClientSession {
     }
 
     pub(crate) async fn record_gateway_retry(&self) {
+        self.record_gateway_retry_with_retry_after(None).await;
+    }
+
+    pub(crate) async fn record_gateway_retry_with_retry_after(
+        &self,
+        retry_after: Option<Duration>,
+    ) {
         if !codex_features::cccx_mvp::provider_boundary_active() {
             return;
         }
@@ -2556,6 +2696,7 @@ impl ModelClientSession {
             &self.client.state.project_root,
             &self.client.state.thread_id.to_string(),
             &self.gateway_provenance_scope_id,
+            retry_after.map(|delay| u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)),
         )
         .await
         {
@@ -2577,11 +2718,22 @@ impl ModelClientSession {
         let Some(provenance) = provenance else {
             return;
         };
+        let mut provenance = provenance.clone();
+        if let Err(error) = crate::cccx_gateway_provenance_state::merge_attempt_aggregation(
+            &self.client.state.project_root,
+            &self.client.state.thread_id.to_string(),
+            &self.gateway_provenance_scope_id,
+            &mut provenance,
+        )
+        .await
+        {
+            warn!(%error, "cccx: failed to carry gateway retry aggregation into next attempt");
+        }
         if let Err(error) = crate::cccx_gateway_provenance_state::save_gateway_provenance(
             &self.client.state.project_root,
             &self.client.state.thread_id.to_string(),
             &self.gateway_provenance_scope_id,
-            provenance,
+            &provenance,
         )
         .await
         {
@@ -2603,6 +2755,22 @@ impl ModelClientSession {
         {
             warn!(%error, "cccx: failed to persist provider gateway transport fallback");
         }
+    }
+
+    /// Return the factual request id when the current 9router attempt ended in
+    /// HTTP 429. The turn retry layer uses this only when its own retry budget
+    /// is exhausted, preserving a typed rate-limit terminal error.
+    pub(crate) async fn gateway_rate_limit_request_id(&self) -> Option<Option<String>> {
+        if !codex_features::cccx_mvp::provider_boundary_active() {
+            return None;
+        }
+        let provenance = crate::cccx_gateway_provenance_state::load_gateway_provenance(
+            &self.client.state.project_root,
+            &self.client.state.thread_id.to_string(),
+        )
+        .await
+        .ok()??;
+        (provenance.http_status == Some(429)).then(|| provenance.upstream_request_id)
     }
 }
 
@@ -2675,6 +2843,141 @@ fn add_responses_lite_header(headers: &mut ApiHeaderMap, use_responses_lite: boo
 const RESPONSE_STREAM_CHANNEL_CAPACITY: usize = 1600;
 const STREAM_DROPPED_REASON: &str = "response stream dropped before provider terminal event";
 
+fn sha256_json_digest<T: serde::Serialize + ?Sized>(value: &T) -> Option<String> {
+    fn canonicalize(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(object) => {
+                let mut entries = object.into_iter().collect::<Vec<_>>();
+                entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+                serde_json::Value::Object(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (key, canonicalize(value)))
+                        .collect(),
+                )
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(canonicalize).collect())
+            }
+            scalar => scalar,
+        }
+    }
+
+    let canonical = canonicalize(serde_json::to_value(value).ok()?);
+    let bytes = serde_json::to_vec(&canonical).ok()?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    Some(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn sha256_memory_summaries_digest(items: &[ApiMemorySummarizeOutput]) -> Option<String> {
+    let factual_output = items
+        .iter()
+        .map(|item| {
+            json!({
+                "trace_summary": item.raw_memory,
+                "memory_summary": item.memory_summary,
+            })
+        })
+        .collect::<Vec<_>>();
+    sha256_json_digest(&factual_output)
+}
+
+fn record_gateway_attempt_request<T: serde::Serialize + ?Sized>(
+    provenance: &mut Option<cccx_provider_gateway::provenance::GatewayProvenance>,
+    call_kind: &str,
+    endpoint: &str,
+    request: &T,
+) {
+    if let Some(provenance) = provenance.as_mut() {
+        provenance.record_call_site(call_kind, endpoint);
+        if let Some(digest) = sha256_json_digest(request) {
+            provenance.record_input_digest(digest);
+        }
+    }
+}
+
+fn record_gateway_api_error(
+    provenance: &mut Option<cccx_provider_gateway::provenance::GatewayProvenance>,
+    error: &ApiError,
+) {
+    let Some(provenance) = provenance.as_mut() else {
+        return;
+    };
+    match error {
+        ApiError::Transport(TransportError::Http {
+            status, headers, ..
+        }) => {
+            provenance.record_http_status(status.as_u16());
+            if let Some(delay) = headers
+                .as_ref()
+                .and_then(|headers| headers.get(http::header::RETRY_AFTER))
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_retry_after)
+            {
+                provenance
+                    .record_retry_after_ms(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX));
+            }
+        }
+        ApiError::Api { status, .. } => provenance.record_http_status(status.as_u16()),
+        _ => {}
+    }
+}
+
+fn is_gateway_auth_failure(
+    provenance: &Option<cccx_provider_gateway::provenance::GatewayProvenance>,
+    error: &ApiError,
+) -> bool {
+    provenance.is_some()
+        && matches!(
+            error,
+            ApiError::Transport(TransportError::Http { status, .. })
+                if matches!(status.as_u16(), 401 | 403)
+        )
+}
+
+fn gateway_rate_limit_error(
+    provenance: &Option<cccx_provider_gateway::provenance::GatewayProvenance>,
+    error: &ApiError,
+) -> Option<CodexErr> {
+    if provenance.is_none() {
+        return None;
+    }
+    let ApiError::Transport(TransportError::Http {
+        status,
+        headers,
+        body,
+        ..
+    }) = error
+    else {
+        return None;
+    };
+    if *status != StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+    let retry_after = headers
+        .as_ref()
+        .and_then(|headers| headers.get(http::header::RETRY_AFTER))
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after);
+    let message = body
+        .as_deref()
+        .filter(|body| !body.trim().is_empty())
+        .unwrap_or("rate limited by 9router")
+        .to_string();
+    Some(CodexErr::Stream(message, retry_after))
+}
+
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.trim().parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    httpdate::parse_http_date(value)
+        .ok()?
+        .duration_since(std::time::SystemTime::now())
+        .ok()
+}
+
 /// Carries cccx gateway provenance from a live HTTP stream into the terminal
 /// stream consumer. It is intentionally never serialized into the LLM request.
 struct CccxGatewayAttemptRecorder {
@@ -2697,6 +3000,16 @@ impl CccxGatewayAttemptRecorder {
     }
 
     async fn persist_terminal(&mut self, status: &str) {
+        self.persist_terminal_with_observed_output(status, &[], None)
+            .await;
+    }
+
+    async fn persist_terminal_with_observed_output(
+        &mut self,
+        status: &str,
+        observed_output: &[serde_json::Value],
+        response_id: Option<&str>,
+    ) {
         if let Err(error) = crate::cccx_gateway_provenance_state::merge_attempt_aggregation(
             &self.project_root,
             &self.thread_id,
@@ -2706,6 +3019,12 @@ impl CccxGatewayAttemptRecorder {
         .await
         {
             warn!(%error, thread_id = %self.thread_id, "cccx: failed to merge provider gateway retry provenance");
+        }
+        if let Some(response_id) = response_id {
+            self.provenance.record_response_id(response_id.to_string());
+        }
+        if let Some(digest) = sha256_json_digest(observed_output) {
+            self.provenance.record_output_digest(digest);
         }
         self.provenance.record_stream_termination(status);
         if let Err(error) = crate::cccx_gateway_provenance_state::save_gateway_provenance(
@@ -2718,6 +3037,83 @@ impl CccxGatewayAttemptRecorder {
         {
             warn!(%error, thread_id = %self.thread_id, "cccx: failed to persist terminal provider gateway provenance");
         }
+    }
+}
+
+/// Canonicalize every factual model-output fragment that crossed the stream
+/// boundary. Completed items alone are insufficient: a disconnect can occur
+/// after text or tool arguments were observed but before `OutputItemDone`.
+fn gateway_observed_output_event(event: &ResponseEvent) -> Option<serde_json::Value> {
+    match event {
+        ResponseEvent::OutputItemAdded(item) => Some(serde_json::json!({
+            "type": "output_item_added",
+            "item": item,
+        })),
+        ResponseEvent::OutputItemDone(item) => Some(serde_json::json!({
+            "type": "output_item_done",
+            "item": item,
+        })),
+        ResponseEvent::OutputTextDelta(delta) => Some(serde_json::json!({
+            "type": "output_text_delta",
+            "delta": delta,
+        })),
+        ResponseEvent::ToolCallInputDelta {
+            item_id,
+            call_id,
+            delta,
+        } => Some(serde_json::json!({
+            "type": "tool_call_input_delta",
+            "itemId": item_id,
+            "callId": call_id,
+            "delta": delta,
+        })),
+        ResponseEvent::ReasoningSummaryDelta {
+            delta,
+            summary_index,
+        } => Some(serde_json::json!({
+            "type": "reasoning_summary_delta",
+            "summaryIndex": summary_index,
+            "delta": delta,
+        })),
+        ResponseEvent::ReasoningSummaryDone {
+            item_id,
+            text,
+            summary_index,
+        } => Some(serde_json::json!({
+            "type": "reasoning_summary_done",
+            "itemId": item_id,
+            "summaryIndex": summary_index,
+            "text": text,
+        })),
+        ResponseEvent::ReasoningContentDelta {
+            delta,
+            content_index,
+        } => Some(serde_json::json!({
+            "type": "reasoning_content_delta",
+            "contentIndex": content_index,
+            "delta": delta,
+        })),
+        ResponseEvent::ReasoningSummaryPartAdded { summary_index } => Some(serde_json::json!({
+            "type": "reasoning_summary_part_added",
+            "summaryIndex": summary_index,
+        })),
+        ResponseEvent::Completed {
+            response_id,
+            end_turn,
+            ..
+        } => Some(serde_json::json!({
+            "type": "completed",
+            "responseId": response_id,
+            "endTurn": end_turn,
+        })),
+        ResponseEvent::Created
+        | ResponseEvent::SafetyBuffering(_)
+        | ResponseEvent::ServerModel(_)
+        | ResponseEvent::ModelVerifications(_)
+        | ResponseEvent::TurnModerationMetadata(_)
+        | ResponseEvent::ServerReasoningIncluded(_)
+        | ResponseEvent::RateLimits(_)
+        | ResponseEvent::ModelsEtag(_) => None,
     }
 }
 
@@ -2778,6 +3174,7 @@ where
         let mut gateway_recorder = gateway_recorder;
         let mut completed = false;
         let mut saw_error = false;
+        let mut observed_output = Vec::new();
         let upstream_request_id = upstream_request_id.as_deref();
         if let Some(upstream_request_id) = upstream_request_id {
             feedback_tags!(last_model_request_id = upstream_request_id);
@@ -2791,7 +3188,13 @@ where
                         &items_added,
                     );
                     if let Some(recorder) = gateway_recorder.as_mut() {
-                        recorder.persist_terminal("cancelled").await;
+                        recorder
+                            .persist_terminal_with_observed_output(
+                                "cancelled",
+                                &observed_output,
+                                None,
+                            )
+                            .await;
                     }
                     return;
                 }
@@ -2800,6 +3203,11 @@ where
             let Some(event) = event else {
                 break;
             };
+            if let Ok(event) = &event
+                && let Some(observed) = gateway_observed_output_event(event)
+            {
+                observed_output.push(observed);
+            }
             match event {
                 Ok(ResponseEvent::ServerModel(model)) => {
                     if let Some(recorder) = gateway_recorder.as_mut() {
@@ -2816,7 +3224,13 @@ where
                             &items_added,
                         );
                         if let Some(recorder) = gateway_recorder.as_mut() {
-                            recorder.persist_terminal("cancelled").await;
+                            recorder
+                                .persist_terminal_with_observed_output(
+                                    "cancelled",
+                                    &observed_output,
+                                    None,
+                                )
+                                .await;
                         }
                         return;
                     }
@@ -2834,7 +3248,13 @@ where
                             &items_added,
                         );
                         if let Some(recorder) = gateway_recorder.as_mut() {
-                            recorder.persist_terminal("cancelled").await;
+                            recorder
+                                .persist_terminal_with_observed_output(
+                                    "cancelled",
+                                    &observed_output,
+                                    None,
+                                )
+                                .await;
                         }
                         return;
                     }
@@ -2855,7 +3275,13 @@ where
                         &items_added,
                     );
                     if let Some(recorder) = gateway_recorder.as_mut() {
-                        recorder.persist_terminal("completed").await;
+                        recorder
+                            .persist_terminal_with_observed_output(
+                                "completed",
+                                &observed_output,
+                                Some(&response_id),
+                            )
+                            .await;
                     }
                     if let Some(sender) = tx_last_response.take() {
                         let _ = sender.send(LastResponse {
@@ -2889,7 +3315,13 @@ where
                             &items_added,
                         );
                         if let Some(recorder) = gateway_recorder.as_mut() {
-                            recorder.persist_terminal("cancelled").await;
+                            recorder
+                                .persist_terminal_with_observed_output(
+                                    "cancelled",
+                                    &observed_output,
+                                    None,
+                                )
+                                .await;
                         }
                         return;
                     }
@@ -2916,10 +3348,13 @@ where
                         session_telemetry.see_event_completed_failed(&mapped);
                         logged_error = true;
                     }
+                    if let Some(mut recorder) = gateway_recorder.take() {
+                        recorder.record_upstream_request_id(upstream_request_id);
+                        recorder
+                            .persist_terminal_with_observed_output("error", &observed_output, None)
+                            .await;
+                    }
                     if tx_event.send(Err(mapped)).await.is_err() {
-                        if let Some(recorder) = gateway_recorder.as_mut() {
-                            recorder.persist_terminal("error").await;
-                        }
                         return;
                     }
                 }
@@ -2930,7 +3365,11 @@ where
         }
         if let Some(recorder) = gateway_recorder.as_mut() {
             recorder
-                .persist_terminal(if saw_error { "error" } else { "truncated" })
+                .persist_terminal_with_observed_output(
+                    if saw_error { "error" } else { "truncated" },
+                    &observed_output,
+                    None,
+                )
                 .await;
         }
         inference_trace_attempt.record_failed(

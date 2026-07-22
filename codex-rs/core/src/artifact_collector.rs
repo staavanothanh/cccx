@@ -154,6 +154,7 @@ mod tests {
             output_digest: "sha256:output".to_string(),
             tool_call_sequence_digest: None,
             stream_termination_status: None,
+            gateway_attempts: Vec::new(),
         }
     }
 

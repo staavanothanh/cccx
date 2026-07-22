@@ -91,11 +91,13 @@ pub(crate) async fn save_gateway_provenance(
             path: parent.to_path_buf(),
             source,
         })?;
+    let mut provenance = provenance.clone();
+    provenance.synchronize_attempt_history();
     let record = PersistedGatewayProvenance {
         thread_id: thread_id.to_string(),
         attempt_scope_id: attempt_scope_id.to_string(),
         recorded_at: chrono::Utc::now().to_rfc3339(),
-        provenance: provenance.clone(),
+        provenance,
     };
     let bytes =
         serde_json::to_vec_pretty(&record).map_err(GatewayProvenanceStateError::Serialize)?;
@@ -109,9 +111,13 @@ pub(crate) async fn record_gateway_retry(
     project_root: &Path,
     thread_id: &str,
     attempt_scope_id: &str,
+    retry_after_ms: Option<u64>,
 ) -> Result<(), GatewayProvenanceStateError> {
     mutate_gateway_provenance(project_root, thread_id, attempt_scope_id, |provenance| {
         provenance.record_retry();
+        if let Some(retry_after_ms) = retry_after_ms {
+            provenance.record_retry_after_ms(retry_after_ms);
+        }
     })
     .await
 }
@@ -150,6 +156,8 @@ pub(crate) async fn merge_attempt_aggregation(
     }
     provenance.retry_count = record.provenance.retry_count;
     provenance.transport_fallbacks = record.provenance.transport_fallbacks;
+    provenance.retry_after_ms = record.provenance.retry_after_ms;
+    provenance.attempts = record.provenance.attempts;
     Ok(())
 }
 
@@ -162,6 +170,22 @@ pub(crate) async fn load_gateway_provenance(
         return Ok(None);
     };
     Ok(Some(record.provenance))
+}
+
+/// Removes any terminal provenance left for a prior incarnation of the same
+/// thread identifier. Spawn registration calls this before the worker can make
+/// a model request, so an attempt that never reaches 9router cannot inherit a
+/// stale route or request id from an older runtime.
+pub(crate) async fn clear_gateway_provenance(
+    project_root: &Path,
+    thread_id: &str,
+) -> Result<(), GatewayProvenanceStateError> {
+    let path = gateway_provenance_path(project_root, thread_id);
+    match fs::remove_file(&path).await {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(GatewayProvenanceStateError::Write { path, source }),
+    }
 }
 
 async fn mutate_gateway_provenance(
@@ -273,6 +297,11 @@ mod tests {
             Some("completed")
         );
         assert_eq!(loaded.retry_count, 1);
+        assert_eq!(loaded.attempts.len(), 1);
+        assert_eq!(
+            loaded.attempts[0].gateway_request_id,
+            loaded.gateway_request_id
+        );
     }
 
     #[tokio::test]
@@ -311,7 +340,7 @@ mod tests {
             .await
             .expect("save initial provenance");
 
-        record_gateway_retry(project.path(), "thread-1", "scope-1")
+        record_gateway_retry(project.path(), "thread-1", "scope-1", Some(23_000))
             .await
             .expect("record retry");
         record_gateway_transport_fallback(
@@ -329,9 +358,40 @@ mod tests {
             .expect("merge retry aggregation");
 
         assert_eq!(retried_attempt.retry_count, 1);
+        assert_eq!(retried_attempt.retry_after_ms, Some(23_000));
+        assert_eq!(retried_attempt.attempts.len(), 1);
+        assert_eq!(
+            retried_attempt.attempts[0].gateway_request_id,
+            initial.gateway_request_id
+        );
         assert_eq!(
             retried_attempt.transport_fallbacks,
             vec!["responses_websocket->responses_http"]
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_spawn_boundary_prevents_stale_provenance_reuse() {
+        let project = tempfile::tempdir().expect("temp project");
+        let mut stale = GatewayProvenance::new("stale-route".to_string());
+        stale.record_effective(
+            "stale-effective".to_string(),
+            "stale-provider".to_string(),
+            "stale-model".to_string(),
+        );
+        save_gateway_provenance(project.path(), "reused-thread", "old-scope", &stale)
+            .await
+            .expect("save stale provenance");
+
+        clear_gateway_provenance(project.path(), "reused-thread")
+            .await
+            .expect("clear stale provenance");
+
+        assert!(
+            load_gateway_provenance(project.path(), "reused-thread")
+                .await
+                .expect("load after clear")
+                .is_none()
         );
     }
 }

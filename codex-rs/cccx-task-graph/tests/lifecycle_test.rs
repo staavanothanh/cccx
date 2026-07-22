@@ -90,6 +90,7 @@ fn success_artifact(task_id: &str, art_id: &str, work_spec_id: &str, attempt_id:
             output_digest: "sha256:out".to_string(),
             tool_call_sequence_digest: None,
             stream_termination_status: None,
+            gateway_attempts: Vec::new(),
         }),
         verification: None,
     }

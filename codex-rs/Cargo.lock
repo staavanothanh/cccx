@@ -2507,6 +2507,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "http 1.4.0",
+ "httpdate",
  "rand 0.9.3",
  "tokio",
 ]
@@ -2821,6 +2822,7 @@ dependencies = [
  "fs2",
  "futures",
  "http 1.4.0",
+ "httpdate",
  "iana-time-zone",
  "image",
  "indexmap 2.14.0",
@@ -3692,8 +3694,10 @@ dependencies = [
  "pretty_assertions",
  "schemars 0.8.22",
  "serde",
+ "serial_test",
  "tempfile",
  "toml 0.9.11+spec-1.1.0",
+ "url",
 ]
 
 [[package]]

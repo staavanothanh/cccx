@@ -33,7 +33,10 @@ use codex_execpolicy::PolicyParser;
 use codex_execpolicy::RuleMatch;
 use codex_execpolicy::blocking_append_allow_prefix_rule;
 use codex_execpolicy::blocking_append_network_rule;
+use codex_model_provider_info::ModelProviderInfo;
+#[cfg(test)]
 use codex_model_provider_info::NINE_ROUTER_API_KEY_ENV;
+use codex_model_provider_info::NINE_ROUTER_PROVIDER_ID;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
@@ -70,8 +73,9 @@ const RULES_DIR_NAME: &str = "rules";
 const RULE_EXTENSION: &str = "rules";
 const DEFAULT_POLICY_FILE: &str = "default.rules";
 const CCCX_AUTO_CLASSIFIER_MODEL_ENV: &str = "CCCX_AUTO_CLASSIFIER_MODEL";
-const CCCX_AUTO_CLASSIFIER_BASE_URL: &str = "https://9router.ai/api/v1";
 const CCCX_AUTO_CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(8);
+const CCCX_CLASSIFIER_MAX_ACTION_FIELD_CHARS: usize = 4_096;
+const CCCX_CLASSIFIER_MAX_TARGET_PATHS: usize = 32;
 static BANNED_PREFIX_SUGGESTIONS: &[&[&str]] = &[
     &["python3"],
     &["python3", "-"],
@@ -282,12 +286,26 @@ pub(crate) trait CccxAutoClassifier: std::fmt::Debug + Send + Sync {
     fn classify(&self, action: CccxNormalizedAction) -> CccxAutoClassifierFuture<'_>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct CccxNineRouterAutoClassifier {
     client: reqwest::Client,
     api_key: String,
     base_url: String,
     model: String,
+    provenance_project_root: PathBuf,
+}
+
+impl std::fmt::Debug for CccxNineRouterAutoClassifier {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CccxNineRouterAutoClassifier")
+            .field("client", &"<reqwest::Client>")
+            .field("api_key", &"[REDACTED]")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("provenance_project_root", &self.provenance_project_root)
+            .finish()
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -328,18 +346,49 @@ struct CccxClassifierDecision {
 }
 
 impl CccxNineRouterAutoClassifier {
-    fn from_env() -> Option<Self> {
-        let api_key = std::env::var(NINE_ROUTER_API_KEY_ENV).ok()?;
+    fn from_provider(
+        provider_id: &str,
+        provider: &ModelProviderInfo,
+        provenance_project_root: PathBuf,
+    ) -> Option<Self> {
+        if provider_id != NINE_ROUTER_PROVIDER_ID || !provider.is_9router() {
+            return None;
+        }
+        let api_key = provider
+            .experimental_bearer_token
+            .clone()
+            .or_else(|| provider.api_key().ok().flatten())?;
+        let base_url = provider.base_url.clone()?;
         let model = std::env::var(CCCX_AUTO_CLASSIFIER_MODEL_ENV).ok()?;
         Some(Self {
             client: reqwest::Client::new(),
             api_key,
-            base_url: CCCX_AUTO_CLASSIFIER_BASE_URL.to_string(),
+            base_url,
             model,
+            provenance_project_root,
         })
     }
 
+    async fn persist_provenance(
+        &self,
+        attempt_scope_id: &str,
+        provenance: &cccx_provider_gateway::provenance::GatewayProvenance,
+    ) {
+        let record_id = format!("classifier-{attempt_scope_id}");
+        if let Err(error) = crate::cccx_gateway_provenance_state::save_gateway_provenance(
+            &self.provenance_project_root,
+            &record_id,
+            attempt_scope_id,
+            provenance,
+        )
+        .await
+        {
+            tracing::warn!(%error, "cccx: failed to persist Auto classifier gateway provenance");
+        }
+    }
+
     async fn classify_inner(&self, action: CccxNormalizedAction) -> CccxClassifierOutcome {
+        let action = cccx_classifier_action_for_wire(action);
         let Ok(action_json) = serde_json::to_string(&action) else {
             return CccxClassifierOutcome::Unavailable;
         };
@@ -358,6 +407,25 @@ impl CccxNineRouterAutoClassifier {
                 },
             ],
         };
+        let bridge = crate::provider_gateway_bridge::ProviderGatewayBridge::new(
+            codex_features::cccx_mvp::provider_boundary_active(),
+        );
+        let mut provenance = bridge.begin_call_with_wire_api(&self.model, "chat_completions");
+        if let Some(provenance) = provenance.as_mut() {
+            provenance.record_call_site("classifier", "/chat/completions");
+            if let Ok(bytes) = serde_json::to_vec(&request) {
+                provenance.record_input_digest(format!("sha256:{:x}", Sha256::digest(bytes)));
+            }
+        }
+        bridge.end_call(&mut provenance, None, None, None);
+        let attempt_scope_id = provenance
+            .as_ref()
+            .map(|provenance| provenance.gateway_request_id.clone());
+        if let (Some(provenance), Some(attempt_scope_id)) =
+            (provenance.as_ref(), attempt_scope_id.as_deref())
+        {
+            self.persist_provenance(attempt_scope_id, provenance).await;
+        }
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let response = match timeout(
             CCCX_AUTO_CLASSIFIER_TIMEOUT,
@@ -370,12 +438,44 @@ impl CccxNineRouterAutoClassifier {
         .await
         {
             Ok(Ok(response)) => response,
-            _ => return CccxClassifierOutcome::Unavailable,
+            _ => {
+                if let (Some(provenance), Some(attempt_scope_id)) =
+                    (provenance.as_mut(), attempt_scope_id.as_deref())
+                {
+                    provenance.record_stream_termination("error");
+                    self.persist_provenance(attempt_scope_id, provenance).await;
+                }
+                return CccxClassifierOutcome::Unavailable;
+            }
         };
+        if let Some(provenance) = provenance.as_mut() {
+            provenance.record_http_status(response.status().as_u16());
+            if let Some(retry_after_ms) = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|seconds| seconds.saturating_mul(1000))
+            {
+                provenance.record_retry_after_ms(retry_after_ms);
+            }
+        }
         if !response.status().is_success() {
+            if let (Some(provenance), Some(attempt_scope_id)) =
+                (provenance.as_mut(), attempt_scope_id.as_deref())
+            {
+                provenance.record_stream_termination("error");
+                self.persist_provenance(attempt_scope_id, provenance).await;
+            }
             return CccxClassifierOutcome::Unavailable;
         }
         let Ok(response) = response.json::<CccxClassifierResponse>().await else {
+            if let (Some(provenance), Some(attempt_scope_id)) =
+                (provenance.as_mut(), attempt_scope_id.as_deref())
+            {
+                provenance.record_stream_termination("error");
+                self.persist_provenance(attempt_scope_id, provenance).await;
+            }
             return CccxClassifierOutcome::Unavailable;
         };
         let Some(content) = response
@@ -383,17 +483,72 @@ impl CccxNineRouterAutoClassifier {
             .first()
             .and_then(|choice| choice.message.content.as_deref())
         else {
+            if let (Some(provenance), Some(attempt_scope_id)) =
+                (provenance.as_mut(), attempt_scope_id.as_deref())
+            {
+                provenance.record_stream_termination("error");
+                self.persist_provenance(attempt_scope_id, provenance).await;
+            }
             return CccxClassifierOutcome::Unavailable;
         };
-        parse_cccx_classifier_content(content)
+        let outcome = parse_cccx_classifier_content(content)
             .map(CccxClassifierOutcome::Available)
-            .unwrap_or(CccxClassifierOutcome::Unavailable)
+            .unwrap_or(CccxClassifierOutcome::Unavailable);
+        if let (Some(provenance), Some(attempt_scope_id)) =
+            (provenance.as_mut(), attempt_scope_id.as_deref())
+        {
+            provenance
+                .record_output_digest(format!("sha256:{:x}", Sha256::digest(content.as_bytes())));
+            provenance.record_stream_termination(
+                if matches!(&outcome, CccxClassifierOutcome::Available(_)) {
+                    "completed"
+                } else {
+                    "error"
+                },
+            );
+            self.persist_provenance(attempt_scope_id, provenance).await;
+        }
+        outcome
     }
 }
 
 impl CccxAutoClassifier for CccxNineRouterAutoClassifier {
     fn classify(&self, action: CccxNormalizedAction) -> CccxAutoClassifierFuture<'_> {
         Box::pin(async move { self.classify_inner(action).await })
+    }
+}
+
+fn cccx_classifier_action_for_wire(mut action: CccxNormalizedAction) -> CccxNormalizedAction {
+    if action.command.as_deref() == Some(action.summary.as_str()) {
+        action.summary = format!("shell command ({} chars)", action.summary.chars().count());
+    } else {
+        action.summary = cccx_truncate_classifier_field(action.summary);
+    }
+
+    action.command = action.command.map(cccx_truncate_classifier_field);
+    action.tool_name = action.tool_name.map(cccx_truncate_classifier_field);
+    action.task_id = cccx_truncate_classifier_field(action.task_id);
+    action
+        .target_paths
+        .truncate(CCCX_CLASSIFIER_MAX_TARGET_PATHS);
+    action.target_paths = action
+        .target_paths
+        .into_iter()
+        .map(cccx_truncate_classifier_field)
+        .collect();
+    action
+}
+
+fn cccx_truncate_classifier_field(value: String) -> String {
+    let mut chars = value.chars();
+    let truncated: String = chars
+        .by_ref()
+        .take(CCCX_CLASSIFIER_MAX_ACTION_FIELD_CHARS)
+        .collect();
+    if chars.next().is_some() {
+        format!("{truncated}…[truncated]")
+    } else {
+        value
     }
 }
 
@@ -646,9 +801,23 @@ impl ExecPolicyManager {
         Self {
             policy: ArcSwap::from(policy),
             update_lock: Semaphore::new(/*permits*/ 1),
-            cccx_auto_classifier: CccxNineRouterAutoClassifier::from_env()
-                .map(|classifier| Arc::new(classifier) as Arc<dyn CccxAutoClassifier>),
+            cccx_auto_classifier: None,
         }
+    }
+
+    fn with_cccx_9router_classifier(
+        mut self,
+        provider_id: &str,
+        provider: &ModelProviderInfo,
+        provenance_project_root: &Path,
+    ) -> Self {
+        self.cccx_auto_classifier = CccxNineRouterAutoClassifier::from_provider(
+            provider_id,
+            provider,
+            provenance_project_root.to_path_buf(),
+        )
+        .map(|classifier| Arc::new(classifier) as Arc<dyn CccxAutoClassifier>);
+        self
     }
 
     #[cfg(test)]
@@ -667,6 +836,17 @@ impl ExecPolicyManager {
             tracing::warn!("failed to parse rules: {err}");
         }
         Ok(Self::new(Arc::new(policy)))
+    }
+
+    pub(crate) async fn load_for_provider(
+        config_stack: &ConfigLayerStack,
+        provider_id: &str,
+        provider: &ModelProviderInfo,
+        provenance_project_root: &Path,
+    ) -> Result<Self, ExecPolicyError> {
+        Ok(Self::load(config_stack)
+            .await?
+            .with_cccx_9router_classifier(provider_id, provider, provenance_project_root))
     }
 
     pub(crate) fn current(&self) -> Arc<Policy> {
@@ -1951,6 +2131,184 @@ fn cccx_canonical_json(value: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod cccx_policy_wiring_tests {
     use super::*;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+
+    #[test]
+    fn cccx_auto_classifier_rejects_spoofed_provider_id() {
+        let mut provider = ModelProviderInfo::create_9router_provider();
+        provider.base_url = Some("https://attacker.invalid/v1".to_string());
+
+        assert!(
+            CccxNineRouterAutoClassifier::from_provider(
+                "evil",
+                &provider,
+                PathBuf::from("D:/repo"),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn cccx_auto_classifier_debug_redacts_api_key() {
+        let secret = "unique-classifier-bearer-secret";
+        let classifier = CccxNineRouterAutoClassifier {
+            client: reqwest::Client::new(),
+            api_key: secret.to_string(),
+            base_url: "http://127.0.0.1:43123/v1".to_string(),
+            model: "route/test".to_string(),
+            provenance_project_root: PathBuf::from("D:/repo"),
+        };
+
+        let debug = format!("{classifier:?}");
+
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn cccx_auto_classifier_wire_action_bounds_oversized_shell_command() {
+        let oversized_segment = "x".repeat(10_000);
+        let action = cccx_shell_action(&[
+            "powershell".to_string(),
+            "-Command".to_string(),
+            oversized_segment.clone(),
+        ]);
+
+        let wire_action = cccx_classifier_action_for_wire(action);
+        let payload = serde_json::to_string(&wire_action).expect("serialize classifier action");
+
+        assert!(
+            payload.len() < 6_000,
+            "classifier prompt must stay bounded, got {} bytes",
+            payload.len()
+        );
+        assert!(
+            !payload.contains(&oversized_segment),
+            "full oversized shell content must not be sent to the model"
+        );
+        assert_eq!(
+            wire_action.summary, "shell command (10020 chars)",
+            "summary should identify the shell action without duplicating command content"
+        );
+        assert!(
+            wire_action
+                .command
+                .as_deref()
+                .is_some_and(|command| command.ends_with("…[truncated]"))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cccx_auto_classifier_uses_configured_9router_endpoint() {
+        let prior_key = std::env::var_os(NINE_ROUTER_API_KEY_ENV);
+        let prior_model = std::env::var_os(CCCX_AUTO_CLASSIFIER_MODEL_ENV);
+        // SAFETY: this test is serialized and restores both process variables.
+        unsafe {
+            std::env::set_var(NINE_ROUTER_API_KEY_ENV, "test-secret");
+            std::env::set_var(CCCX_AUTO_CLASSIFIER_MODEL_ENV, "route/test");
+        }
+        let mut provider = ModelProviderInfo::create_9router_provider();
+        provider.base_url = Some("http://127.0.0.1:43123/v1".to_string());
+
+        let classifier = CccxNineRouterAutoClassifier::from_provider(
+            NINE_ROUTER_PROVIDER_ID,
+            &provider,
+            PathBuf::from("D:/repo"),
+        )
+        .expect("trusted configured 9router classifier");
+
+        assert_eq!(classifier.base_url, "http://127.0.0.1:43123/v1");
+        assert_eq!(classifier.model, "route/test");
+
+        unsafe {
+            std::env::remove_var(NINE_ROUTER_API_KEY_ENV);
+        }
+        provider.env_key = None;
+        provider.experimental_bearer_token = Some("persisted-test-secret".to_string());
+        let persisted_classifier = CccxNineRouterAutoClassifier::from_provider(
+            NINE_ROUTER_PROVIDER_ID,
+            &provider,
+            PathBuf::from("D:/repo"),
+        )
+        .expect("persisted 9router credential must configure the classifier");
+        assert_eq!(persisted_classifier.api_key, "persisted-test-secret");
+
+        // SAFETY: restore the serialized test's process environment.
+        unsafe {
+            match prior_key {
+                Some(value) => std::env::set_var(NINE_ROUTER_API_KEY_ENV, value),
+                None => std::env::remove_var(NINE_ROUTER_API_KEY_ENV),
+            }
+            match prior_model {
+                Some(value) => std::env::set_var(CCCX_AUTO_CLASSIFIER_MODEL_ENV, value),
+                None => std::env::remove_var(CCCX_AUTO_CLASSIFIER_MODEL_ENV),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cccx_auto_classifier_persists_factual_gateway_attempt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "{\"decision\":\"allow\"}"}}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let project = tempfile::tempdir().expect("temp project");
+        let classifier = CccxNineRouterAutoClassifier {
+            client: reqwest::Client::new(),
+            api_key: "secret-not-persisted".to_string(),
+            base_url: format!("{}/v1", server.uri()),
+            model: "route/classifier".to_string(),
+            provenance_project_root: project.path().to_path_buf(),
+        };
+
+        let outcome = classifier
+            .classify_inner(cccx_shell_action(&[
+                "git".to_string(),
+                "status".to_string(),
+            ]))
+            .await;
+
+        assert!(matches!(outcome, CccxClassifierOutcome::Available(_)));
+        let provenance_dir = project.path().join(".cccx/state/gateway-provenance");
+        let mut entries = tokio::fs::read_dir(&provenance_dir)
+            .await
+            .expect("classifier provenance directory");
+        let entry = entries
+            .next_entry()
+            .await
+            .expect("read provenance entry")
+            .expect("one classifier provenance entry");
+        let bytes = tokio::fs::read(entry.path())
+            .await
+            .expect("read classifier provenance");
+        let record: crate::cccx_gateway_provenance_state::PersistedGatewayProvenance =
+            serde_json::from_slice(&bytes).expect("parse classifier provenance");
+        assert_eq!(record.provenance.call_kind.as_deref(), Some("classifier"));
+        assert_eq!(
+            record.provenance.endpoint.as_deref(),
+            Some("/chat/completions")
+        );
+        assert_eq!(record.provenance.http_status, Some(200));
+        assert_eq!(
+            record.provenance.stream_termination_status.as_deref(),
+            Some("completed")
+        );
+        assert!(record.provenance.input_digest.is_some());
+        assert!(record.provenance.output_digest.is_some());
+        assert!(record.provenance.effective_route_id.is_none());
+        assert!(record.provenance.effective_provider.is_none());
+        assert!(!String::from_utf8_lossy(&bytes).contains("secret-not-persisted"));
+    }
 
     #[test]
     fn cccx_mcp_grant_rejects_schema_drift_before_invocation() {

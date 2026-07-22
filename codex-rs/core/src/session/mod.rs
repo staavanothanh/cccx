@@ -572,9 +572,14 @@ impl Session {
             Arc::clone(exec_policy)
         } else {
             Arc::new(
-                ExecPolicyManager::load(&config.config_layer_stack)
-                    .await
-                    .map_err(|err| CodexErr::Fatal(format!("failed to load rules: {err}")))?,
+                ExecPolicyManager::load_for_provider(
+                    &config.config_layer_stack,
+                    &config.model_provider_id,
+                    &config.model_provider,
+                    &config.cwd,
+                )
+                .await
+                .map_err(|err| CodexErr::Fatal(format!("failed to load rules: {err}")))?,
             )
         };
 

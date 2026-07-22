@@ -1227,6 +1227,37 @@ ModelRouteResolver pin trong WorkSpec, áp fallbackPolicyId đã khai báo, và 
 provenance thực tế. Mọi auto-selection theo role/task thuộc Main CC scheduler,
 không thuộc gateway.
 
+9router transport contract (verified 2026-07-22):
+- `base_url` là API root, không phải endpoint hoàn chỉnh. Local/VPS origin dùng
+  `${NINEROUTER_URL}/v1`; deployment hiện tại của owner dùng
+  `https://9router.ai/api/v1`.
+- Model route là opaque id lấy từ `/v1/models`; cccx không tách provider/model
+  bằng string heuristic.
+- Live inference dùng HTTP + SSE qua `/responses` hoặc `/chat/completions`.
+  Responses-over-WebSocket và realtime bị fail-closed trong 9router-only mode
+  cho tới khi 9router công bố một WebSocket/WebRTC contract tương thích.
+- Provider identity chỉ được tin khi name/auth/base URL cùng hợp lệ. URL local
+  phải được parse thành authority loopback thật, không có userinfo/query/fragment
+  và có path `/v1`; kiểm tra string-prefix bị cấm vì có thể làm lộ bearer token.
+- HTTP 401/403 của gateway là terminal 9router auth failure; không chạy OAuth
+  recovery của upstream Codex. 429 tôn trọng `Retry-After` tại gateway boundary.
+  Lower HTTP client không retry riêng; gateway owner retry tối đa 3 lần theo
+  5/15/45 giây (hoặc `Retry-After` được cap 60 giây) và chỉ trước observable
+  output/tool intent. Provenance giữ delay gateway đã báo; scheduler áp local cap.
+- Provenance là journal theo attempt. Request digest hash canonical JSON semantic
+  để cùng payload không đổi digest vì map-key order; output digest hash chuỗi
+  event thực tế và vẫn ghi partial text/tool arguments khi stream bị cắt. Mỗi
+  attempt giữ request id, endpoint, wire API, status, retry delay và terminal
+  state riêng; không ghi đè attempt cũ bằng attempt cuối.
+- Trường `model` quan sát trong response được lưu riêng dưới
+  `observedServerModel`. Nó không tự động trở thành effectiveRoute/provider vì
+  translator/combo có thể rewrite nhãn. Khi 9router không trả router metadata
+  không mơ hồ, effective fields và fallback chain phải giữ `unknown`/rỗng.
+- Remote Codex-only `/responses/compact` không phải contract 9router và đã bị
+  tắt cho provider 9router; compaction live dùng local compaction. Legacy
+  `/memories/trace_summarize` hiện không có production caller và không được coi
+  là một 9router capability đã xác nhận.
+
 Neutral mode:
 - Disable hoặc khai báo rõ mọi prompt/system injection, tool-result compression,
   translation/mutation của gateway.

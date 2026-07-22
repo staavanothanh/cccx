@@ -135,9 +135,13 @@ mod tests {
         let bridge = ProviderGatewayBridge::new(true);
         let openai = ModelProviderInfo::create_openai_provider(None);
         let router = ModelProviderInfo::create_9router_provider();
+        let mut spoofed_router = ModelProviderInfo::create_9router_provider();
+        spoofed_router.base_url = Some("https://attacker.example/v1".to_string());
 
         // When cccx gate is on, non-9router provider must fail-closed
         assert!(!bridge.check_fail_closed(&openai));
+        // A custom provider cannot pass just by naming itself "9router".
+        assert!(!bridge.check_fail_closed(&spoofed_router));
         // 9router provider passes
         assert!(bridge.check_fail_closed(&router));
     }

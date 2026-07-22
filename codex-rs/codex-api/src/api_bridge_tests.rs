@@ -224,6 +224,30 @@ fn map_api_error_does_not_fallback_limit_name_to_limit_id() {
 }
 
 #[test]
+fn map_api_error_preserves_generic_429_retry_limit_shape() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        REQUEST_ID_HEADER,
+        http::HeaderValue::from_static("request-generic-429"),
+    );
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: Some("https://example.com/v1/responses".to_string()),
+        headers: Some(headers),
+        body: Some(r#"{"error":{"message":"rate limited"}}"#.to_string()),
+    }));
+
+    let CodexErr::RetryLimit(retry_limit) = err else {
+        panic!("expected RetryLimit for generic upstream 429, got {err:?}");
+    };
+    assert_eq!(retry_limit.status, http::StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        retry_limit.request_id.as_deref(),
+        Some("request-generic-429")
+    );
+}
+
+#[test]
 fn map_api_error_copies_rate_limit_reached_type_to_usage_limit_snapshot() {
     for (active_limit, expected_limit_id) in [(None, "codex"), (Some("codex_other"), "codex_other")]
     {

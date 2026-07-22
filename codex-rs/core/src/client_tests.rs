@@ -11,7 +11,9 @@ use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
 use super::chat_completion_tools;
 use super::chat_message_from_response_item;
+use super::gateway_observed_output_event;
 use super::merge_consecutive_assistant_tool_call_messages;
+use super::sha256_json_digest;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -65,6 +67,7 @@ use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -93,14 +96,16 @@ use wiremock::matchers::method;
 fn cccx_realtime_boundary_rejects_non_9router_provider_and_overrides() {
     let openai = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
     assert!(
-        super::realtime_provider_boundary_allows(&openai, /*has_provider_override*/ false)
-            .is_err()
+        super::realtime_provider_boundary_allows(&openai, /*has_provider_override*/ false).is_err()
     );
 
     let nine_router = ModelProviderInfo::create_9router_provider();
     assert!(
-        super::realtime_provider_boundary_allows(&nine_router, /*has_provider_override*/ false)
-            .is_ok()
+        super::realtime_provider_boundary_allows(
+            &nine_router,
+            /*has_provider_override*/ false
+        )
+        .is_err()
     );
     assert!(
         super::realtime_provider_boundary_allows(&nine_router, /*has_provider_override*/ true)
@@ -138,6 +143,34 @@ fn test_model_client_with_thread_id(
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     )
+}
+
+#[test]
+fn cccx_9router_never_enables_responses_websocket() {
+    let mut provider = ModelProviderInfo::create_9router_provider();
+    provider.base_url = Some("http://127.0.0.1:20128/v1".to_string());
+    provider.env_key = None;
+    provider.experimental_bearer_token = Some("test-token".to_string());
+    provider.supports_websockets = true;
+    let client = ModelClient::new(
+        None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        ThreadId::new(),
+        std::env::temp_dir(),
+        provider,
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        None,
+        false,
+        false,
+        None,
+        false,
+        false,
+        None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+
+    assert!(!client.responses_websocket_enabled());
 }
 
 #[tokio::test]
@@ -764,6 +797,13 @@ async fn cccx_gateway_provenance_is_persisted_only_after_stream_terminal() -> an
         Some("completed")
     );
     assert_eq!(stored.wire_api.as_deref(), Some("chat_completions"));
+    assert_eq!(stored.response_id.as_deref(), Some("resp-terminal"));
+    assert!(
+        stored
+            .output_digest
+            .as_deref()
+            .is_some_and(|digest| digest.starts_with("sha256:"))
+    );
     Ok(())
 }
 
@@ -813,16 +853,69 @@ async fn cccx_gateway_provenance_records_only_observed_server_model_at_terminal(
     .await?
     .expect("terminal stream should persist provenance");
     assert_eq!(
-        stored.effective_model.as_deref(),
+        stored.observed_server_model.as_deref(),
         Some("observed-router-model")
     );
     assert_eq!(stored.effective_route_id, None);
     assert_eq!(stored.effective_provider, None);
+    assert_eq!(stored.effective_model, None);
     assert_eq!(
         stored.upstream_request_id.as_deref(),
         Some("upstream-observed-id")
     );
     Ok(())
+}
+
+#[test]
+fn cccx_gateway_http_error_records_status_and_retry_after() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::RETRY_AFTER,
+        http::HeaderValue::from_static("7"),
+    );
+    let error = ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: Some("http://127.0.0.1:8080/v1/responses".to_string()),
+        headers: Some(headers),
+        body: Some("rate limited".to_string()),
+    });
+    let mut provenance = Some(cccx_provider_gateway::provenance::GatewayProvenance::new(
+        "oc/deepseek-v4-flash-free".to_string(),
+    ));
+
+    super::record_gateway_api_error(&mut provenance, &error);
+
+    let mapped = super::gateway_rate_limit_error(&provenance, &error)
+        .expect("9router 429 must remain retryable at the gateway boundary");
+    assert!(matches!(
+        mapped,
+        codex_protocol::error::CodexErr::Stream(_, Some(delay))
+            if delay == Duration::from_secs(7)
+    ));
+    assert!(
+        super::gateway_rate_limit_error(&None, &error).is_none(),
+        "generic upstream 429 must not use the 9router gateway retry mapping"
+    );
+
+    let provenance = provenance.expect("enabled gateway provenance");
+    assert_eq!(provenance.http_status, Some(429));
+    assert_eq!(provenance.retry_after_ms, Some(7_000));
+}
+
+#[test]
+fn cccx_gateway_auth_failure_is_terminal_only_at_the_gateway_boundary() {
+    let error = ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::UNAUTHORIZED,
+        url: Some("http://127.0.0.1:8080/v1/responses".to_string()),
+        headers: None,
+        body: Some("invalid token".to_string()),
+    });
+    let provenance = Some(cccx_provider_gateway::provenance::GatewayProvenance::new(
+        "oc/deepseek-v4-flash-free".to_string(),
+    ));
+
+    assert!(super::is_gateway_auth_failure(&provenance, &error));
+    assert!(!super::is_gateway_auth_failure(&None, &error));
 }
 
 #[tokio::test]
@@ -1296,4 +1389,47 @@ fn chat_completions_request_preserves_9router_model_and_tool_loop_schema() {
     assert_eq!(messages[3]["tool_call_id"], "call-spawn");
     assert_eq!(messages[4]["role"], "tool");
     assert_eq!(messages[4]["tool_call_id"], "call-search");
+}
+
+#[test]
+fn gateway_json_digest_is_independent_of_object_insertion_order() {
+    let left = HashMap::from([
+        ("model", json!("oc/deepseek-v4-flash-free")),
+        ("stream", json!(true)),
+    ]);
+    let right = HashMap::from([
+        ("stream", json!(true)),
+        ("model", json!("oc/deepseek-v4-flash-free")),
+    ]);
+
+    assert_eq!(sha256_json_digest(&left), sha256_json_digest(&right));
+}
+
+#[test]
+fn gateway_output_digest_includes_partial_text_and_tool_argument_deltas() {
+    let text_delta = gateway_observed_output_event(&ResponseEvent::OutputTextDelta(
+        "partial visible output".to_string(),
+    ));
+    let tool_delta = gateway_observed_output_event(&ResponseEvent::ToolCallInputDelta {
+        item_id: "cccx-partial-tool-item".to_string(),
+        call_id: Some("cccx-partial-tool-call".to_string()),
+        delta: "{\"plan\":[".to_string(),
+    });
+
+    assert_eq!(
+        text_delta,
+        Some(json!({
+            "type": "output_text_delta",
+            "delta": "partial visible output",
+        }))
+    );
+    assert_eq!(
+        tool_delta,
+        Some(json!({
+            "type": "tool_call_input_delta",
+            "itemId": "cccx-partial-tool-item",
+            "callId": "cccx-partial-tool-call",
+            "delta": "{\"plan\":[",
+        }))
+    );
 }

@@ -40,6 +40,8 @@ const NINE_ROUTER_PROVIDER_NAME: &str = "9router";
 pub const NINE_ROUTER_PROVIDER_ID: &str = "9router";
 pub const NINE_ROUTER_BASE_URL: &str = "https://9router.ai/api/v1";
 pub const NINE_ROUTER_API_KEY_ENV: &str = "CCCX_API_KEY";
+pub const NINE_ROUTER_URL_ENV: &str = "NINEROUTER_URL";
+const NINE_ROUTER_STREAM_MAX_RETRIES: u64 = 3;
 const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
 pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
 pub const AMAZON_BEDROCK_GPT_5_5_MODEL_ID: &str = "openai.gpt-5.5";
@@ -270,8 +272,13 @@ impl ModelProviderInfo {
             .unwrap_or_else(|| default_base_url.to_string());
 
         let headers = self.build_header_map()?;
+        let max_attempts = if self.is_9router() {
+            0
+        } else {
+            self.request_max_retries()
+        };
         let retry = ApiRetryConfig {
-            max_attempts: self.request_max_retries(),
+            max_attempts,
             base_delay: Duration::from_millis(200),
             retry_429: false,
             retry_5xx: true,
@@ -422,8 +429,10 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
-            request_max_retries: None,
-            stream_max_retries: None,
+            // Keep 9router attempt accounting in the cccx session retry loop,
+            // where Retry-After and gateway provenance are both observable.
+            request_max_retries: Some(0),
+            stream_max_retries: Some(NINE_ROUTER_STREAM_MAX_RETRIES),
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
@@ -451,6 +460,15 @@ impl ModelProviderInfo {
 
     pub fn is_9router(&self) -> bool {
         self.name == NINE_ROUTER_PROVIDER_NAME
+            && (self.env_key.as_deref() == Some(NINE_ROUTER_API_KEY_ENV)
+                || self
+                    .experimental_bearer_token
+                    .as_deref()
+                    .is_some_and(|token| !token.trim().is_empty()))
+            && self
+                .base_url
+                .as_deref()
+                .is_some_and(is_trusted_9router_base_url)
     }
 
     pub fn supports_remote_compaction(&self) -> bool {
@@ -460,6 +478,81 @@ impl ModelProviderInfo {
     pub fn has_command_auth(&self) -> bool {
         self.auth.is_some()
     }
+}
+
+fn is_trusted_9router_base_url(base_url: &str) -> bool {
+    let normalized = base_url.trim().trim_end_matches('/');
+    if normalized == NINE_ROUTER_BASE_URL {
+        return true;
+    }
+    if is_explicitly_trusted_9router_base_url(normalized) {
+        return true;
+    }
+
+    // Local development/test 9router mirrors are allowed because cccx uses
+    // mock/local 9router instances for deterministic final-gate tests. Remote
+    // user-defined providers cannot become trusted by merely naming
+    // themselves "9router".
+    let Ok(url) = url::Url::parse(normalized) else {
+        return false;
+    };
+    if url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path().trim_end_matches('/') != "/v1"
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
+fn is_explicitly_trusted_9router_base_url(normalized_base_url: &str) -> bool {
+    let Ok(owner_origin) = std::env::var(NINE_ROUTER_URL_ENV) else {
+        return false;
+    };
+    let owner_origin = owner_origin.trim().trim_end_matches('/');
+    if owner_origin.is_empty() {
+        return false;
+    }
+
+    let Ok(origin_url) = url::Url::parse(owner_origin) else {
+        return false;
+    };
+    let Ok(base_url) = url::Url::parse(normalized_base_url) else {
+        return false;
+    };
+
+    if origin_url.scheme() != "https"
+        || !origin_url.username().is_empty()
+        || origin_url.password().is_some()
+        || origin_url.query().is_some()
+        || origin_url.fragment().is_some()
+        || !base_url.username().is_empty()
+        || base_url.password().is_some()
+        || base_url.query().is_some()
+        || base_url.fragment().is_some()
+    {
+        return false;
+    }
+
+    let origin_path = origin_url.path().trim_end_matches('/');
+    let expected_base_path = if origin_path.is_empty() {
+        "/v1".to_string()
+    } else {
+        format!("{origin_path}/v1")
+    };
+
+    base_url.scheme() == origin_url.scheme()
+        && base_url.host() == origin_url.host()
+        && base_url.port_or_known_default() == origin_url.port_or_known_default()
+        && base_url.path().trim_end_matches('/') == expected_base_path
 }
 
 pub const DEFAULT_LMSTUDIO_PORT: u16 = 1234;

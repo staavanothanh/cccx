@@ -119,15 +119,14 @@ fn cccx_read_set_key(path: &Path) -> PathBuf {
 }
 
 fn verify_cccx_read_digest(path: &Path, expected: &str) -> Result<(), String> {
-        let bytes = std::fs::read(path).map_err(|error| {
-            format!("cannot re-read `{}` before write: {error}", path.display())
-        })?;
-        let actual = format!("sha256:{:x}", Sha256::digest(bytes));
-        if actual == expected {
-            Ok(())
-        } else {
-            Err(format!("stale read detected for `{}`", path.display()))
-        }
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("cannot re-read `{}` before write: {error}", path.display()))?;
+    let actual = format!("sha256:{:x}", Sha256::digest(bytes));
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("stale read detected for `{}`", path.display()))
+    }
 }
 
 #[cfg(test)]
@@ -334,10 +333,7 @@ impl TurnContext {
         self.cccx_read_set.verify_if_observed(path).await
     }
 
-    pub(crate) async fn verify_cccx_read_observed_fresh(
-        &self,
-        path: &Path,
-    ) -> Result<(), String> {
+    pub(crate) async fn verify_cccx_read_observed_fresh(&self, path: &Path) -> Result<(), String> {
         self.cccx_read_set.verify_observed_fresh(path).await
     }
 

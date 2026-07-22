@@ -33,8 +33,8 @@ interactive/TUI events and headless JSONL where a gate crosses either surface.
 | 15 | PASS | TUI commands inspect/approve/deny exact queue IDs | Invalid ID/digest and unsafe batch reject | queue/slash/TUI |
 | 16 | PASS | TUI/session interrupt-resume preserves logical ID | Cancelled worker cannot resume | runtime/checkpoint/TUI |
 | 17 | PASS | Spawned child dispatch uses project lease; writers serialize while readers overlap | Unknown writer class serializes | tool runtime |
-| 18 | PARTIAL | Complete LLM-path inventory reaches 9router boundary | Any non-9router route fails before transport | client/gateway |
-| 19 | PARTIAL | Stream/retry attempts persist factual route/provenance | Metadata omission remains `unknown` | gateway/provenance |
+| 18 | PASS | Complete live LLM-path inventory reaches parsed/trusted 9router HTTP/SSE boundary | Spoofed/non-9router route and unsupported WS/realtime fail before transport | client/gateway |
+| 19 | PASS | Responses/Chat stream, retry, auth and terminal attempts persist factual provenance | Metadata omission remains `unknown`; post-tool disconnect never replays | gateway/provenance |
 | 20 | PARTIAL | Compact/restart restores memory, ADR refs, state refs and MCP health | Child ADR/memory write denies; raw output is not durable memory | compact/memory/ADR/MCP |
 | 21 | PASS | Spawned CX catalog contains only trusted compatible plugin grants | CC-only/native grant does not leak | plugins/spawn |
 | 22 | PARTIAL | TUI commands/status/network/secure input use live state | Secret absent from parser/history/log/telemetry | TUI/secure config |

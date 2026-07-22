@@ -22,14 +22,22 @@ use codex_core::config::Config;
 use codex_features::Feature;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
+use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::ConversationStartParams;
+use codex_protocol::protocol::ConversationStartTransport;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
+use codex_protocol::protocol::RealtimeEvent;
+use codex_protocol::protocol::RealtimeOutputModality;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
+use core_test_support::responses::ev_message_item_added;
+use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_response_once_match;
 use core_test_support::responses::mount_sse_once_match;
@@ -41,8 +49,11 @@ use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use serial_test::serial;
+use sha2::Digest;
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use wiremock::Mock;
 use wiremock::Respond;
@@ -80,6 +91,57 @@ impl Respond for ParentWaitForSpawnedWorker {
             ev_completed("cccx-final-gate-parent-wait-response"),
         ]))
     }
+}
+
+struct DisconnectThenSuccess {
+    attempts: AtomicUsize,
+}
+
+impl Respond for DisconnectThenSuccess {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return sse_response(sse(vec![ev_response_created(
+                "cccx-gateway-disconnect-before-output",
+            )]));
+        }
+        sse_response(sse(vec![
+            ev_response_created("cccx-gateway-retry-success"),
+            ev_assistant_message("cccx-gateway-retry-message", "retry completed"),
+            ev_completed("cccx-gateway-retry-success"),
+        ]))
+    }
+}
+
+struct RetryAfterThenSuccess {
+    attempts: AtomicUsize,
+}
+
+impl Respond for RetryAfterThenSuccess {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return ResponseTemplate::new(429)
+                .insert_header("retry-after", "1")
+                .set_body_json(json!({"error": {"message": "router busy"}}));
+        }
+        sse_response(sse(vec![
+            ev_response_created("cccx-gateway-rate-limit-success"),
+            ev_assistant_message("cccx-gateway-rate-limit-message", "rate limit recovered"),
+            ev_completed("cccx-gateway-rate-limit-success"),
+        ]))
+    }
+}
+
+fn chat_text_stream(response_id: &str, text: &str) -> String {
+    let chunk = json!({
+        "id": response_id,
+        "model": "provider-observed/chat-model",
+        "choices": [{
+            "index": 0,
+            "delta": {"role": "assistant", "content": text},
+            "finish_reason": "stop"
+        }]
+    });
+    format!("data: {chunk}\n\ndata: [DONE]\n\n")
 }
 
 fn find_agent_id(value: &serde_json::Value) -> Option<String> {
@@ -216,6 +278,161 @@ fn request_tool_names(request: &wiremock::Request) -> BTreeSet<String> {
         .collect()
 }
 
+fn configure_mock_9router(config: &mut Config, base_url: String) {
+    config.model = Some("oc/deepseek-v4-flash-free".to_string());
+    let mut provider = ModelProviderInfo::create_9router_provider();
+    provider.base_url = Some(format!("{}/v1", base_url.trim_end_matches('/')));
+    provider.env_key = None;
+    provider.experimental_bearer_token = Some("final-gate-test-token".to_string());
+    provider.wire_api = WireApi::Responses;
+    provider.supports_websockets = false;
+    config.model_provider = provider;
+}
+
+fn realtime_start_params(transport: Option<ConversationStartTransport>) -> ConversationStartParams {
+    ConversationStartParams {
+        client_managed_handoffs: false,
+        flush_transcript_tail_on_session_end: false,
+        codex_responses_as_items: false,
+        codex_response_item_prefix: None,
+        codex_response_handoff_prefix: None,
+        model: None,
+        output_modality: RealtimeOutputModality::Audio,
+        include_startup_context: true,
+        prompt: Some(Some("cccx final-gate realtime start".to_string())),
+        realtime_session_id: None,
+        transport,
+        version: None,
+        voice: None,
+    }
+}
+
+fn gateway_provenance_json(test: &core_test_support::test_codex::TestCodex) -> serde_json::Value {
+    let thread_id = test.session_configured.thread_id.to_string();
+    let path = test
+        .cwd_path()
+        .join(".cccx")
+        .join("state")
+        .join("gateway-provenance")
+        .join(format!("{thread_id}.json"));
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|error| panic!("failed to parse {}: {error}", path.display()))
+}
+
+fn realtime_error_message(event: &EventMsg) -> Option<String> {
+    match event {
+        EventMsg::Error(err) => Some(err.message.clone()),
+        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+            payload: RealtimeEvent::Error(message),
+        }) => Some(message.clone()),
+        _ => None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn realtime_websocket_fails_closed_in_9router_only_mode() -> Result<()> {
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_config({
+            let uri = server.uri();
+            move |config| {
+                configure_mock_9router(config, uri.clone());
+                config.experimental_realtime_ws_base_url = Some(uri.clone());
+            }
+        })
+        .build(&server)
+        .await?;
+
+    test.codex
+        .submit(Op::RealtimeConversationStart(realtime_start_params(Some(
+            ConversationStartTransport::Websocket,
+        ))))
+        .await?;
+
+    let err = wait_for_event_with_timeout(
+        &test.codex,
+        |event| realtime_error_message(event).is_some(),
+        Duration::from_secs(5),
+    )
+    .await;
+    let err = realtime_error_message(&err).expect("realtime error message");
+
+    assert!(err.contains("cccx: realtime conversations are disabled in 9router-only mode"));
+    assert!(
+        err.contains("WebSocket/WebRTC"),
+        "error must name the disabled realtime transports"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn realtime_webrtc_fails_closed_before_transport_in_9router_only_mode() -> Result<()> {
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(path_regex(".*/realtime/calls$"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let test = test_codex()
+        .with_config({
+            let uri = server.uri();
+            move |config| {
+                configure_mock_9router(config, uri.clone());
+                config.experimental_realtime_webrtc_call_base_url =
+                    Some(format!("{}/v1", uri.trim_end_matches('/')));
+            }
+        })
+        .build(&server)
+        .await?;
+
+    test.codex
+        .submit(Op::RealtimeConversationStart(realtime_start_params(Some(
+            ConversationStartTransport::Webrtc {
+                sdp: "v=0\r\n".to_string(),
+            },
+        ))))
+        .await?;
+
+    let err = wait_for_event_with_timeout(
+        &test.codex,
+        |event| realtime_error_message(event).is_some(),
+        Duration::from_secs(5),
+    )
+    .await;
+    let err = realtime_error_message(&err).expect("realtime error message");
+
+    assert!(err.contains("cccx: realtime conversations are disabled in 9router-only mode"));
+    Ok(())
+}
+
+async fn submit_gateway_prompt(
+    test: &core_test_support::test_codex::TestCodex,
+    prompt: &str,
+) -> Result<()> {
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: prompt.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event_with_timeout(
+        &test.codex,
+        |event| matches!(event, EventMsg::TurnComplete(_)),
+        Duration::from_secs(20),
+    )
+    .await;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn root_session_bootstrap_is_typed_main_cc_cc_harness() -> Result<()> {
     let server = start_mock_server().await;
@@ -233,6 +450,434 @@ async fn root_session_bootstrap_is_typed_main_cc_cc_harness() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial(cccx_runtime)]
+async fn mock_9router_success_persists_factual_unknown_route_provenance() -> Result<()> {
+    const PROMPT: &str = "phase5 successful 9router stream";
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(|request: &wiremock::Request| request_body_contains(request, PROMPT))
+        .respond_with(
+            sse_response(sse(vec![
+                ev_response_created("cccx-gateway-success"),
+                ev_assistant_message("cccx-gateway-success-message", "gateway completed"),
+                ev_completed("cccx-gateway-success"),
+            ]))
+            .insert_header("openai-model", "provider-observed/model-v1"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| configure_mock_9router(config, mock_base_url))
+        .build(&server)
+        .await?;
+
+    submit_gateway_prompt(&test, PROMPT).await?;
+
+    let record = gateway_provenance_json(&test);
+    let provenance = &record["provenance"];
+    assert_eq!(
+        provenance["requested_route_id"],
+        "oc/deepseek-v4-flash-free"
+    );
+    assert!(provenance["effective_route_id"].is_null());
+    assert!(provenance["effective_provider"].is_null());
+    assert!(provenance["effective_model"].is_null());
+    assert_eq!(
+        provenance["observed_server_model"],
+        "provider-observed/model-v1"
+    );
+    assert_eq!(provenance["stream_termination_status"], "completed");
+    assert_eq!(provenance["response_id"], "cccx-gateway-success");
+    assert!(
+        provenance["input_digest"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("sha256:"))
+    );
+    assert!(
+        provenance["output_digest"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("sha256:"))
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
+async fn mock_9router_chat_completions_stream_uses_the_same_gateway_boundary() -> Result<()> {
+    const PROMPT: &str = "phase5 chat completions compatibility";
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path("/v1/chat/completions"))
+        .and(|request: &wiremock::Request| request_body_contains(request, PROMPT))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .insert_header("x-request-id", "chat-router-request")
+                .set_body_string(chat_text_stream(
+                    "chatcmpl-phase5",
+                    "chat transport completed",
+                )),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| {
+            configure_mock_9router(config, mock_base_url);
+            config.model_provider.wire_api = WireApi::ChatCompletions;
+        })
+        .build(&server)
+        .await?;
+
+    submit_gateway_prompt(&test, PROMPT).await?;
+
+    let record = gateway_provenance_json(&test);
+    let provenance = &record["provenance"];
+    assert_eq!(provenance["wire_api"], "chat_completions");
+    // The configured base URL owns the `/v1` API root; provenance records the
+    // transport's endpoint suffix. The exact wire path is enforced by the
+    // wiremock matcher above.
+    assert_eq!(provenance["endpoint"], "/chat/completions");
+    assert_eq!(provenance["stream_termination_status"], "completed");
+    assert_eq!(provenance["response_id"], "chatcmpl-phase5");
+    assert_eq!(provenance["upstream_request_id"], "chat-router-request");
+    assert_eq!(
+        provenance["observed_server_model"],
+        "provider-observed/chat-model"
+    );
+    assert!(provenance["effective_route_id"].is_null());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
+async fn mock_9router_disconnect_before_output_retries_once_with_provenance() -> Result<()> {
+    const PROMPT: &str = "phase5 retry safe disconnect";
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(|request: &wiremock::Request| request_body_contains(request, PROMPT))
+        .respond_with(DisconnectThenSuccess {
+            attempts: AtomicUsize::new(0),
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| configure_mock_9router(config, mock_base_url))
+        .build(&server)
+        .await?;
+
+    submit_gateway_prompt(&test, PROMPT).await?;
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let request_bodies = requests
+        .iter()
+        .filter(|request| request.url.path() == "/v1/responses")
+        .map(|request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body).expect("retry request JSON")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(request_bodies.len(), 2);
+    assert_eq!(
+        request_bodies[0], request_bodies[1],
+        "transparent retry must replay the immutable request payload"
+    );
+
+    let record = gateway_provenance_json(&test);
+    let provenance = &record["provenance"];
+    assert_eq!(provenance["retry_count"], 1);
+    assert_eq!(provenance["stream_termination_status"], "completed");
+    assert_eq!(provenance["response_id"], "cccx-gateway-retry-success");
+    let attempts = provenance["attempts"]
+        .as_array()
+        .expect("per-attempt gateway journal");
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0]["streamTerminationStatus"], "error");
+    assert_eq!(attempts[1]["streamTerminationStatus"], "completed");
+    assert_eq!(attempts[0]["inputDigest"], attempts[1]["inputDigest"]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
+async fn mock_9router_retry_after_is_honored_and_persisted() -> Result<()> {
+    const PROMPT: &str = "phase5 retry after";
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(|request: &wiremock::Request| request_body_contains(request, PROMPT))
+        .respond_with(RetryAfterThenSuccess {
+            attempts: AtomicUsize::new(0),
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| configure_mock_9router(config, mock_base_url))
+        .build(&server)
+        .await?;
+
+    submit_gateway_prompt(&test, PROMPT).await?;
+
+    let record = gateway_provenance_json(&test);
+    let provenance = &record["provenance"];
+    assert_eq!(provenance["retry_count"], 1);
+    assert_eq!(provenance["retry_after_ms"], 1_000);
+    assert_eq!(provenance["stream_termination_status"], "completed");
+    let attempts = provenance["attempts"]
+        .as_array()
+        .expect("per-attempt gateway journal");
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0]["httpStatus"], 429);
+    assert_eq!(attempts[0]["retryAfterMs"], 1_000);
+    assert_eq!(attempts[1]["streamTerminationStatus"], "completed");
+    assert_eq!(attempts[0]["inputDigest"], attempts[1]["inputDigest"]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
+async fn mock_9router_exhausted_429_preserves_typed_status() -> Result<()> {
+    const PROMPT: &str = "phase5 exhausted rate limit";
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(|request: &wiremock::Request| request_body_contains(request, PROMPT))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "1")
+                .insert_header("x-request-id", "router-rate-limit-terminal")
+                .set_body_json(json!({"error": {"message": "router still busy"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| {
+            configure_mock_9router(config, mock_base_url);
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build(&server)
+        .await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    let event = wait_for_event_with_timeout(
+        &test.codex,
+        |event| {
+            matches!(
+                event,
+                EventMsg::Error(error)
+                    if matches!(
+                        error.codex_error_info.as_ref(),
+                        Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
+                            http_status_code: Some(429)
+                        })
+                    )
+            )
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(matches!(
+        event,
+        EventMsg::Error(error)
+            if matches!(
+                error.codex_error_info,
+                Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
+                    http_status_code: Some(429)
+                })
+            )
+    ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
+async fn mock_9router_disconnect_after_tool_intent_does_not_replay_request() -> Result<()> {
+    const PROMPT: &str = "phase5 do not replay tool intent";
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(|request: &wiremock::Request| request_body_contains(request, PROMPT))
+        .respond_with(sse_response(sse(vec![
+            ev_response_created("cccx-gateway-tool-disconnect"),
+            ev_function_call(
+                "cccx-gateway-tool-intent",
+                "update_plan",
+                &json!({
+                    "plan": [{"step": "observe tool intent", "status": "in_progress"}]
+                })
+                .to_string(),
+            ),
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| configure_mock_9router(config, mock_base_url))
+        .build(&server)
+        .await?;
+
+    submit_gateway_prompt(&test, PROMPT).await?;
+
+    let record = gateway_provenance_json(&test);
+    let provenance = &record["provenance"];
+    assert_eq!(provenance["retry_count"], 0);
+    assert_eq!(provenance["stream_termination_status"], "error");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
+async fn mock_9router_partial_text_before_disconnect_is_digested_without_replay() -> Result<()> {
+    const PROMPT: &str = "phase5 partial text provenance";
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(|request: &wiremock::Request| request_body_contains(request, PROMPT))
+        .respond_with(sse_response(sse(vec![
+            ev_response_created("cccx-gateway-partial-text"),
+            ev_message_item_added("cccx-partial-text-item", ""),
+            ev_output_text_delta("partial visible output"),
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| configure_mock_9router(config, mock_base_url))
+        .build(&server)
+        .await?;
+
+    submit_gateway_prompt(&test, PROMPT).await?;
+
+    let provenance = gateway_provenance_json(&test)["provenance"].clone();
+    let empty_digest = format!("sha256:{:x}", sha2::Sha256::digest(b"[]"));
+    assert_eq!(provenance["retry_count"], 0);
+    assert_eq!(provenance["stream_termination_status"], "error");
+    assert_ne!(provenance["output_digest"], empty_digest);
+    assert_eq!(provenance["attempts"].as_array().map(Vec::len), Some(1));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
+async fn mock_9router_partial_tool_arguments_are_digested_without_replay() -> Result<()> {
+    const PROMPT: &str = "phase5 partial tool arguments provenance";
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(|request: &wiremock::Request| request_body_contains(request, PROMPT))
+        .respond_with(sse_response(sse(vec![
+            ev_response_created("cccx-gateway-partial-tool"),
+            json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "type": "function_call",
+                    "id": "cccx-partial-tool-item",
+                    "call_id": "cccx-partial-tool-call",
+                    "name": "update_plan",
+                    "arguments": "",
+                },
+            }),
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "cccx-partial-tool-item",
+                "call_id": "cccx-partial-tool-call",
+                "delta": "{\"plan\":[",
+            }),
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| configure_mock_9router(config, mock_base_url))
+        .build(&server)
+        .await?;
+
+    submit_gateway_prompt(&test, PROMPT).await?;
+
+    let provenance = gateway_provenance_json(&test)["provenance"].clone();
+    let empty_digest = format!("sha256:{:x}", sha2::Sha256::digest(b"[]"));
+    assert_eq!(provenance["retry_count"], 0);
+    assert_eq!(provenance["stream_termination_status"], "error");
+    assert_ne!(provenance["output_digest"], empty_digest);
+    assert_eq!(provenance["attempts"].as_array().map(Vec::len), Some(1));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
+async fn mock_9router_auth_failure_is_terminal_without_oauth_retry() -> Result<()> {
+    const PROMPT: &str = "phase5 auth failure";
+    let server = start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(|request: &wiremock::Request| request_body_contains(request, PROMPT))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .insert_header("x-request-id", "router-auth-request")
+                .set_body_json(json!({"error": {"message": "invalid router token"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| configure_mock_9router(config, mock_base_url))
+        .build(&server)
+        .await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event_with_timeout(
+        &test.codex,
+        |event| matches!(event, EventMsg::Error(_)),
+        Duration::from_secs(20),
+    )
+    .await;
+
+    let record = gateway_provenance_json(&test);
+    let provenance = &record["provenance"];
+    assert_eq!(provenance["http_status"], 401);
+    assert_eq!(provenance["retry_count"], 0);
+    assert_eq!(provenance["stream_termination_status"], "error");
+    assert_eq!(provenance["upstream_request_id"], "router-auth-request");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
 async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
     let server = start_mock_server().await;
     let mock_base_url = server.uri();
@@ -242,7 +887,7 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
             .enable(Feature::Collab)
             .expect("test config should enable the native multi-agent tool");
         let mut provider = ModelProviderInfo::create_9router_provider();
-        provider.base_url = Some(mock_base_url);
+        provider.base_url = Some(format!("{}/v1", mock_base_url.trim_end_matches('/')));
         provider.env_key = None;
         provider.experimental_bearer_token = Some("final-gate-test-token".to_string());
         provider.wire_api = WireApi::Responses;
@@ -513,7 +1158,7 @@ async fn spawned_cx_empty_intersections_are_read_only_and_fail_closed() -> Resul
                 .enable(Feature::Collab)
                 .expect("enable native multi-agent tool");
             let mut provider = ModelProviderInfo::create_9router_provider();
-            provider.base_url = Some(mock_base_url);
+            provider.base_url = Some(format!("{}/v1", mock_base_url.trim_end_matches('/')));
             provider.env_key = None;
             provider.experimental_bearer_token = Some("final-gate-test-token".to_string());
             provider.wire_api = WireApi::Responses;

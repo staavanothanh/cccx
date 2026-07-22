@@ -769,6 +769,12 @@ async fn prepare_realtime_start(
         .transport
         .clone()
         .unwrap_or(ConversationStartTransport::Websocket);
+    if codex_features::cccx_mvp::provider_boundary_active() && provider.is_9router() {
+        return Err(CodexErr::InvalidRequest(
+            "cccx: realtime conversations are disabled in 9router-only mode because 9router exposes HTTP/SSE endpoints, not a trusted realtime WebSocket/WebRTC endpoint."
+                .to_string(),
+        ));
+    }
     let mut api_provider = provider.to_api_provider(Some(AuthMode::ApiKey))?;
     if let Some(realtime_ws_base_url) = &config.experimental_realtime_ws_base_url {
         api_provider.base_url = realtime_ws_base_url.clone();

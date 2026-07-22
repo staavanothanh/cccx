@@ -1,4 +1,4 @@
-Kết luận cập nhật sau Phase 4: cccx pass chắc chắn **19/25 gate**. Sáu gate còn lại — **18, 19, 20, 22, 24 và 25** — vẫn PARTIAL theo tiêu chuẩn runtime/E2E của [task.md](D:/Learning_Programing/cccx/docs/task.md:951). Chưa thể kết luận “cccx hoàn thiện đúng thiết kế”.
+Kết luận cập nhật sau Phase 5: cccx pass chắc chắn **21/25 gate**. Bốn gate còn lại — **20, 22, 24 và 25** — vẫn PARTIAL theo tiêu chuẩn runtime/E2E của [task.md](D:/Learning_Programing/cccx/docs/task.md:951). Chưa thể kết luận “cccx hoàn thiện đúng thiết kế”.
 
 ## Phát hiện audit
 
@@ -158,7 +158,7 @@ Negative cases:
 
 Exit: Gate 12/14 tiếp tục PASS; Gate 7/11/13/16 được nâng bằng E2E.
 
-### Phase 5 — 9router transport và provenance
+### Phase 5 — 9router transport và provenance — COMPLETE (2026-07-22)
 
 Cover Gate **18–19**.
 
@@ -178,13 +178,22 @@ Mock 9router phải cover:
 - Disconnect trước side effect.
 - Disconnect sau tool event.
 - 429 + `Retry-After`.
-- Requested route khác effective route.
+- Khi router trả metadata rõ ràng: giữ requested/effective route khác nhau;
+  public contract không trả metadata này thì giữ `unknown`, không dựng mock giả.
 - Metadata bị thiếu.
 - Auth failure/retry attempts.
 
 Provenance phải lưu attempt, requested/effective route, fallback chain và digests thật. Metadata thiếu phải là `unknown`, không copy requested thành effective.
 
 Exit: không còn provider bypass; mọi retry/stream outcome có provenance đúng.
+
+Kết quả: Gate 18–19 PASS. Live traffic dùng exact `/v1/responses` hoặc
+`/v1/chat/completions`; WS/realtime không có contract bị fail-closed. URL trust
+dùng parsed authority; auth failure không rơi vào OAuth recovery; retry chỉ
+replay trước observable output/tool intent. Effective metadata không được suy
+diễn từ requested route hoặc model label mơ hồ. Mỗi attempt giữ journal riêng;
+request digest dùng canonical JSON semantic và output digest dùng chuỗi event
+thực tế, kể cả partial text/tool arguments trước disconnect.
 
 ### Phase 6 — Durable context, ADR và MCP
 

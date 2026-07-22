@@ -3886,3 +3886,80 @@ cargo +1.95.0 test -p codex-core --test all cccx_ -j 1
 - Final Phase 4 status: Gates **7, 11, 13 and 16 PASS**; Gates **12 and 14
   remain PASS**. Overall ledger: **19/25 PASS**, with Gates **18, 19, 20, 22,
   24 and 25** remaining for Phases 5–8.
+
+## 2026-07-22 — Final-gate Phase 5 complete
+
+### Gate 18 PASS: one parsed/trusted 9router boundary
+
+- Verified the official 9router skill and current public source. API clients use
+  an API-root base URL ending in `/v1`; live inference supports HTTP/SSE
+  `/v1/chat/completions` and `/v1/responses`.
+- Main CC, CC/CX worker and review/audit turns share `ModelClientSession`; Auto
+  classifier uses the configured 9router endpoint and now accepts either the
+  environment key or the persisted in-memory bearer token. Goal evaluation is
+  deterministic and does not call an LLM.
+- 9router is not eligible for upstream Codex remote compaction, so live
+  compaction remains local. The legacy memory-summarize client has no production
+  caller. Unsupported Responses WebSocket and realtime paths fail closed.
+- Trusted local URLs are parsed as actual loopback authorities with exact `/v1`
+  path and no userinfo/query/fragment. Userinfo spoof URLs are rejected before a
+  bearer token can leave the process.
+
+### Gate 19 PASS: factual stream/retry/auth provenance
+
+- Responses and Chat Completions mock contracts enforce exact `/v1/...` paths.
+- Successful stream, safe pre-output disconnect retry, post-tool-intent
+  no-replay, 429 `Retry-After`, 401 terminal auth failure and missing router
+  metadata are covered.
+- Gateway-provided `Retry-After` remains factual in provenance but the applied
+  sleep is capped at 60 seconds in both the core owner loop and generic client,
+  so an endpoint cannot stall a turn indefinitely.
+- Provenance stores a canonical semantic request digest and a factual output
+  event-sequence digest, plus call kind, wire API, endpoint suffix,
+  response/request IDs, status, retry delay and terminal state per attempt.
+  Partial text and partial tool arguments remain digestible on truncation;
+  retry attempts cannot overwrite earlier attempt records.
+  Missing effective route/provider metadata remains unknown; the response model
+  label is retained separately as `observedServerModel`.
+- Artifact correlation falls back to the local gateway attempt ID when 9router
+  does not return an upstream request ID. Generic non-gateway 429 mapping keeps
+  the upstream Codex typed error behavior; only the active 9router boundary maps
+  429 to the retryable stream outcome.
+
+Validation commands and exact results:
+
+```powershell
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+$env:RUST_MIN_STACK = "33554432"
+
+& "D:\Program Files\cargo\bin\cargo.exe" +1.95.0 test -p cccx-protocol -p cccx-provider-gateway -p codex-model-provider-info -j1
+# 36 protocol + 20 gateway + 28 provider passed; 0 failed
+
+& "D:\Program Files\cargo\bin\cargo.exe" +1.95.0 test -p cccx-task-graph -j1
+# 19 unit + 5 lifecycle passed; 0 failed
+
+& "D:\Program Files\cargo\bin\cargo.exe" +1.95.0 test -p codex-api map_api_error_preserves_generic_429_retry_limit_shape -j1
+# 1 passed; 0 failed
+
+& "D:\Program Files\cargo\bin\cargo.exe" +1.95.0 test -p codex-client retry_after_is_clamped_to_a_local_maximum -j1
+# 1 passed; 0 failed
+
+& "D:\Program Files\cargo\bin\cargo.exe" +1.95.0 test -p codex-core --lib cccx_ -j1
+# 173 passed; 0 failed
+
+& "D:\Program Files\cargo\bin\cargo.exe" +1.95.0 test -p codex-core --lib gateway_json_digest_is_independent_of_object_insertion_order -j1
+# 1 passed; 0 failed
+
+& "D:\Program Files\cargo\bin\cargo.exe" +1.95.0 test -p codex-core --lib gateway_output_digest_includes_partial_text_and_tool_argument_deltas -j1
+# 1 passed; 0 failed
+
+& "D:\Program Files\cargo\bin\cargo.exe" +1.95.0 test -p codex-core --test all "cccx_final_gate::" -j1
+# 18 passed; 0 failed
+```
+
+- Security/correctness review findings closed in this phase: URL userinfo spoof,
+  persisted classifier credential, 9router Responses WebSocket auth escape,
+  local gateway request-ID loss, generic 429 error-shape regression, unbounded
+  `Retry-After`, unstable map-key request digests and weak partial-delta proof.
+- Final Phase 5 status: Gates **18 and 19 PASS**. Overall ledger: **21/25
+  PASS**; Gates **20, 22, 24 and 25** remain for Phases 6–8.

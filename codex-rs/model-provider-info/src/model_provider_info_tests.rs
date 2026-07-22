@@ -380,6 +380,93 @@ fn test_built_in_model_providers_include_9router() {
     assert_eq!(provider.env_key.as_deref(), Some(NINE_ROUTER_API_KEY_ENV));
     assert!(!provider.requires_openai_auth);
     assert_eq!(provider.wire_api, WireApi::ChatCompletions);
+    assert_eq!(provider.request_max_retries, Some(0));
+    assert_eq!(
+        provider.stream_max_retries(),
+        3,
+        "9router UX/design promises three stream reconnect retries"
+    );
+}
+
+#[test]
+fn test_9router_to_api_provider_forces_zero_request_retries() {
+    let mut provider = ModelProviderInfo::create_9router_provider();
+    provider.request_max_retries = Some(99);
+
+    let api_provider = provider
+        .to_api_provider(None)
+        .expect("built-in 9router provider should convert");
+
+    assert_eq!(
+        api_provider.retry.max_attempts, 0,
+        "lower codex-api retry must not consume 9router 429/status before core provenance gate"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn test_9router_identity_requires_trusted_base_url_and_cccx_key_env() {
+    let prior_url = std::env::var_os(NINE_ROUTER_URL_ENV);
+    // SAFETY: this test is serialized and restores the process environment.
+    unsafe {
+        std::env::remove_var(NINE_ROUTER_URL_ENV);
+    }
+
+    let mut spoofed = ModelProviderInfo::create_9router_provider();
+    spoofed.base_url = Some("https://attacker.example/v1".to_string());
+    assert!(!spoofed.is_9router());
+
+    let mut wrong_key = ModelProviderInfo::create_9router_provider();
+    wrong_key.env_key = Some("ATTACKER_KEY".to_string());
+    assert!(!wrong_key.is_9router());
+
+    let mut local_router = ModelProviderInfo::create_9router_provider();
+    local_router.base_url = Some("http://localhost:20128/v1".to_string());
+    assert!(local_router.is_9router());
+
+    for spoofed_url in [
+        "http://127.0.0.1:80@attacker.example/v1",
+        "http://localhost:80@attacker.example/v1",
+        "http://[::1]:80@attacker.example/v1",
+    ] {
+        let mut spoofed_local = ModelProviderInfo::create_9router_provider();
+        spoofed_local.base_url = Some(spoofed_url.to_string());
+        assert!(
+            !spoofed_local.is_9router(),
+            "userinfo URL must not cross the 9router trust boundary: {spoofed_url}"
+        );
+    }
+
+    let mut owner_vps_without_explicit_trust = ModelProviderInfo::create_9router_provider();
+    owner_vps_without_explicit_trust.base_url = Some("https://router.owner.example/v1".to_string());
+    assert!(!owner_vps_without_explicit_trust.is_9router());
+
+    // SAFETY: this test is serialized and restores the process environment.
+    unsafe {
+        std::env::set_var(NINE_ROUTER_URL_ENV, "https://router.owner.example");
+    }
+    let mut owner_vps = ModelProviderInfo::create_9router_provider();
+    owner_vps.base_url = Some("https://router.owner.example/v1".to_string());
+    assert!(owner_vps.is_9router());
+
+    unsafe {
+        std::env::set_var(NINE_ROUTER_URL_ENV, "https://router.owner.example/edge");
+    }
+    let mut owner_vps_with_prefix = ModelProviderInfo::create_9router_provider();
+    owner_vps_with_prefix.base_url = Some("https://router.owner.example/edge/v1".to_string());
+    assert!(owner_vps_with_prefix.is_9router());
+
+    let mut near_match = ModelProviderInfo::create_9router_provider();
+    near_match.base_url = Some("https://router.owner.example.evil/v1".to_string());
+    assert!(!near_match.is_9router());
+
+    // SAFETY: restore the serialized test's process environment.
+    unsafe {
+        match prior_url {
+            Some(value) => std::env::set_var(NINE_ROUTER_URL_ENV, value),
+            None => std::env::remove_var(NINE_ROUTER_URL_ENV),
+        }
+    }
 }
 
 #[test]

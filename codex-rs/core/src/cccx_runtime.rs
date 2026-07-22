@@ -10,7 +10,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use cccx_protocol::{
-    Artifact, ArtifactProvenance, ArtifactStatus, ModelRouteSelection, PermissionPolicy, WorkSpec,
+    Artifact, ArtifactGatewayAttempt, ArtifactProvenance, ArtifactStatus, ModelRouteSelection,
+    PermissionPolicy, WorkSpec,
 };
 use cccx_provider_gateway::FallbackPolicyId;
 use cccx_provider_gateway::provenance::GatewayProvenance;
@@ -389,6 +390,12 @@ impl CccxRuntimeRegistry {
         child_thread_id: ThreadId,
         runtime: CccxSpawnRuntime,
     ) -> Result<(), String> {
+        crate::cccx_gateway_provenance_state::clear_gateway_provenance(
+            &runtime.project_root,
+            &child_thread_id.to_string(),
+        )
+        .await
+        .map_err(|error| format!("failed to clear stale gateway provenance: {error}"))?;
         let initial = TaskGraph::new(
             "cccx-runtime",
             format!("cccx runtime graph for {}", runtime.project_root.display()),
@@ -894,7 +901,7 @@ fn provenance_for_runtime(
         .collect::<Vec<_>>()
         .join(",");
     let input_payload = format!("{}|{}", work_spec.objective, tools_joined);
-    let input_digest = format!("sha256:{:x}", Sha256::digest(input_payload.as_bytes()));
+    let fallback_input_digest = format!("sha256:{:x}", Sha256::digest(input_payload.as_bytes()));
     // Phase 5/7: effective_route_id is "unknown" when 9router provides no
     // effective downstream metadata. We never infer it from the requested route.
     let requested_route_id = gateway
@@ -905,15 +912,30 @@ fn provenance_for_runtime(
         .unwrap_or_else(|| "unknown".to_string());
     // Phase 5 audit: output_digest is SHA256(status_summary), not a constant.
     // Different completions produce different output digests.
-    let output_digest = format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
+    let fallback_output_digest = format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
+    let model_profile_id = work_spec
+        .resolved_model_route
+        .as_ref()
+        .map(|route| route.model_profile_id.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let capability_profile_id = work_spec
+        .resolved_model_route
+        .as_ref()
+        .map(|route| route.capability_profile_id.clone())
+        .unwrap_or_else(|| "unknown".to_string());
     ArtifactProvenance {
         producer_harness: work_spec.harness.clone(),
         producer_role: work_spec.role.clone(),
         provider_gateway_request_id: gateway
-            .map(|gateway| gateway.gateway_request_id.clone())
+            .map(|gateway| {
+                gateway
+                    .upstream_request_id
+                    .clone()
+                    .unwrap_or_else(|| gateway.gateway_request_id.clone())
+            })
             .unwrap_or_else(|| "unknown".to_string()),
-        model_profile_id: "unknown".to_string(),
-        capability_profile_id: "unknown".to_string(),
+        model_profile_id,
+        capability_profile_id,
         fallback_policy_id: gateway
             .and_then(|gateway| gateway.fallback_policy_id)
             .map(fallback_policy_id_to_str)
@@ -930,11 +952,37 @@ fn provenance_for_runtime(
         fallback_chain: gateway
             .map(|gateway| gateway.fallback_chain.clone())
             .unwrap_or_default(),
-        input_digest,
-        output_digest,
+        input_digest: gateway
+            .and_then(|gateway| gateway.input_digest.clone())
+            .unwrap_or(fallback_input_digest),
+        output_digest: gateway
+            .and_then(|gateway| gateway.output_digest.clone())
+            .unwrap_or(fallback_output_digest),
         tool_call_sequence_digest: tool_call_sequence_digest.map(str::to_string),
         stream_termination_status: gateway
             .and_then(|gateway| gateway.stream_termination_status.clone()),
+        gateway_attempts: gateway
+            .map(|gateway| {
+                gateway
+                    .attempts
+                    .iter()
+                    .map(|attempt| ArtifactGatewayAttempt {
+                        attempt_index: attempt.attempt_index,
+                        gateway_request_id: attempt.gateway_request_id.clone(),
+                        endpoint: attempt.endpoint.clone(),
+                        wire_api: attempt.wire_api.clone(),
+                        input_digest: attempt.input_digest.clone(),
+                        output_digest: attempt.output_digest.clone(),
+                        http_status: attempt.http_status,
+                        retry_after_ms: attempt.retry_after_ms,
+                        stream_termination_status: attempt.stream_termination_status.clone(),
+                        upstream_request_id: attempt.upstream_request_id.clone(),
+                        response_id: attempt.response_id.clone(),
+                        observed_server_model: attempt.observed_server_model.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -1019,6 +1067,7 @@ mod tests {
             output_digest: "sha256:o".into(),
             tool_call_sequence_digest: None,
             stream_termination_status: None,
+            gateway_attempts: Vec::new(),
         }
     }
 
@@ -1890,6 +1939,94 @@ mod tests {
         assert_ne!(
             prov.effective_route_id, prov.requested_route_id,
             "Phase 5: effective must differ from requested when no gw evidence"
+        );
+    }
+
+    #[test]
+    fn p5_artifact_provenance_uses_factual_gateway_digests_and_profiles() {
+        let mut ws = work_spec();
+        ws.resolved_model_route = Some(cccx_protocol::ResolvedModelRoute {
+            selection_source: cccx_protocol::RouteSelectionSource::RolePreset,
+            requested_route_id: "route/requested".to_string(),
+            model_profile_id: "profile/coding".to_string(),
+            capability_profile_id: "capability/tools-v1".to_string(),
+            fallback_policy_id: "strict".to_string(),
+            parent_attempt_id: None,
+            parent_requested_route_id: None,
+            parent_effective_route_id: None,
+            fallback_chain: Vec::new(),
+            candidate_route_ids: Vec::new(),
+        });
+        let mut gateway = GatewayProvenance::new("route/requested".to_string());
+        gateway.upstream_request_id = Some("upstream-request-7".to_string());
+        gateway.record_input_digest(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        );
+        gateway.record_output_digest(
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        );
+
+        let provenance = provenance_for_runtime(
+            &ws,
+            "route/requested",
+            "terminal summary must not replace wire output",
+            Some(&gateway),
+            None,
+        );
+
+        assert_eq!(provenance.provider_gateway_request_id, "upstream-request-7");
+        assert_eq!(provenance.model_profile_id, "profile/coding");
+        assert_eq!(provenance.capability_profile_id, "capability/tools-v1");
+        assert_eq!(provenance.input_digest, gateway.input_digest.unwrap());
+        assert_eq!(provenance.output_digest, gateway.output_digest.unwrap());
+        assert_eq!(provenance.effective_route_id, "unknown");
+    }
+
+    #[test]
+    fn p5_artifact_keeps_local_gateway_id_when_upstream_id_is_missing() {
+        let ws = work_spec();
+        let gateway = GatewayProvenance::new("route/requested".to_string());
+        let expected_local_id = gateway.gateway_request_id.clone();
+
+        let provenance =
+            provenance_for_runtime(&ws, "route/requested", "completed", Some(&gateway), None);
+
+        assert_eq!(provenance.provider_gateway_request_id, expected_local_id);
+        assert_eq!(
+            provenance.gateway_request_id.as_deref(),
+            Some(provenance.provider_gateway_request_id.as_str())
+        );
+    }
+
+    #[test]
+    fn p5_artifact_preserves_the_gateway_attempt_journal() {
+        let ws = work_spec();
+        let mut gateway = GatewayProvenance::new("route/requested".to_string());
+        gateway.record_call_site("stream", "/v1/chat/completions");
+        gateway.record_input_digest(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        );
+        gateway.record_stream_termination("error");
+        gateway.synchronize_attempt_history();
+        gateway.gateway_request_id = "gw-retry".to_string();
+        gateway.record_stream_termination("completed");
+        gateway.synchronize_attempt_history();
+
+        let provenance =
+            provenance_for_runtime(&ws, "route/requested", "completed", Some(&gateway), None);
+
+        assert_eq!(provenance.gateway_attempts.len(), 2);
+        assert_eq!(
+            provenance.gateway_attempts[0]
+                .stream_termination_status
+                .as_deref(),
+            Some("error")
+        );
+        assert_eq!(
+            provenance.gateway_attempts[1]
+                .stream_termination_status
+                .as_deref(),
+            Some("completed")
         );
     }
 

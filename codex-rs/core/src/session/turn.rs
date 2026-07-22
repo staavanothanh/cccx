@@ -1156,22 +1156,17 @@ async fn run_sampling_request(
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
-    let mut initial_input = Some(input);
-    let mut original_input = None;
+    // A transparent transport retry must replay the same model request. The
+    // session history can change asynchronously, so build the prompt once and
+    // keep it immutable for this retry cycle.
+    let prompt = build_prompt(
+        input,
+        router.as_ref(),
+        turn_context.as_ref(),
+        base_instructions,
+    );
+    let original_input = prompt.input.clone();
     loop {
-        let prompt_input = if let Some(input) = initial_input.take() {
-            input
-        } else {
-            sess.clone_history()
-                .await
-                .for_prompt(&turn_context.model_info.input_modalities)
-        };
-        let prompt = build_prompt(
-            prompt_input,
-            router.as_ref(),
-            turn_context.as_ref(),
-            base_instructions.clone(),
-        );
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
@@ -1186,7 +1181,7 @@ async fn run_sampling_request(
         .await
         {
             Ok(output) => {
-                return Ok((output, original_input.unwrap_or(prompt.input)));
+                return Ok((output, original_input));
             }
             Err(CodexErr::ContextWindowExceeded) => {
                 sess.set_total_tokens_full(&turn_context).await;
@@ -1201,10 +1196,6 @@ async fn run_sampling_request(
             }
             Err(err) => err,
         };
-
-        if original_input.is_none() {
-            original_input = Some(prompt.input);
-        }
 
         if !err.is_retryable() {
             return Err(err);
@@ -2017,6 +2008,7 @@ async fn try_run_sampling_request(
         !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
     let mut tool_execution_enqueued = false;
+    let mut observable_stream_output = false;
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
@@ -2059,6 +2051,19 @@ async fn try_run_sampling_request(
             .session_telemetry
             .record_responses(&handle_responses, &event);
         record_turn_ttft_metric(&turn_context, &event).await;
+
+        if !matches!(
+            &event,
+            ResponseEvent::Created
+                | ResponseEvent::ServerReasoningIncluded(_)
+                | ResponseEvent::RateLimits(_)
+                | ResponseEvent::ModelsEtag(_)
+        ) {
+            // Once any model output or user-visible metadata has crossed the
+            // session boundary, replaying the request can duplicate text,
+            // approvals, or tool intent even if no tool future was queued yet.
+            observable_stream_output = true;
+        }
 
         match event {
             ResponseEvent::Created => {}
@@ -2521,7 +2526,10 @@ async fn try_run_sampling_request(
         }
     }
 
-    block_cccx_retry_after_tool_execution(outcome, tool_execution_enqueued)
+    block_cccx_retry_after_tool_execution(
+        outcome,
+        tool_execution_enqueued || observable_stream_output,
+    )
 }
 
 fn block_cccx_retry_after_tool_execution<T>(
@@ -2537,15 +2545,15 @@ fn block_cccx_retry_after_tool_execution<T>(
 
 fn block_retry_after_tool_execution<T>(
     outcome: CodexResult<T>,
-    tool_execution_enqueued: bool,
+    observable_side_effect_committed: bool,
     cccx_provider_boundary_active: bool,
 ) -> CodexResult<T> {
-    if !cccx_provider_boundary_active || !tool_execution_enqueued {
+    if !cccx_provider_boundary_active || !observable_side_effect_committed {
         return outcome;
     }
     match outcome {
         Err(err) if err.is_retryable() => Err(CodexErr::InvalidRequest(format!(
-            "cccx: stream failed after tool execution was enqueued; automatic retry is blocked to avoid repeating observable side effects. Start a new attempt or resume from the latest checkpoint. Original error: {err}"
+            "cccx: stream failed after observable output or tool intent was emitted; automatic retry is blocked to avoid repeating side effects. Start a new attempt or resume from the latest checkpoint. Original error: {err}"
         ))),
         other => other,
     }

@@ -76,12 +76,27 @@ fn cccx_blocks_retryable_stream_error_after_tool_execution() {
 
     assert!(
         err.to_string()
-            .contains("automatic retry is blocked to avoid repeating observable side effects"),
+            .contains("automatic retry is blocked to avoid repeating side effects"),
         "unexpected error: {err}"
     );
     assert!(
         !err.is_retryable(),
         "blocked side-effect retry must not remain retryable"
+    );
+}
+
+#[test]
+fn cccx_blocks_retryable_stream_error_after_user_visible_output() {
+    let outcome = Err(CodexErr::Stream(
+        "disconnect after text delta".to_string(),
+        None,
+    ));
+    let err = block_retry_after_tool_execution::<()>(outcome, true, true)
+        .expect_err("observable model output must disable transparent retry");
+
+    assert!(
+        err.to_string().contains("observable output or tool intent"),
+        "unexpected guarded error: {err}"
     );
 }
 
