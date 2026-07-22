@@ -112,7 +112,7 @@ async fn build_fixture(server: &wiremock::MockServer) -> Result<TestCodex> {
             .expect("test config should enable request_permissions");
         config.cccx_default_mode = ModeKind::Auto;
         let mut provider = ModelProviderInfo::create_9router_provider();
-        provider.base_url = Some(mock_base_url);
+        provider.base_url = Some(format!("{}/v1", mock_base_url.trim_end_matches('/')));
         provider.env_key = None;
         provider.experimental_bearer_token = Some("permission-queue-test-token".to_string());
         provider.wire_api = WireApi::Responses;

@@ -1036,6 +1036,7 @@ mod tests {
             scope: cccx_protocol::WorkScope {
                 canonical_paths: set(&["D:/repo/src/auth"]),
                 protected_paths: BTreeSet::new(),
+                advisory_globs: BTreeSet::new(),
             },
             allowed_tools: set(&["apply_patch"]),
             forbidden_tools: set(&["spawn_agent"]),
@@ -1043,16 +1044,20 @@ mod tests {
             tool_grants: Vec::new(),
             permission_policy: cccx_protocol::PermissionPolicy::Ask,
             model_route: cccx_protocol::ModelRouteSelection::InheritMainRequested,
+            resolved_model_route: None,
             fallback_policy_id: "compatible".to_string(),
             fork_policy: cccx_protocol::ForkPolicy::WorkSpecOnly,
             enforced_constraints: vec!["no-out-of-scope-edits".to_string()],
             typed_constraints: Vec::new(),
+            advisory_constraints: Vec::new(),
             risk_threshold: None,
             action_classes: None,
             approval_policy: Some(cccx_protocol::ApprovalPolicyKind::AskCc),
             verification_spec: None,
             audit_depth: None,
             expected_artifact: None,
+            checkpoint_id: None,
+            base_commit: None,
         }
     }
 

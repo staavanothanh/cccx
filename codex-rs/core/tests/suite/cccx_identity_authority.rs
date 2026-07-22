@@ -155,7 +155,7 @@ async fn build_cccx_collab_fixture(
             .enable(Feature::Collab)
             .expect("test config should enable native multi-agent tools");
         let mut provider = ModelProviderInfo::create_9router_provider();
-        provider.base_url = Some(mock_base_url);
+        provider.base_url = Some(format!("{}/v1", mock_base_url.trim_end_matches('/')));
         provider.env_key = None;
         provider.experimental_bearer_token = Some("phase1-identity-test-token".to_string());
         provider.wire_api = WireApi::Responses;

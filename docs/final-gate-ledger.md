@@ -39,8 +39,11 @@ interactive/TUI events and headless JSONL where a gate crosses either surface.
 | 21 | PASS | Spawned CX catalog contains only trusted compatible plugin grants | CC-only/native grant does not leak | plugins/spawn |
 | 22 | PASS | TUI commands/status/network/secure input use live state | Secret absent from parser/history/log/telemetry | TUI/secure config |
 | 23 | PASS | Preserve JSONL terminal-last/exit-code regression | Headless approval defaults deny | headless/exec |
-| 24 | PARTIAL | cccx-owned aggregate line coverage is at least 80% | Runtime seams retain negative tests | release validation |
-| 25 | PARTIAL | Tracked generated-source allowlist passes | target, logs, local state and secrets are untracked | repository hygiene |
+| 24 | PASS | cccx-owned aggregate line coverage is at least 80% | Runtime seams retain negative tests | release validation |
+| 25 | PASS | Tracked generated-source allowlist passes | target, logs, local state and secrets are untracked | repository hygiene |
+
+Final result on 2026-07-22: **25/25 PASS, 0 OPEN/PARTIAL**. Gate 5 remains
+the owner-selected fail-closed `PASS (disabled)` state documented below.
 
 ## Evidence record format
 

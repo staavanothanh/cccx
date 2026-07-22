@@ -4086,3 +4086,94 @@ cargo +1.95.0 test -p codex-exec cccx_jsonl
   regressions are green.
 - Final Phase 7 status: Gate **22 PASS**, Gate **23 remains PASS**. Overall
   ledger: **23/25 PASS**; Gates **24 and 25** remain for Phase 8.
+
+## 2026-07-22 — Final-gate Phase 8 complete
+
+### Gate 24 PASS: fresh coverage and golden runtime evidence
+
+- The canonical numeric ownership scope is now explicit in
+  `docs/testing/cccx-release-scope.md`: the nine standalone cccx crates are
+  measured together, while cccx runtime code inside upstream crates remains
+  subject to focused positive and negative tests rather than adding unrelated
+  Codex code to the denominator.
+- The first fresh coverage attempt correctly failed because the
+  `cccx-policy` WorkSpec fixture still used the pre-Phase-4 schema. The fixture
+  now initializes advisory scope/constraints, resolved route and
+  checkpoint/base-commit fields; its focused suite passes 12/12.
+- Fresh coverage used Rust 1.95.0 and a dedicated
+  `D:\cargo-targets\cccx-llvmcov` target:
+
+```powershell
+cargo +1.95.0 llvm-cov `
+  -p cccx-protocol -p cccx-harness-cc -p cccx-harness-cx `
+  -p cccx-mode -p cccx-policy -p cccx-provider-gateway `
+  -p cccx-task-graph -p cccx-ux -p cccx-headless `
+  --summary-only --fail-under-lines 80
+```
+
+- Result: **88.19% line coverage** (4,211/4,775), 88.12% region coverage and
+  84.79% function coverage. The 80% command gate passed. The dedicated target
+  was then removed with `cargo clean`, reclaiming 3.1 GiB.
+- The first combined core E2E run exposed stale local mock fixtures that used
+  a bare server URL. Production correctly rejected them before transport under
+  the parsed 9router-only boundary. Authority, identity, mode and permission
+  fixtures now use the canonical local `.../v1` endpoint. No production gate
+  was weakened.
+
+Golden runtime regression results on shared `D:\cargo-targets\cccx`:
+
+```powershell
+cargo +1.95.0 test -p codex-core --test all "suite::cccx_" -j 1 -- --test-threads=1
+# 28 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core cccx --lib -j 1 -- --test-threads=1
+# 187 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core-plugins cccx_extension --lib -j 1
+# 5 passed; 0 failed
+
+cargo +1.95.0 test -p codex-tui cccx -j 1
+# 19 passed; 0 failed
+
+cargo +1.95.0 test -p codex-tui secure_input -j 1
+# 3 passed; 0 failed
+
+cargo +1.95.0 test -p codex-tui stream_error -j 1
+# 3 passed; 0 failed
+
+cargo +1.95.0 test -p codex-exec cccx -j 1
+# 16 unit + 1 startup E2E passed; 0 failed
+```
+
+These lanes retain negative runtime proof for scheduler authority, child
+projection, canonical junction/path boundaries, stale reads, MCP/plugin
+isolation, permission digest/queue behavior, 9router fail-closed transport,
+secure input and factual provenance.
+
+### Gate 25 PASS: deterministic repository hygiene
+
+- `scripts/verify-cccx-repository-hygiene.ps1` fails on tracked build,
+  coverage, local-state, test-home, log/tmp and secret-like artifacts. Public
+  test CA PEMs have one exact fixture-only exception.
+- The generated-source allowlist is exactly four roots: app-server JSON and
+  TypeScript schemas, hooks schemas, and the generated Python SDK package.
+- Final hygiene result: 5,589 tracked files, 0 forbidden tracked artifacts,
+  4/4 generated roots allowlisted. `git diff --check` passes.
+- `cargo fmt --all --check` is not a usable whole-fork gate yet: rustfmt 1.95
+  reports pre-existing formatting drift across unrelated upstream files and
+  warns that the configured import granularity requires nightly. All five
+  Rust files changed in Phase 8 pass a direct scoped rustfmt check.
+
+Final binary was built once after the test matrix:
+
+```powershell
+cargo +1.95.0 build -p cccx-cli --bin cccx -j 1
+& "D:\cargo-targets\cccx\debug\cccx.exe" --version
+# cccx-cli 0.0.0
+& "D:\cargo-targets\cccx\debug\cccx.exe" exec --help
+# exit 0; cccx non-interactive help rendered
+```
+
+Final status: **25/25 PASS, 0 OPEN/PARTIAL**. Gate 5 remains intentionally
+`PASS (disabled)` by owner decision until a trustworthy Windows sandbox
+attestation backend exists.

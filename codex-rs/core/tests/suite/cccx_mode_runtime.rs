@@ -1,5 +1,8 @@
 use anyhow::Result;
+use codex_core::config::Config;
 use codex_features::Feature;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -38,11 +41,25 @@ fn mode(mode: ModeKind, model: String) -> CollaborationMode {
     }
 }
 
+fn configure_mock_9router(config: &mut Config, base_url: String) {
+    config.model = Some("oc/deepseek-v4-flash-free".to_string());
+    let mut provider = ModelProviderInfo::create_9router_provider();
+    provider.base_url = Some(format!("{}/v1", base_url.trim_end_matches('/')));
+    provider.env_key = None;
+    provider.experimental_bearer_token = Some("mode-runtime-test-token".to_string());
+    provider.wire_api = WireApi::Responses;
+    provider.supports_websockets = false;
+    provider.request_max_retries = Some(0);
+    provider.stream_max_retries = Some(0);
+    config.model_provider = provider;
+}
+
 async fn build_mode_test(
     server: &wiremock::MockServer,
 ) -> Result<core_test_support::test_codex::TestCodex> {
-    let mut builder = test_codex().with_config(|config| {
-        config.model_provider.name = "9router".to_string();
+    let mock_base_url = server.uri();
+    let mut builder = test_codex().with_config(move |config| {
+        configure_mock_9router(config, mock_base_url);
         config
             .features
             .enable(Feature::CollaborationModes)
@@ -55,8 +72,9 @@ async fn build_mode_test(
 #[serial(cccx_runtime)]
 async fn cccx_new_session_uses_effective_configured_startup_mode() -> Result<()> {
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_config(|config| {
-        config.model_provider.name = "9router".to_string();
+    let mock_base_url = server.uri();
+    let mut builder = test_codex().with_config(move |config| {
+        configure_mock_9router(config, mock_base_url);
         config.cccx_default_mode = ModeKind::Auto;
         config
             .features

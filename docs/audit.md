@@ -50,3 +50,23 @@ Claim "cccx khớp thiết kế MVP" is NOT fully supported by code evidence. Th
 3. WorkSpec projection is incomplete (#6) — tool/MCP/scope projection is computed but the result is thrown away, leaving subagent boundaries at prompt-level enforcement only
 Conversely, 8 criteria PASS with strong evidence — notably 9router fail-closed, provenance integrity, verification pipeline, UX commands, headless output, MCP defaults, and build hygiene. These confirm substantial progress on the execution-side boundaries.
 The project has landed correct contract designs (cccx-protocol, cccx-policy, cccx-mode, cccx-task-graph, cccx-headless, cccx-ux) but the runtime wiring from those contracts into the Codex execution loop is still partial. The system architecture is sound on paper, viable at the contract-test level, but not yet enforced at every runtime boundary as required by AGENTS.md: "Harness behavior must be enforced by state machines, permission gates, hooks, and structured artifacts, not by prompt wording alone."
+
+## 2026-07-22 — Superseding final-gate audit
+
+The 2026-07-19 report above is retained as historical evidence and is no
+longer the current verdict. Final-gate Phases 1–8 subsequently closed its
+runtime wiring findings and added binary/session proof for the expanded
+25-gate matrix in `docs/final-gate-ledger.md`.
+
+Current verdict: **25/25 PASS, 0 OPEN/PARTIAL** for the personal Windows cccx
+scope defined by `docs/architecture.md` and `docs/design.md`. Gate 5 is a
+deliberate fail-closed `PASS (disabled)`: Bypass cannot activate without a
+trusted OS-isolation attestation backend, and the circuit breaker remains
+invariant.
+
+Fresh release evidence includes 88.19% aggregate line coverage for the nine
+cccx-owned crates; 28 cross-crate core E2E tests; 187 focused core runtime
+tests; plugin, TUI, secure-input, stream-error and headless/exec lanes; a final
+binary build/smoke; and a deterministic tracked-artifact/generated-source
+hygiene gate. Exact commands and counts are recorded at the end of
+`docs/progress.md`.

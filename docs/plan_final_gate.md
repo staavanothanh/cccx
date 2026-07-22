@@ -230,6 +230,8 @@ Exit: Gate 22 PASS; Gate 23 regression vẫn xanh.
 
 Cover Gate **24–25** và final acceptance.
 
+**Trạng thái 2026-07-22: COMPLETE — Gates 24–25 PASS; final ledger 25/25.**
+
 - Định nghĩa rõ “cccx-owned code” và generated-source allowlist.
 - Coverage cccx-owned ≥80% sau tất cả thay đổi.
 - Runtime trust boundaries có negative tests.
