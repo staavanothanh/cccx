@@ -744,6 +744,25 @@ impl PermissionRequestQueue {
         self.active_request_id.as_deref()
     }
 
+    pub fn pending_request_ids_ordered(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        if let Some(active_id) = self.active_request_id.as_ref()
+            && self
+                .requests
+                .get(active_id)
+                .is_some_and(|request| matches!(request.status, PermissionRequestStatus::Active))
+        {
+            ids.push(active_id.clone());
+        }
+        ids.extend(self.queue_order.iter().filter_map(|request_id| {
+            self.requests.get(request_id).and_then(|request| {
+                matches!(request.status, PermissionRequestStatus::Queued)
+                    .then(|| request_id.clone())
+            })
+        }));
+        ids
+    }
+
     pub fn approve(&mut self, request_id: &str, observed_digest: &str) -> Result<(), QueueError> {
         let request = self
             .requests
@@ -790,6 +809,29 @@ impl PermissionRequestQueue {
             self.active_request_id = None;
             self.promote_next();
         }
+    }
+
+    /// Cancel one exact pending request without affecting sibling requests
+    /// owned by the same agent.
+    pub fn cancel_request(&mut self, request_id: &str) -> Result<(), QueueError> {
+        let request = self
+            .requests
+            .get_mut(request_id)
+            .ok_or_else(|| QueueError::UnknownRequest(request_id.to_string()))?;
+        if !matches!(
+            request.status,
+            PermissionRequestStatus::Active | PermissionRequestStatus::Queued
+        ) {
+            return Err(QueueError::NotActive(request_id.to_string()));
+        }
+        let was_active = request.status == PermissionRequestStatus::Active;
+        request.status = PermissionRequestStatus::Cancelled;
+        self.queue_order.retain(|queued| queued != request_id);
+        if was_active {
+            self.active_request_id = None;
+            self.promote_next();
+        }
+        Ok(())
     }
 
     pub fn get(&self, request_id: &str) -> Option<&PermissionRequest> {

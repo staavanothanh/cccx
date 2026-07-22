@@ -536,6 +536,7 @@ fn config_overrides_from_interactive(
     };
     ConfigOverrides {
         model: interactive.model.clone(),
+        cccx_mode: interactive.mode.map(Into::into),
         approval_policy,
         sandbox_mode,
         cwd: interactive.cwd.clone(),

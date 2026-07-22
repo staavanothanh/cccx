@@ -17,6 +17,10 @@ use anyhow::Context;
 use anyhow::ensure;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::CancelLoginAccountParams;
+use codex_app_server_protocol::CccxPermissionBatchApproveParams;
+use codex_app_server_protocol::CccxPermissionInspectParams;
+use codex_app_server_protocol::CccxPermissionListParams;
+use codex_app_server_protocol::CccxPermissionResolveParams;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::CollaborationModeListParams;
@@ -952,6 +956,47 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("turn/start", params).await
+    }
+
+    pub async fn send_cccx_permission_list_request(
+        &mut self,
+        params: CccxPermissionListParams,
+    ) -> anyhow::Result<i64> {
+        self.send_request("cccx/permission/list", Some(serde_json::to_value(params)?))
+            .await
+    }
+
+    pub async fn send_cccx_permission_inspect_request(
+        &mut self,
+        params: CccxPermissionInspectParams,
+    ) -> anyhow::Result<i64> {
+        self.send_request(
+            "cccx/permission/inspect",
+            Some(serde_json::to_value(params)?),
+        )
+        .await
+    }
+
+    pub async fn send_cccx_permission_resolve_request(
+        &mut self,
+        params: CccxPermissionResolveParams,
+    ) -> anyhow::Result<i64> {
+        self.send_request(
+            "cccx/permission/resolve",
+            Some(serde_json::to_value(params)?),
+        )
+        .await
+    }
+
+    pub async fn send_cccx_permission_batch_approve_request(
+        &mut self,
+        params: CccxPermissionBatchApproveParams,
+    ) -> anyhow::Result<i64> {
+        self.send_request(
+            "cccx/permission/batch_approve",
+            Some(serde_json::to_value(params)?),
+        )
+        .await
     }
 
     /// Start a turn and return its matching typed completion notification.

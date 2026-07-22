@@ -396,6 +396,21 @@ pub struct CccxPermissionListResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct CccxPermissionInspectParams {
+    pub thread_id: String,
+    pub request_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CccxPermissionInspectResponse {
+    pub request: Option<CccxPermissionRequestView>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct CccxPermissionBatchApproveParams {
     pub thread_id: String,
     pub request_ids: Vec<String>,

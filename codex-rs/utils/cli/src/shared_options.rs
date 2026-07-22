@@ -2,8 +2,33 @@
 
 use crate::SandboxModeCliArg;
 use clap::Args;
+use clap::ValueEnum;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ProfileV2Name;
 use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CccxModeCliArg {
+    Plan,
+    Default,
+    AcceptEdits,
+    Auto,
+    DontAsk,
+    Bypass,
+}
+
+impl From<CccxModeCliArg> for ModeKind {
+    fn from(value: CccxModeCliArg) -> Self {
+        match value {
+            CccxModeCliArg::Plan => Self::Plan,
+            CccxModeCliArg::Default => Self::Default,
+            CccxModeCliArg::AcceptEdits => Self::AcceptEdits,
+            CccxModeCliArg::Auto => Self::Auto,
+            CccxModeCliArg::DontAsk => Self::DontAsk,
+            CccxModeCliArg::Bypass => Self::Bypass,
+        }
+    }
+}
 
 #[derive(Args, Clone, Debug, Default)]
 pub struct SharedCliOptions {
@@ -20,6 +45,10 @@ pub struct SharedCliOptions {
     /// Model the agent should use.
     #[arg(long, short = 'm')]
     pub model: Option<String>,
+
+    /// Initial cccx permission mode for this invocation.
+    #[arg(long = "mode", value_enum)]
+    pub mode: Option<CccxModeCliArg>,
 
     /// Use open-source provider.
     #[arg(long = "oss", default_value_t = false)]
@@ -69,6 +98,7 @@ impl SharedCliOptions {
         let Self {
             images,
             model,
+            mode,
             oss,
             oss_provider,
             config_profile_v2,
@@ -81,6 +111,7 @@ impl SharedCliOptions {
         let Self {
             images: root_images,
             model: root_model,
+            mode: root_mode,
             oss: root_oss,
             oss_provider: root_oss_provider,
             config_profile_v2: root_config_profile_v2,
@@ -93,6 +124,9 @@ impl SharedCliOptions {
 
         if model.is_none() {
             model.clone_from(root_model);
+        }
+        if mode.is_none() {
+            *mode = *root_mode;
         }
         if *root_oss {
             *oss = true;
@@ -134,6 +168,7 @@ impl SharedCliOptions {
         let Self {
             images,
             model,
+            mode,
             oss,
             oss_provider,
             config_profile_v2,
@@ -146,6 +181,9 @@ impl SharedCliOptions {
 
         if let Some(model) = model {
             self.model = Some(model);
+        }
+        if let Some(mode) = mode {
+            self.mode = Some(mode);
         }
         if oss {
             self.oss = true;
@@ -172,6 +210,33 @@ impl SharedCliOptions {
         }
         if !add_dir.is_empty() {
             self.add_dir.extend(add_dir);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        shared: SharedCliOptions,
+    }
+
+    #[test]
+    fn parses_all_cccx_mode_cli_values() {
+        for (value, expected) in [
+            ("plan", ModeKind::Plan),
+            ("default", ModeKind::Default),
+            ("accept-edits", ModeKind::AcceptEdits),
+            ("auto", ModeKind::Auto),
+            ("dont-ask", ModeKind::DontAsk),
+            ("bypass", ModeKind::Bypass),
+        ] {
+            let parsed = TestCli::parse_from(["cccx", "--mode", value]);
+            assert_eq!(parsed.shared.mode.map(Into::into), Some(expected));
         }
     }
 }

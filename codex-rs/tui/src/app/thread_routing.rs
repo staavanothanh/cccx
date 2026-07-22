@@ -689,12 +689,10 @@ impl App {
                 Ok(true)
             }
             AppCommand::InspectCccxPermission { request_id } => {
-                let response = app_server.cccx_permission_list(thread_id).await?;
-                let Some(request) = response
-                    .requests
-                    .into_iter()
-                    .find(|request| request.request_id == *request_id)
-                else {
+                let response = app_server
+                    .cccx_permission_inspect(thread_id, request_id.clone())
+                    .await?;
+                let Some(request) = response.request else {
                     self.chat_widget.add_error_message(format!(
                         "CCCX permission request `{request_id}` is not in the current queue."
                     ));

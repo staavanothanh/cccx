@@ -20,6 +20,7 @@ use crate::hook_runtime::run_permission_request_hooks;
 use crate::mcp_openai_file::rewrite_mcp_tool_arguments_for_openai_files;
 use crate::mcp_tool_approval_templates::RenderedMcpToolApprovalParam;
 use crate::mcp_tool_approval_templates::render_mcp_tool_approval_template;
+use crate::permission_queue_bridge::NativeApproval;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
@@ -1491,18 +1492,78 @@ async fn maybe_request_mcp_tool_approval(
                     .map(|rendered_template| rendered_template.elicitation_message.as_str()),
                 prompt_options,
             });
-        let decision = parse_mcp_tool_approval_elicitation_response(
-            sess.request_mcp_server_elicitation(
+        let cccx_request_id = sess
+            .services
+            .cccx_permission_queue
+            .enqueue(
+                sess.thread_id.to_string(),
+                turn_context.originator.clone(),
+                turn_context.sub_id.clone(),
+                cccx_policy::NormalizedAction {
+                    action_type: cccx_policy::ActionType::McpCall,
+                    summary: format!("{}.{}", invocation.server, invocation.tool),
+                    command: None,
+                    target_paths: invocation
+                        .arguments
+                        .as_ref()
+                        .map(cccx_extract_mcp_target_paths)
+                        .unwrap_or_default(),
+                    tool_name: Some(hook_tool_name.name().to_string()),
+                    task_id: turn_context.sub_id.clone(),
+                    changed_files: 0,
+                    changed_lines: 0,
+                },
+                format!(
+                    "MCP tool approval requested for {}.{}",
+                    invocation.server, invocation.tool
+                ),
+            )
+            .await;
+        sess.services
+            .cccx_permission_queue
+            .register_native_approval(
+                cccx_request_id.clone(),
+                NativeApproval::McpElicitation {
+                    thread_id: sess.thread_id.to_string(),
+                    server_name: invocation.server.clone(),
+                    request_id: codex_protocol::mcp::RequestId::String(question_id.clone()),
+                },
+            )
+            .await;
+        if !sess
+            .services
+            .cccx_permission_queue
+            .wait_until_active(&cccx_request_id)
+            .await
+        {
+            sess.services
+                .cccx_permission_queue
+                .forget_native_approval(&cccx_request_id)
+                .await;
+            return Some(McpToolApprovalDecision::Decline { message: None });
+        }
+        let outcome = sess
+            .request_mcp_server_elicitation(
                 turn_context.as_ref(),
                 invocation.server.clone(),
                 request_id,
                 request,
             )
-            .await
-            .response,
-            &question_id,
-        );
+            .await;
+        let decision = parse_mcp_tool_approval_elicitation_response(outcome.response, &question_id);
         let decision = normalize_approval_decision_for_mode(decision, approval_mode);
+        sess.services
+            .agent_control
+            .complete_cccx_permission(
+                &cccx_request_id,
+                matches!(
+                    decision,
+                    McpToolApprovalDecision::Accept
+                        | McpToolApprovalDecision::AcceptForSession
+                        | McpToolApprovalDecision::AcceptAndRemember
+                ),
+            )
+            .await;
         apply_mcp_tool_approval_decision(
             sess,
             turn_context,
@@ -1518,6 +1579,58 @@ async fn maybe_request_mcp_tool_approval(
         questions: vec![question],
         auto_resolution_ms: None,
     };
+    let cccx_request_id = sess
+        .services
+        .cccx_permission_queue
+        .enqueue(
+            sess.thread_id.to_string(),
+            turn_context.originator.clone(),
+            turn_context.sub_id.clone(),
+            cccx_policy::NormalizedAction {
+                action_type: cccx_policy::ActionType::McpCall,
+                summary: format!("{}.{}", invocation.server, invocation.tool),
+                command: None,
+                target_paths: invocation
+                    .arguments
+                    .as_ref()
+                    .map(cccx_extract_mcp_target_paths)
+                    .unwrap_or_default(),
+                tool_name: Some(hook_tool_name.name().to_string()),
+                task_id: turn_context.sub_id.clone(),
+                changed_files: 0,
+                changed_lines: 0,
+            },
+            format!(
+                "MCP tool approval requested for {}.{}",
+                invocation.server, invocation.tool
+            ),
+        )
+        .await;
+    sess.services
+        .cccx_permission_queue
+        .register_native_approval(
+            cccx_request_id.clone(),
+            NativeApproval::McpUserInput {
+                thread_id: sess.thread_id.to_string(),
+                turn_id: turn_context.sub_id.clone(),
+                question_id: question_id.clone(),
+                approve_answer: MCP_TOOL_APPROVAL_ACCEPT.to_string(),
+                deny_answer: MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC.to_string(),
+            },
+        )
+        .await;
+    if !sess
+        .services
+        .cccx_permission_queue
+        .wait_until_active(&cccx_request_id)
+        .await
+    {
+        sess.services
+            .cccx_permission_queue
+            .forget_native_approval(&cccx_request_id)
+            .await;
+        return Some(McpToolApprovalDecision::Decline { message: None });
+    }
     let response = sess
         .request_user_input(turn_context.as_ref(), call_id.to_string(), args)
         .await;
@@ -1525,6 +1638,18 @@ async fn maybe_request_mcp_tool_approval(
         parse_mcp_tool_approval_response(response, &question_id),
         approval_mode,
     );
+    sess.services
+        .agent_control
+        .complete_cccx_permission(
+            &cccx_request_id,
+            matches!(
+                decision,
+                McpToolApprovalDecision::Accept
+                    | McpToolApprovalDecision::AcceptForSession
+                    | McpToolApprovalDecision::AcceptAndRemember
+            ),
+        )
+        .await;
     apply_mcp_tool_approval_decision(
         sess,
         turn_context,

@@ -18,6 +18,12 @@ use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AdditionalContextKind;
 use codex_app_server_protocol::ByteRange;
+use codex_app_server_protocol::CccxPermissionInspectParams;
+use codex_app_server_protocol::CccxPermissionInspectResponse;
+use codex_app_server_protocol::CccxPermissionListParams;
+use codex_app_server_protocol::CccxPermissionListResponse;
+use codex_app_server_protocol::CccxPermissionResolveParams;
+use codex_app_server_protocol::CccxPermissionResolveResponse;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool;
@@ -856,6 +862,7 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage() -> Result
                 total_tokens: 37,
                 input_tokens: 30,
                 cached_input_tokens: 11,
+                cache_write_input_tokens: 0,
                 output_tokens: 7,
                 reasoning_output_tokens: 3,
             }),
@@ -1047,7 +1054,7 @@ async fn turn_start_tracks_thread_originator_in_analytics() -> Result<()> {
         "codex_work_desktop"
     );
     assert_eq!(event["event_params"]["model"], "mock-model");
-    assert_eq!(event["event_params"]["model_provider"], "mock_provider");
+    assert_eq!(event["event_params"]["model_provider"], "9router-local");
     assert_eq!(event["event_params"]["sandbox_policy"], "read_only");
     assert_eq!(event["event_params"]["workspace_kind"], "projectless");
     assert_eq!(event["event_params"]["ephemeral"], false);
@@ -4626,6 +4633,150 @@ async fn turn_start_with_elevated_override_does_not_persist_project_trust() -> R
 }
 
 // Helper to create a config.toml pointing at the mock model server.
+#[tokio::test]
+async fn cccx_permission_endpoints_resolve_the_exact_live_native_request() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_remote!(Ok(()), "permission queue fixture runs on the host");
+
+    let codex_home = TempDir::new()?;
+    let responses = vec![
+        create_shell_command_sse_response(
+            vec!["echo".to_string(), "cccx-permission".to_string()],
+            /*workdir*/ None,
+            Some(5000),
+            "cccx-permission-call",
+        )?,
+        create_final_assistant_message_sse_response("permission denied safely")?,
+    ];
+    let server = create_mock_responses_server_sequence(responses).await;
+    create_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        "untrusted",
+        &BTreeMap::default(),
+    )?;
+
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, app.initialize()).await??;
+    let start_id = app
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            config: Some(HashMap::from([(
+                "default_mode".to_string(),
+                json!("default"),
+            )])),
+            ..Default::default()
+        })
+        .await?;
+    let start_response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(start_response)?;
+
+    let turn_id = app
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "run the command".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        app.read_stream_until_response_message(RequestId::Integer(turn_id)),
+    )
+    .await??;
+    let native_request = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app.read_stream_until_request_message(),
+    )
+    .await??;
+    assert!(matches!(
+        native_request,
+        ServerRequest::CommandExecutionRequestApproval { .. }
+    ));
+
+    let list_id = app
+        .send_cccx_permission_list_request(CccxPermissionListParams {
+            thread_id: thread.id.clone(),
+        })
+        .await?;
+    let list: CccxPermissionListResponse = to_response(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            app.read_stream_until_response_message(RequestId::Integer(list_id)),
+        )
+        .await??,
+    )?;
+    assert_eq!(list.requests.len(), 1);
+    let request_id = list.requests[0].request_id.clone();
+    assert_eq!(list.requests[0].status, "Active");
+
+    let inspect_id = app
+        .send_cccx_permission_inspect_request(CccxPermissionInspectParams {
+            thread_id: thread.id.clone(),
+            request_id: request_id.clone(),
+        })
+        .await?;
+    let inspected: CccxPermissionInspectResponse = to_response(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            app.read_stream_until_response_message(RequestId::Integer(inspect_id)),
+        )
+        .await??,
+    )?;
+    assert_eq!(
+        inspected
+            .request
+            .as_ref()
+            .map(|request| &request.request_id),
+        Some(&request_id)
+    );
+
+    let stale_id = app
+        .send_cccx_permission_resolve_request(CccxPermissionResolveParams {
+            thread_id: thread.id.clone(),
+            request_id: "pr-stale".to_string(),
+            approve: true,
+        })
+        .await?;
+    let stale_error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app.read_stream_until_error_message(RequestId::Integer(stale_id)),
+    )
+    .await??;
+    assert!(stale_error.error.message.contains("pr-stale"));
+
+    let resolve_id = app
+        .send_cccx_permission_resolve_request(CccxPermissionResolveParams {
+            thread_id: thread.id.clone(),
+            request_id,
+            approve: false,
+        })
+        .await?;
+    let _: CccxPermissionResolveResponse = to_response(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            app.read_stream_until_response_message(RequestId::Integer(resolve_id)),
+        )
+        .await??,
+    )?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        app.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    Ok(())
+}
+
 fn create_config_toml(
     codex_home: &Path,
     server_uri: &str,
@@ -4673,17 +4824,25 @@ model = "mock-model"
 approval_policy = "{approval_policy}"
 sandbox_mode = "{sandbox_mode}"
 
-model_provider = "mock_provider"
+model_provider = "9router-local"
 
 [features]
 {feature_entries}
 
-[model_providers.mock_provider]
-name = "Mock provider for test"
+[model_providers.9router-local]
+name = "9router"
 base_url = "{server_uri}/v1"
 wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
+
+[mcp_servers.codebase-memory-mcp]
+command = "codebase-memory-mcp"
+enabled = false
+
+[mcp_servers.sequential-thinking]
+command = "sequential-thinking"
+enabled = false
 "#
         ),
     )

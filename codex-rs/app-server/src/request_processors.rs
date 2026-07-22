@@ -41,6 +41,8 @@ use codex_app_server_protocol::CancelLoginAccountResponse;
 use codex_app_server_protocol::CancelLoginAccountStatus;
 use codex_app_server_protocol::CccxPermissionBatchApproveParams;
 use codex_app_server_protocol::CccxPermissionBatchApproveResponse;
+use codex_app_server_protocol::CccxPermissionInspectParams;
+use codex_app_server_protocol::CccxPermissionInspectResponse;
 use codex_app_server_protocol::CccxPermissionListParams;
 use codex_app_server_protocol::CccxPermissionListResponse;
 use codex_app_server_protocol::CccxPermissionRequestView;

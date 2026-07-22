@@ -146,6 +146,14 @@ async fn permission_request_holds_an_elicitation_until_response() {
     });
 
     events.recv().await.expect("permission request event");
+    assert!(matches!(
+        session
+            .services
+            .cccx_permission_queue
+            .native_approval("pr-0")
+            .await,
+        Some(NativeApproval::RequestPermissions { call_id, .. }) if call_id == "call-1"
+    ));
     wait_until_held(&mut pause_state).await;
     session
         .notify_request_permissions_response(

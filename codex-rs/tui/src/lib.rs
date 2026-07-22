@@ -1048,6 +1048,7 @@ pub async fn run_main(
 
     let overrides = ConfigOverrides {
         model,
+        cccx_mode: cli.mode.map(Into::into),
         approval_policy,
         sandbox_mode,
         cwd: cwd_override,

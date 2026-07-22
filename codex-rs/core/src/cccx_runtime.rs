@@ -1299,7 +1299,11 @@ mod tests {
             .await
             .unwrap();
         registry
-            .complete_spawn(first_incarnation, "provider disconnected".to_string(), false)
+            .complete_spawn(
+                first_incarnation,
+                "provider disconnected".to_string(),
+                false,
+            )
             .await
             .unwrap();
 
@@ -1372,7 +1376,10 @@ mod tests {
         assert!(!running_resume_error.contains("ambiguous"));
 
         registry
-            .cancel_spawn(resumed_incarnation, "user cancelled resumed worker".to_string())
+            .cancel_spawn(
+                resumed_incarnation,
+                "user cancelled resumed worker".to_string(),
+            )
             .await
             .unwrap()
             .expect("cancel must persist terminal TaskGraph state");
@@ -1385,9 +1392,11 @@ mod tests {
         assert_eq!(attempts.len(), 2);
         assert_eq!(attempts[0].worker.status, WorkerStatus::Resumable);
         assert_eq!(attempts[1].worker.status, WorkerStatus::Cancelled);
-        assert!(attempts
-            .iter()
-            .all(|attempt| attempt.worker.logical_session_id == "logical-a1"));
+        assert!(
+            attempts
+                .iter()
+                .all(|attempt| attempt.worker.logical_session_id == "logical-a1")
+        );
         let persisted_checkpoint = crate::checkpoint::load_checkpoint(project.path(), "logical-a1")
             .await
             .unwrap()
@@ -2123,7 +2132,7 @@ mod tests {
             .unwrap();
 
         // Step 4: CX produces Artifact with VerificationRecord
-        let mut collector = ArtifactCollector::new("T1", "ws-1", "attempt-p13");
+        let mut collector = ArtifactCollector::new("T-p13", &ws.work_spec_id, "attempt-p13");
         collector.record_test_run("cargo test", 0, "sha256:e2e");
         let artifact = collector.finalize(
             ArtifactStatus::Success,

@@ -2629,6 +2629,61 @@ model_instructions_file = "child.txt"
 }
 
 #[tokio::test]
+async fn cccx_mode_precedence_is_cli_then_project_then_user_then_plan() -> std::io::Result<()> {
+    use codex_protocol::config_types::ModeKind;
+
+    let tmp = tempdir()?;
+    let project_root = tmp.path().join("project");
+    let dot_codex = project_root.join(".codex");
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&dot_codex).await?;
+    tokio::fs::create_dir_all(&codex_home).await?;
+    tokio::fs::create_dir_all(project_root.join(".git")).await?;
+
+    let user = ConfigToml {
+        default_mode: Some(ModeKind::Default),
+        projects: Some(HashMap::from([(
+            project_root.to_string_lossy().to_string(),
+            ProjectConfig {
+                trust_level: Some(TrustLevel::Trusted),
+            },
+        )])),
+        ..Default::default()
+    };
+    tokio::fs::write(
+        codex_home.join(CONFIG_TOML_FILE),
+        toml::to_string(&user).expect("serialize user config"),
+    )
+    .await?;
+    tokio::fs::write(dot_codex.join(CONFIG_TOML_FILE), "default_mode = \"auto\"\n").await?;
+
+    let build = |cccx_mode| {
+        ConfigBuilder::default()
+            .codex_home(codex_home.clone())
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(project_root.clone()),
+                cccx_mode,
+                ..Default::default()
+            })
+            .build()
+    };
+
+    assert_eq!(build(None).await?.cccx_default_mode, ModeKind::Auto);
+    assert_eq!(
+        build(Some(ModeKind::AcceptEdits)).await?.cccx_default_mode,
+        ModeKind::AcceptEdits
+    );
+
+    tokio::fs::remove_file(dot_codex.join(CONFIG_TOML_FILE)).await?;
+    assert_eq!(build(None).await?.cccx_default_mode, ModeKind::Default);
+
+    tokio::fs::write(codex_home.join(CONFIG_TOML_FILE), "").await?;
+    assert_eq!(build(None).await?.cccx_default_mode, ModeKind::Plan);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn cli_override_model_instructions_file_sets_base_instructions() -> std::io::Result<()> {
     let tmp = tempdir()?;
     let codex_home = tmp.path().join("home");

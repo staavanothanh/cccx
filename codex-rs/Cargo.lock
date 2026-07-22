@@ -1658,6 +1658,7 @@ dependencies = [
  "codex-utils-cli",
  "codex-utils-path",
  "codex-windows-sandbox",
+ "core_test_support",
  "crossterm",
  "http 1.4.0",
  "insta",

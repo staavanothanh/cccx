@@ -54,6 +54,12 @@ async fn handle_spawn_agent(
         cancellation_token,
         ..
     } = invocation;
+    if !turn.cccx_actor_identity().can_spawn() {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "cccx: {:?} workers cannot spawn additional agents. Only Main CC has scheduler authority.",
+            turn.cccx_actor_identity()
+        )));
+    }
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     enforce_cccx_fork_policy(args.work_spec.as_ref(), args.fork_context)?;

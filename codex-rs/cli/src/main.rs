@@ -1961,6 +1961,7 @@ async fn run_debug_prompt_input_command(
     };
     let overrides = ConfigOverrides {
         model: shared.model,
+        cccx_mode: shared.mode.map(Into::into),
         approval_policy,
         sandbox_mode,
         cwd: shared.cwd,

@@ -1299,6 +1299,9 @@ impl MessageProcessor {
             ClientRequest::CccxPermissionList { params, .. } => {
                 self.turn_processor.cccx_permission_list(params).await
             }
+            ClientRequest::CccxPermissionInspect { params, .. } => {
+                self.turn_processor.cccx_permission_inspect(params).await
+            }
             ClientRequest::CccxPermissionBatchApprove { params, .. } => {
                 self.turn_processor
                     .cccx_permission_batch_approve(params)

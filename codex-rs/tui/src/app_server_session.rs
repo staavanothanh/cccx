@@ -22,8 +22,12 @@ use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::CccxAgentModelRouteSetParams;
+use codex_app_server_protocol::CccxAgentModelRouteSetResponse;
 use codex_app_server_protocol::CccxPermissionBatchApproveParams;
 use codex_app_server_protocol::CccxPermissionBatchApproveResponse;
+use codex_app_server_protocol::CccxPermissionInspectParams;
+use codex_app_server_protocol::CccxPermissionInspectResponse;
 use codex_app_server_protocol::CccxPermissionListParams;
 use codex_app_server_protocol::CccxPermissionListResponse;
 use codex_app_server_protocol::CccxPermissionResolveParams;
@@ -36,8 +40,6 @@ use codex_app_server_protocol::CccxWorkerLogsParams;
 use codex_app_server_protocol::CccxWorkerLogsResponse;
 use codex_app_server_protocol::CccxWorkerReadParams;
 use codex_app_server_protocol::CccxWorkerReadResponse;
-use codex_app_server_protocol::CccxAgentModelRouteSetParams;
-use codex_app_server_protocol::CccxAgentModelRouteSetResponse;
 use codex_app_server_protocol::CccxWorkerResumeParams;
 use codex_app_server_protocol::CccxWorkerResumeResponse;
 use codex_app_server_protocol::ClientRequest;
@@ -960,16 +962,17 @@ impl AppServerSession {
         revalidate: bool,
     ) -> std::result::Result<String, TypedRequestError> {
         let request_id = self.next_request_id();
-        let response: CccxWorkerResumeResponse = self.client.request_typed(
-            ClientRequest::CccxWorkerResume {
+        let response: CccxWorkerResumeResponse = self
+            .client
+            .request_typed(ClientRequest::CccxWorkerResume {
                 request_id,
                 params: CccxWorkerResumeParams {
                     thread_id: thread_id.to_string(),
                     logical_session_id,
                     revalidate,
                 },
-            },
-        ).await?;
+            })
+            .await?;
         Ok(response.worker_incarnation_id)
     }
 
@@ -1076,6 +1079,23 @@ impl AppServerSession {
                 request_id,
                 params: CccxPermissionListParams {
                     thread_id: thread_id.to_string(),
+                },
+            })
+            .await
+    }
+
+    pub(crate) async fn cccx_permission_inspect(
+        &mut self,
+        thread_id: ThreadId,
+        request_id: String,
+    ) -> std::result::Result<CccxPermissionInspectResponse, TypedRequestError> {
+        let transport_request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::CccxPermissionInspect {
+                request_id: transport_request_id,
+                params: CccxPermissionInspectParams {
+                    thread_id: thread_id.to_string(),
+                    request_id,
                 },
             })
             .await
@@ -1554,6 +1574,11 @@ fn config_request_overrides_from_config(
     insert(
         "web_search",
         Some(config.web_search_mode.value().to_string()),
+    );
+    overrides.insert(
+        "default_mode".to_string(),
+        serde_json::to_value(config.cccx_default_mode)
+            .expect("ModeKind must remain JSON serializable"),
     );
     if config.bypass_hook_trust {
         overrides.insert("bypass_hook_trust".to_string(), true.into());
@@ -2585,6 +2610,20 @@ mod tests {
         assert_eq!(
             explicit_overrides.get("personality"),
             Some(&serde_json::Value::String("none".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn config_request_overrides_forward_effective_cccx_mode() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut config = build_config(&temp_dir).await;
+        config.cccx_default_mode = codex_protocol::config_types::ModeKind::AcceptEdits;
+
+        let overrides = config_request_overrides_from_config(&config).expect("config overrides");
+
+        assert_eq!(
+            overrides.get("default_mode"),
+            Some(&serde_json::Value::String("accept_edits".to_string()))
         );
     }
 

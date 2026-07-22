@@ -187,7 +187,6 @@ use crate::config::PermissionProfileState;
 use crate::config::StartedNetworkProxy;
 use crate::config::resolve_web_search_mode_for_turn;
 use crate::context_manager::ContextManager;
-use crate::permission_queue_bridge::CccxPermissionQueue;
 use crate::permission_queue_bridge::NativeApproval;
 use crate::thread_rollout_truncation::initial_history_has_prior_user_turns;
 use codex_config::CONFIG_TOML_FILE;
@@ -468,7 +467,6 @@ const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
 const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyber-safety";
 
 async fn resolve_cccx_permission_request(
-    queue: &CccxPermissionQueue,
     agent_control: &crate::agent::AgentControl,
     request_id: &str,
     decision: &ReviewDecision,
@@ -485,18 +483,9 @@ async fn resolve_cccx_permission_request(
                 },
             }
     );
-    if let Err(error) = queue.resolve_native_decision(request_id, approved).await {
-        warn!(%request_id, %error, "cccx permission queue could not resolve native approval");
-    }
-    queue.forget_native_approval(request_id).await;
-    if approved {
-        if let Err(error) = agent_control.advance_cccx_safe_batch().await {
-            agent_control.stop_cccx_safe_batch().await;
-            warn!(%error, "cccx permission batch could not advance after native approval");
-        }
-    } else {
-        agent_control.stop_cccx_safe_batch().await;
-    }
+    agent_control
+        .complete_cccx_permission(request_id, approved)
+        .await;
 }
 
 impl Session {
@@ -2304,13 +2293,8 @@ impl Session {
         });
         self.send_event(turn_context, event).await;
         let decision = rx_approve.await.unwrap_or(ReviewDecision::Abort);
-        resolve_cccx_permission_request(
-            &self.services.cccx_permission_queue,
-            &self.services.agent_control,
-            &cccx_request_id,
-            &decision,
-        )
-        .await;
+        resolve_cccx_permission_request(&self.services.agent_control, &cccx_request_id, &decision)
+            .await;
         decision
     }
 
@@ -2391,7 +2375,8 @@ impl Session {
             .wait_until_active(&cccx_request_id)
             .await
         {
-            self.notify_approval(&approval_id, ReviewDecision::Abort).await;
+            self.notify_approval(&approval_id, ReviewDecision::Abort)
+                .await;
             self.services
                 .cccx_permission_queue
                 .forget_native_approval(&cccx_request_id)
@@ -2409,13 +2394,8 @@ impl Session {
         });
         self.send_event(turn_context, event).await;
         let decision = rx_approve.await.unwrap_or(ReviewDecision::Abort);
-        resolve_cccx_permission_request(
-            &self.services.cccx_permission_queue,
-            &self.services.agent_control,
-            &cccx_request_id,
-            &decision,
-        )
-        .await;
+        resolve_cccx_permission_request(&self.services.agent_control, &cccx_request_id, &decision)
+            .await;
         decision
     }
 
@@ -2567,6 +2547,64 @@ impl Session {
             warn!("Overwriting existing pending request_permissions for call_id: {call_id}");
         }
 
+        let action_type = if requested_permissions.file_system.is_some() {
+            cccx_policy::ActionType::Edit
+        } else {
+            cccx_policy::ActionType::Network
+        };
+        let action_summary = serde_json::to_string(&requested_permissions)
+            .unwrap_or_else(|_| "request additional runtime permissions".to_string());
+        let cccx_request_id = self
+            .services
+            .cccx_permission_queue
+            .enqueue(
+                self.thread_id.to_string(),
+                turn_context.originator.clone(),
+                turn_context.sub_id.clone(),
+                cccx_policy::NormalizedAction {
+                    action_type,
+                    summary: action_summary,
+                    command: None,
+                    target_paths: Vec::new(),
+                    tool_name: Some("request_permissions".to_string()),
+                    task_id: turn_context.sub_id.clone(),
+                    changed_files: 0,
+                    changed_lines: 0,
+                },
+                args.reason
+                    .clone()
+                    .unwrap_or_else(|| "additional runtime permissions requested".to_string()),
+            )
+            .await;
+        self.services
+            .cccx_permission_queue
+            .register_native_approval(
+                cccx_request_id.clone(),
+                NativeApproval::RequestPermissions {
+                    thread_id: self.thread_id.to_string(),
+                    call_id: call_id.clone(),
+                    requested_permissions: requested_permissions.clone(),
+                },
+            )
+            .await;
+        let became_active = tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => false,
+            active = self.services.cccx_permission_queue.wait_until_active(&cccx_request_id) => active,
+        };
+        if !became_active {
+            let mut active = self.active_turn.lock().await;
+            if let Some(at) = active.as_mut() {
+                let mut ts = at.turn_state.lock().await;
+                let _ = ts.remove_pending_request_permissions(&call_id);
+            }
+            self.services
+                .cccx_permission_queue
+                .cancel_request(&cccx_request_id)
+                .await;
+            return None;
+        }
+
         let event = EventMsg::RequestPermissions(RequestPermissionsEvent {
             call_id: call_id.clone(),
             turn_id: turn_context.sub_id.clone(),
@@ -2577,7 +2615,7 @@ impl Session {
             cwd: Some(native_environment_cwd),
         });
         self.send_event(turn_context.as_ref(), event).await;
-        tokio::select! {
+        let response = tokio::select! {
             biased;
             _ = cancellation_token.cancelled() => {
                 let mut active = self.active_turn.lock().await;
@@ -2585,10 +2623,22 @@ impl Session {
                     let mut ts = at.turn_state.lock().await;
                     let _ = ts.remove_pending_request_permissions(&call_id);
                 }
-                None
+                self.services
+                    .cccx_permission_queue
+                    .cancel_request(&cccx_request_id)
+                    .await;
+                return None;
             }
             response = rx_response => response.ok(),
-        }
+        };
+        let approved = response
+            .as_ref()
+            .is_some_and(|response| !response.permissions.is_empty());
+        self.services
+            .agent_control
+            .complete_cccx_permission(&cccx_request_id, approved)
+            .await;
+        response
     }
 
     pub(crate) async fn request_permissions_for_cwd(

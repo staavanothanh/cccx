@@ -3359,3 +3359,343 @@ D:\cargo-targets\cccx\debug\deps\codex_core-4f95019d05e42634.exe cx_projection_s
   still **PARTIAL**: this proves catalog and projection filtering, but not a
   complete spawned-CX runtime proof of the child tool catalog and plugin
   isolation.
+
+## 2026-07-21 — Final-gate Phase 0/1 evidence baseline
+
+- Added `docs/final-gate-ledger.md`: a single requirement-to-runtime-evidence
+  matrix. It keeps every gate `PARTIAL` until its exact positive and negative
+  runtime proof exists.
+- Added the `cccx_final_gate` core integration lane. It creates a real
+  `test_codex` session and proves the currently accessible seams:
+  - root session config is typed `MainCc` + `CC`, with no child-only projection;
+  - a real MainCc `multi_agent_v1::spawn_agent` tool call creates a typed
+    `CxSubagent` + `CX` child thread from a structured WorkSpec and records the
+    child incarnation in the CCCX worker registry;
+  - a CX WorkSpec projection produces typed `CxSubagent` + `CX`, intersects
+    tools/MCP/scope with the parent, and disables child orchestration;
+  - only `MainCc` has spawn authority;
+  - the safe cycle excludes `DontAsk` and `Bypass`.
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 test -p codex-core cccx_final_gate -j 1 -- --test-threads=1
+```
+
+- Result: `6 passed; 0 failed`.
+- Fixed stale P13 cross-crate runtime test evidence after the stricter
+  Artifact binding gate: the fixture now emits the Artifact for the active
+  `T-p13`/WorkSpec pair instead of the legacy `T1`/`ws-1` IDs.
+
+```powershell
+cargo +1.95.0 test -p codex-core p13_cross_crate_spawn_cx_full_chain_work_spec_to_verified_task -j 1 --lib -- --test-threads=1
+```
+
+- Result: `1 passed; 0 failed`.
+- Gate 1–4 remain **PARTIAL**. This lane is deliberately not claimed as the
+  missing binary/session E2E proof: binary startup, spawn→resume identity,
+  child ADR/reroute denial, and per-mode tool-permission outcomes still need
+  their own runtime flows.
+
+### Gate 9 remediation: child empty tool projection is fail-closed
+
+- Fixed the CCCX child tool projection boundary so an empty child
+  `cccx_child_allowed_tools` set means no model-visible or dispatchable tools,
+  rather than falling back to the full parent/root tool registry. Root/Main CC
+  sessions still keep the existing full registry when no child projection is
+  present.
+- The first cargo invocation timed out while linking; after the process
+  finished, the freshly built lib-test executable was used directly.
+
+```powershell
+D:\cargo-targets\cccx\debug\deps\codex_core-4f95019d05e42634.exe cccx_child_empty_tool_projection_is_fail_closed --test-threads=1
+D:\cargo-targets\cccx\debug\deps\codex_core-4f95019d05e42634.exe cccx_tool_projection_filters_registry_and_model_visible_specs --test-threads=1
+```
+
+- Result: `1 passed; 0 failed` for each focused test.
+- Gate 9 remains **PARTIAL** until the same projection is proven through a
+  complete spawned-CX runtime path that covers tool catalog, MCP catalog,
+  executor and sandbox together.
+
+## 2026-07-21 — Final-gate Phase 1 targeted evidence update
+
+### Gate 1 evidence: exec binary startup bootstraps Main CC/CC prompt
+
+- Added a `codex-exec` package-binary integration test that starts the exec
+  binary against a mock provider and inspects the real outbound request body.
+- The request includes the cccx Main CC startup contract and excludes the
+  CC/CX child-only startup prompts.
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 test -p codex-exec cccx_exec_startup_bootstraps_main_cc_harness -j 1 -- --test-threads=1
+```
+
+- Result: `1 passed; 0 failed`.
+- Gate 1 remains **PARTIAL** until the top-level `cccx` wrapper/session startup
+  path is covered, but this is now real package-binary evidence rather than a
+  config-only assertion.
+
+### Gate 2/3/9 evidence: spawned CX runtime identity, resume and fail-closed authority
+
+- Added a real collab-runtime flow that has Main CC spawn a structured CX
+  WorkSpec, observes the spawned child config, interrupts/checkpoints it,
+  resumes the worker, and verifies the resumed incarnation keeps typed
+  `CxSubagent` + `CX` identity and the pinned WorkSpec tool projection.
+- Added a sibling authority test where the CX child does not see the spawn tool
+  in its model-visible catalog; an injected namespaced
+  `multi_agent_v1::spawn_agent` call does not create a grandchild thread.
+- The authority test deliberately avoids making asynchronous cleanup terminal
+  events part of the gate assertion. The invariant is the absent catalog plus
+  no grandchild creation; cleanup races must not make this proof flaky.
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+$env:RUST_MIN_STACK = "33554432"
+cargo +1.95.0 test -p codex-core cccx_identity_authority -j 1 -- --test-threads=1
+```
+
+- Result: `2 passed; 0 failed`.
+- Gates 2, 3 and 9 remain **PARTIAL** because ADR/reroute denial and a full
+  tool/MCP/executor/sandbox projection proof are still separate final-gate
+  requirements, but this closes the previously flaky child spawn/resume and
+  injected child-spawn evidence.
+
+### Gate 4 supporting evidence: safe mode cycle remains green
+
+- Re-ran the existing `cccx_final_gate` lane after the Phase 1 changes.
+- It proves root `MainCc` + `CC`, MainCc spawn creates typed `CxSubagent` + `CX`,
+  child projection disables orchestration, only `MainCc` has spawn authority,
+  and the safe mode cycle excludes `DontAsk` and `Bypass`.
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+$env:RUST_MIN_STACK = "33554432"
+cargo +1.95.0 test -p codex-core cccx_final_gate -j 1 -- --test-threads=1
+```
+
+- Result: `6 passed; 0 failed`.
+- Gate 4 remains **PARTIAL** until six-mode tool-permission outcomes are proven
+  through the runtime executor/session path, not only through the safe-cycle
+  state-machine seam.
+
+### Gate 9 regression: empty child tool projection fail-closed
+
+- Re-ran the targeted lib test after formatting. Empty
+  `cccx_child_allowed_tools` for CC/CX child actors now leaves both registry and
+  model-visible specs empty instead of falling back to the parent registry.
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 test -p codex-core cccx_child_empty_tool_projection_is_fail_closed -j 1 --lib -- --test-threads=1
+```
+
+- Result: `1 passed; 0 failed`.
+- Gate 9 remains **PARTIAL** until this fail-closed projection is included in
+  the complete spawned-CX catalog/executor/sandbox proof.
+
+## 2026-07-21 — Final-gate Phase 1 runtime evidence update
+
+### Gate 1 PASS: top-level `cccx exec` starts MainCc/CC
+
+- Added and validated a top-level `cccx` binary integration test. It starts
+  `cccx exec` with an isolated `CCCX_HOME`, mock 9router provider, and temporary
+  cwd, then inspects the real outbound request body.
+- Positive proof: startup prompt contains the Main CC contract and CC harness
+  binding.
+- Negative proof: child-only CC/CX worker prompts are absent from the first
+  request.
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 test -p cccx-cli --test cccx_startup -j 1 -- --test-threads=1
+```
+
+- Result: `1 passed; 0 failed`.
+- Gate 1 is now **PASS**.
+
+### Gate 4 supporting proof: six runtime mode outcomes
+
+- Added runtime executor/session coverage for Plan, Default, AcceptEdits, Auto,
+  DontAsk and Bypass.
+- Positive proof: Default, AcceptEdits and Auto request native shell approval
+  for shell writes through the live session path.
+- Negative proof: Plan and DontAsk hard-deny shell writes without native approval
+  prompts; Bypass is rejected fail-closed without backend sandbox attestation.
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 test -p codex-core cccx_mode_ -j 1 -- --test-threads=1
+```
+
+- Result: `3 passed; 0 failed`.
+- Gate 4 remains **PARTIAL** until config precedence is proven through runtime
+  in the same gate family. The six-mode action-outcome gap is closed.
+
+### Gate 3 supporting proof: CX child cannot spawn or reroute
+
+- Added runtime authority coverage where Main CC spawns a structured CX child,
+  then the child receives an injected `multi_agent_v1::spawn_agent` tool call.
+- Positive proof: MainCc route configuration remains allowed.
+- Negative proof: the CX child model-visible tool catalog excludes scheduler
+  spawn, injected child-side spawn creates no grandchild, and child-side model
+  reroute mutation returns an error.
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+cargo +1.95.0 test -p codex-core cccx_authority_ -j 1 -- --test-threads=1
+```
+
+- Result: `1 passed; 0 failed`.
+- Gate 3 remains **PARTIAL** because ADR write/proposal authority is not yet
+  proven in this runtime lane.
+
+## 2026-07-21 — Owner decision: disable Bypass on current Windows build
+
+- The owner selected the fail-closed option from the final-gate stop condition:
+  Bypass remains unavailable on the current Windows/app-server runtime.
+- Reason: the available `x-oai-attestation` is an upstream request token, while
+  Windows sandbox configuration/readiness is not a thread-bound proof that the
+  active executor is isolated in a container/VM and cannot request escalation.
+  Env vars and `/bypass --confirm` are UX signals only.
+- Production `AppServerAttestationProvider` therefore continues to return no
+  `BypassSandboxAttestation`; a rejected transition must preserve the previous
+  mode. The mode stays in the protocol for compatibility and future isolated
+  hosts, but re-enabling it requires a new architecture decision and real
+  positive OS-isolation evidence.
+- Gate 5 is recorded as **PASS (disabled)** for this personal Windows target:
+  the supported runtime behavior is deliberate rejection, and the circuit
+  breaker remains a separately tested invariant. This is not a waiver and must
+  not be weakened into config-, env-, or confirmation-based enablement.
+
+## 2026-07-22 — Final-gate Phase 1 complete
+
+### Gate 2 PASS: typed identity and one harness survive spawn/resume
+
+- The live MainCc spawn path creates typed CC/CX children from WorkSpec
+  projection. Checkpoint/resume preserves the logical worker identity,
+  ActorIdentity, harness and permission projection instead of rebuilding them
+  from prompt text.
+- Negative proof: a CX child does not receive scheduler tools and an injected
+  child-side spawn cannot create a grandchild.
+
+### Gate 3 PASS: MainCc-only scheduler, reroute and ADR authority
+
+- Runtime tests now cover both spawned CC and CX workers. Injected child spawn
+  is denied, CX reroute mutation is denied, and a CX ADR commit request is
+  intercepted as a typed `cccx.adr_proposal.v1` follow-up rather than being
+  transported as a direct MCP write.
+- MainCc remains the typed authority boundary; the tests identify child turns
+  through thread metadata, not prompt heuristics.
+
+### Gate 4 PASS: startup precedence and mode behavior are live
+
+- Added `--mode` to shared interactive/headless CLI options and wired it into
+  the canonical Config pipeline.
+- Added typed `default_mode` config support. Effective precedence is
+  CLI/harness override > trusted project config > user config > Plan.
+- New sessions initialize the core mode state from the effective config;
+  resumed sessions retain their persisted mode. A requested/persisted Bypass
+  is accepted only if the current thread has backend-created OS-isolation
+  attestation, so the current Windows app-server still falls back to Plan.
+- Local-daemon/remote thread start now forwards the effective mode through the
+  app-server config map, preventing `--mode` from being lost outside embedded
+  TUI.
+- Six-mode permission behavior and the four-mode safe Shift+Tab cycle remain
+  covered through the live session/executor path.
+
+Validation commands and exact results:
+
+```powershell
+$env:PATH = "D:\Program Files\cargo\bin;$env:PATH"
+$env:CARGO_TARGET_DIR = "D:\cargo-targets\cccx"
+$env:RUST_MIN_STACK = "33554432"
+
+cargo +1.95.0 test -p codex-utils-cli parses_all_cccx_mode_cli_values -j 1 -- --test-threads=1
+# 1 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --lib cccx_mode_precedence_is_cli_then_project_then_user_then_plan -j 1 -- --test-threads=1
+# 1 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --test all cccx_new_session_uses_effective_configured_startup_mode -j 1 -- --test-threads=1
+# 1 passed; 0 failed
+
+cargo +1.95.0 test -p codex-tui --lib config_request_overrides_forward_effective_cccx_mode -j 1 -- --test-threads=1
+# 1 passed; 0 failed
+
+$env:RUST_MIN_STACK = "33554432"
+& "D:\cargo-targets\cccx\debug\deps\all-0c229b3892914d5c.exe" "suite::cccx_" --test-threads=1
+# 15 passed; 0 failed
+```
+
+- Final Phase 1 status: Gates **1, 2, 3 and 4 PASS**. Gate 5 remains
+  **PASS (disabled)** under the owner-approved Windows policy. Phase 2 begins
+  with Gates 6 and 15: multi-worker central permission queue plus exact-ID
+  TUI/app-server control.
+
+## 2026-07-22 — Final-gate Phase 2 complete
+
+### Gate 6 PASS: one root-owned prompt across live workers
+
+- Exec, patch, dynamic permission and human MCP approval paths now register
+  their native waiter in the root CCCX permission queue. A queued waiter does
+  not emit its native prompt until its stable `pr-*` entry becomes active.
+- The live runtime fixture spawns two typed CC workers. It observes exactly one
+  active and one queued request, proves the second worker emits no prompt before
+  promotion, resolves the first by exact ID, then observes the promoted prompt.
+- Exact cancellation removes one request without cancelling a same-worker
+  sibling. Cancelled-before-activation and stale IDs fail closed.
+- `request_permissions` takes a shared dispatch lease because it only negotiates
+  capability; any later write still takes the normal exclusive project lease.
+
+### Gate 15 PASS: exact-ID commands reach the native waiter
+
+- `/permissions list`, `approve`, `deny`, `inspect` and `batch-approve` emit
+  typed TUI commands preserving every opaque request ID and batch order.
+- A real app-server turn creates a native shell approval, lists and inspects its
+  CCCX `pr-*` entry, rejects a stale ID, and denial of the exact ID completes the
+  original turn.
+- Batch validation rejects empty, duplicate, reordered, non-contiguous,
+  high-risk and circuit-breaker selections. Production batch advancement only
+  accepts a low/medium-risk native patch waiter; structured permission and MCP
+  approvals remain manual.
+
+Validation commands and exact results:
+
+```powershell
+$env:RUST_MIN_STACK = "33554432"
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-4f95019d05e42634.exe" permission_queue_bridge::tests:: --test-threads=1
+# 12 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-4f95019d05e42634.exe" prompt_mode_waits_for_approval_when_annotations_do_not_require_approval --test-threads=1
+# 1 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-4f95019d05e42634.exe" permission_request_holds_an_elicitation_until_response --test-threads=1
+# 1 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\all-0c229b3892914d5c.exe" two_workers_share_one_active_permission_prompt_and_exact_request_ids --test-threads=1
+# 1 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\all-c509f5f50ea762d5.exe" cccx_permission_endpoints_resolve_the_exact_live_native_request --test-threads=1
+# 1 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_tui-25954b6651bbddbd.exe" cccx_permissions_commands_preserve_exact_queue_request_ids --test-threads=1
+# 1 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\all-0c229b3892914d5c.exe" "suite::cccx_" --test-threads=1
+# 16 passed; 0 failed
+```
+
+- Final Phase 2 status: Gate **5 PASS (disabled)** remains unchanged; Gates
+  **6 and 15 PASS**.
+- Deliberate remaining UX gap: the CCCX status line still summarizes the active
+  permission profile (`Workspace`, `Read Only`, etc.), not live `pr-* active + N
+  queued` state. This remains part of Gate 22 and is not claimed by Phase 2.

@@ -358,6 +358,16 @@ impl CodexThread {
         route: &str,
     ) -> Result<(), String> {
         let config = self.config().await;
+        if !matches!(
+            config.cccx_actor_identity,
+            cccx_protocol::ActorIdentity::MainCc
+        ) || !matches!(config.cccx_harness, cccx_protocol::HarnessKind::Cc)
+        {
+            return Err(format!(
+                "cccx: {:?}/{:?} cannot reroute agents. Only Main CC has scheduler authority.",
+                config.cccx_actor_identity, config.cccx_harness
+            ));
+        }
         crate::cccx_agent_model_routes::set_agent_model_route(&config.codex_home, preset, route)
             .await
             .map_err(|error| error.to_string())

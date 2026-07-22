@@ -680,11 +680,7 @@ async fn goal_slash_command_with_extra_os_emits_cccx_task_goal_event() {
     submit_composer_text(&mut chat, command);
 
     let event = rx.try_recv().expect("expected cccx task goal event");
-    let AppEvent::SetCccxTaskGoal {
-        task_id,
-        condition,
-    } = event
-    else {
+    let AppEvent::SetCccxTaskGoal { task_id, condition } = event else {
         panic!("expected SetCccxTaskGoal, got {event:?}");
     };
     assert_eq!(thread_id, chat.thread_id.expect("thread remains attached"));
@@ -2986,6 +2982,45 @@ async fn cccx_parser_mcp_dispatch_uses_runtime_inventory_loader() {
             detail: McpServerStatusDetail::ToolsAndAuthOnly,
             ..
         })
+    );
+}
+
+#[tokio::test]
+async fn cccx_permissions_commands_preserve_exact_queue_request_ids() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_cccx_command_with_args(SlashCommand::Permissions, "");
+    chat.dispatch_cccx_command_with_args(SlashCommand::Permissions, "approve pr-17");
+    chat.dispatch_cccx_command_with_args(SlashCommand::Permissions, "deny pr-18");
+    chat.dispatch_cccx_command_with_args(SlashCommand::Permissions, "inspect pr-20");
+    chat.dispatch_cccx_command_with_args(SlashCommand::Permissions, "batch-approve pr-18 pr-21");
+
+    let commands = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::CodexOp(command) => Some(command),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        commands,
+        vec![
+            AppCommand::ListCccxPermissions,
+            AppCommand::ResolveCccxPermission {
+                request_id: "pr-17".to_string(),
+                approve: true,
+            },
+            AppCommand::ResolveCccxPermission {
+                request_id: "pr-18".to_string(),
+                approve: false,
+            },
+            AppCommand::InspectCccxPermission {
+                request_id: "pr-20".to_string(),
+            },
+            AppCommand::BeginCccxSafePermissionBatch {
+                request_ids: vec!["pr-18".to_string(), "pr-21".to_string()],
+            },
+        ]
     );
 }
 

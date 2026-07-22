@@ -7,6 +7,8 @@ use crate::tools::context::ToolPayload;
 use crate::tools::handlers::McpHandler;
 use crate::tools::registry::CoreToolRuntime;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use cccx_protocol::ActorIdentity;
+use cccx_protocol::HarnessKind;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -311,7 +313,10 @@ async fn tools_without_handlers_do_not_support_parallel() -> anyhow::Result<()> 
 #[tokio::test]
 async fn cccx_tool_projection_filters_registry_and_model_visible_specs() -> anyhow::Result<()> {
     let (_, mut turn) = make_session_and_context().await;
-    Arc::make_mut(&mut turn.config)
+    let config = Arc::make_mut(&mut turn.config);
+    config.cccx_actor_identity = ActorIdentity::CxSubagent;
+    config.cccx_harness = HarnessKind::Cx;
+    config
         .cccx_child_allowed_tools
         .insert("update_plan".to_string());
     let turn = Arc::new(turn);
@@ -347,6 +352,38 @@ async fn cccx_tool_projection_filters_registry_and_model_visible_specs() -> anyh
         .map(|spec| spec.name().to_string())
         .collect::<Vec<_>>();
     assert_eq!(model_visible, vec!["update_plan".to_string()]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn cccx_child_empty_tool_projection_is_fail_closed() -> anyhow::Result<()> {
+    let (_, mut turn) = make_session_and_context().await;
+    let config = Arc::make_mut(&mut turn.config);
+    config.cccx_actor_identity = ActorIdentity::CxSubagent;
+    config.cccx_harness = HarnessKind::Cx;
+    config.cccx_child_allowed_tools.clear();
+    let turn = Arc::new(turn);
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = ToolRouter::from_context(
+        step_context.as_ref(),
+        ToolRouterParams {
+            tool_suggest_candidates: None,
+            tool_runtimes: Vec::new(),
+            extension_tool_executors: Vec::new(),
+            dynamic_tools: turn.dynamic_tools.as_slice(),
+        },
+        &Default::default(),
+    );
+
+    assert!(
+        router.registered_tool_names_for_test().is_empty(),
+        "a CCCX child with an empty allowed-tool projection must not retain the parent registry"
+    );
+    assert!(
+        router.model_visible_specs().is_empty(),
+        "a CCCX child with an empty allowed-tool projection must not show tools to the model"
+    );
 
     Ok(())
 }

@@ -549,6 +549,7 @@ impl Session {
             }
             InitialHistory::Resumed(resumed_history) => resumed_history.conversation_id,
         };
+        let is_resumed_session = matches!(&initial_history, InitialHistory::Resumed(_));
         let resumed_session_id = match &initial_history {
             InitialHistory::Resumed(resumed) => {
                 resumed.history.iter().find_map(|item| match item {
@@ -1175,15 +1176,44 @@ impl Session {
                 tool_search_handler_cache: Default::default(),
                 turn_environments: Arc::clone(&turn_environments),
             };
-            let cccx_mode =
+            let configured_mode = || {
+                CccxModeState::new(cccx_mode::mode_kind_to_main_mode(config.cccx_default_mode))
+            };
+            let cccx_mode_candidate = if is_resumed_session {
                 match cccx_task_graph_state::load_mode_state(config.cwd.as_path()).await {
                     Ok(Some(mode)) => mode,
-                    Ok(None) => CccxModeState::default(),
+                    Ok(None) => configured_mode(),
                     Err(error) => {
                         tracing::warn!(%error, "failed to load persisted cccx mode state");
-                        CccxModeState::default()
+                        configured_mode()
                     }
+                }
+            } else {
+                configured_mode()
+            };
+            let cccx_mode = if cccx_mode_candidate.current == cccx_policy::MainMode::Bypass {
+                let attested = if let Some(provider) = services.attestation_provider.as_ref() {
+                    provider
+                        .bypass_sandbox_attestation_for(crate::attestation::AttestationContext {
+                            thread_id,
+                        })
+                        .await
+                        .and_then(|proof| proof.mode_attestation_for(thread_id))
+                        .is_some()
+                } else {
+                    false
                 };
+                if attested {
+                    cccx_mode_candidate
+                } else {
+                    tracing::warn!(
+                        "Bypass startup mode ignored without backend isolation attestation"
+                    );
+                    CccxModeState::default()
+                }
+            } else {
+                cccx_mode_candidate
+            };
             let sess = Arc::new(Session {
                 thread_id,
                 installation_id,

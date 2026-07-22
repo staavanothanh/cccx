@@ -30,6 +30,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::ElicitationAction;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
@@ -44,6 +45,11 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
+use codex_protocol::request_permissions::PermissionGrantScope;
+use codex_protocol::request_permissions::RequestPermissionProfile;
+use codex_protocol::request_permissions::RequestPermissionsResponse;
+use codex_protocol::request_user_input::RequestUserInputAnswer;
+use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::ReadThreadParams;
@@ -326,6 +332,66 @@ impl AgentControl {
                     },
                 },
             ),
+            NativeApproval::RequestPermissions {
+                thread_id,
+                call_id,
+                requested_permissions,
+            } => (
+                thread_id,
+                Op::RequestPermissionsResponse {
+                    id: call_id,
+                    response: RequestPermissionsResponse {
+                        permissions: if approve {
+                            requested_permissions
+                        } else {
+                            RequestPermissionProfile::default()
+                        },
+                        scope: PermissionGrantScope::Turn,
+                        strict_auto_review: false,
+                    },
+                },
+            ),
+            NativeApproval::McpUserInput {
+                thread_id,
+                turn_id,
+                question_id,
+                approve_answer,
+                deny_answer,
+            } => {
+                let answer = if approve { approve_answer } else { deny_answer };
+                (
+                    thread_id,
+                    Op::UserInputAnswer {
+                        id: turn_id,
+                        response: RequestUserInputResponse {
+                            answers: HashMap::from([(
+                                question_id,
+                                RequestUserInputAnswer {
+                                    answers: vec![answer],
+                                },
+                            )]),
+                        },
+                    },
+                )
+            }
+            NativeApproval::McpElicitation {
+                thread_id,
+                server_name,
+                request_id,
+            } => (
+                thread_id,
+                Op::ResolveElicitation {
+                    server_name,
+                    request_id,
+                    decision: if approve {
+                        ElicitationAction::Accept
+                    } else {
+                        ElicitationAction::Decline
+                    },
+                    content: approve.then(|| serde_json::json!({})),
+                    meta: None,
+                },
+            ),
         };
         let worker_id = ThreadId::from_string(&thread_id)
             .map_err(|error| format!("invalid worker identity for `{request_id}`: {error}"))?;
@@ -334,6 +400,29 @@ impl AgentControl {
             .await
             .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    /// Complete the root queue entry after the original worker's native
+    /// waiter returns, then advance any active safe batch exactly once.
+    pub(crate) async fn complete_cccx_permission(&self, request_id: &str, approved: bool) {
+        if let Err(error) = self
+            .cccx_permission_queue
+            .resolve_native_decision(request_id, approved)
+            .await
+        {
+            warn!(%request_id, %error, "cccx permission queue could not resolve native approval");
+        }
+        self.cccx_permission_queue
+            .forget_native_approval(request_id)
+            .await;
+        if approved {
+            if let Err(error) = self.advance_cccx_safe_batch().await {
+                self.stop_cccx_safe_batch().await;
+                warn!(%error, "cccx permission batch could not advance after native approval");
+            }
+        } else {
+            self.stop_cccx_safe_batch().await;
+        }
     }
 
     /// Begin or advance a root-scoped batch of safe approvals. Each call only

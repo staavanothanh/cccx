@@ -184,6 +184,21 @@ Headless mode (cccx exec):
 | **DontAsk** | Chỉ tool nằm trong allowlist cấu hình sẵn được chạy, còn lại từ chối im lặng | Dùng cho session tự động (nền tảng cho AutonomousMode sau này) | CI, automation, batch job |
 | **Bypass** | **CC main agent:** skip tất cả permission check thông thường (rule tĩnh, threshold, classifier). Vẫn giữ Circuit Breaker tối thiểu (mục 5), không thể tắt. | Không delegate rule, chạy thẳng. | Chỉ trong container/VM cô lập, test pipeline. |
 
+### Quyết định platform: Bypass bị disable khi host không chứng minh isolation
+
+**Quyết định owner (2026-07-21):** bản cccx cá nhân hiện tại không cung cấp
+Bypass trên Windows/app-server. `x-oai-attestation`, trạng thái Windows sandbox
+đã được cấu hình, env var và `--confirm` đều không phải bằng chứng rằng executor
+của đúng thread đang chạy trong một container/VM cô lập và không thể thoát
+sandbox. Vì chưa có backend tạo proof gắn với `threadId` và isolation thực,
+mọi yêu cầu chuyển sang Bypass phải fail-closed và giữ nguyên mode trước đó.
+
+Bypass vẫn là một mode trong protocol để không phá schema và để có thể bổ sung
+host cô lập thật trong tương lai. Muốn bật lại phải có một quyết định kiến trúc
+mới cùng positive runtime proof; chỉ thêm confirm dialog hoặc đọc config không
+đủ. Circuit Breaker vẫn được kiểm thử độc lập như bất biến phòng thủ, kể cả khi
+Bypass đang bị disable trên platform hiện tại.
+
 **Quy tắc chuyển mode:**
 ```text
 - Chỉ user chuyển mode — qua CẢ HAI: phím tắt (vd Shift+Tab cycle qua các mode
@@ -1351,7 +1366,9 @@ per-turn độc lập, dựa hoàn toàn vào Task Graph verification thông th�
 - Circuit Breaker (mục 5) là bất biến ở MỌI mode kể cả Bypass, không thể tắt.
   Rule tĩnh khác (secrets, destructive git thường, network install) áp dụng
   cho mọi mode TRỪ Bypass — Bypass chỉ giữ lại Circuit Breaker.
-- Bypass mode chỉ chạy trong môi trường cô lập, không dùng cho dev máy chính.
+- Bypass mode chỉ chạy trong môi trường cô lập có backend attestation đáng tin.
+  Trên Windows/app-server hiện tại Bypass bị disable fail-closed theo quyết định
+  owner ngày 2026-07-21; không dùng config, env hay confirm dialog để mở lại.
 - Bypass của Main CC KHÔNG propagate xuống subagent: `evaluateSubagent()` (mục 5)
   vẫn chạy đầy đủ theo WorkSpec constraints, không bị ảnh hưởng bởi mode của Main CC.
 - Chuyển sang Bypass yêu cầu sandbox backend capability attestation do cccx

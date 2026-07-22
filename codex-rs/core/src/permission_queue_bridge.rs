@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -6,6 +7,8 @@ use cccx_policy::{
     NormalizedAction, PermissionRequest, PermissionRequestQueue, PermissionRequestStatus,
     PermissionRisk, QueueError,
 };
+use codex_protocol::mcp::RequestId as ProtocolMcpRequestId;
+use codex_protocol::request_permissions::RequestPermissionProfile;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::Notify;
 
@@ -34,6 +37,23 @@ pub(crate) enum NativeApproval {
     Patch {
         thread_id: String,
         approval_id: String,
+    },
+    RequestPermissions {
+        thread_id: String,
+        call_id: String,
+        requested_permissions: RequestPermissionProfile,
+    },
+    McpUserInput {
+        thread_id: String,
+        turn_id: String,
+        question_id: String,
+        approve_answer: String,
+        deny_answer: String,
+    },
+    McpElicitation {
+        thread_id: String,
+        server_name: String,
+        request_id: ProtocolMcpRequestId,
     },
 }
 
@@ -168,6 +188,14 @@ impl CccxPermissionQueue {
         }
     }
 
+    pub async fn cancel_request(&self, request_id: &str) {
+        if let Err(error) = self.inner.lock().await.cancel_request(request_id) {
+            tracing::warn!(%request_id, %error, "cccx permission request cancellation was stale");
+        }
+        self.native_approvals.lock().await.remove(request_id);
+        self.state_changed.notify_waiters();
+    }
+
     #[cfg(test)]
     pub async fn active_request_id(&self) -> Option<String> {
         self.inner
@@ -199,8 +227,16 @@ impl CccxPermissionQueue {
         let queue = self.inner.lock().await;
         let request_id = queue.active_request_id()?;
         let request = queue.get(request_id)?;
-        (request.risk != PermissionRisk::High && request.risk != PermissionRisk::CircuitBreaker)
-            .then(|| request_id.to_string())
+        if request.risk == PermissionRisk::High || request.risk == PermissionRisk::CircuitBreaker {
+            return None;
+        }
+        let request_id = request_id.to_string();
+        drop(queue);
+        matches!(
+            self.native_approval(&request_id).await,
+            Some(NativeApproval::Patch { .. })
+        )
+        .then_some(request_id)
     }
 
     pub async fn validate_batch_request_ids(&self, request_ids: &[String]) -> Result<(), String> {
@@ -208,7 +244,13 @@ impl CccxPermissionQueue {
             return Err("batch approval requires at least one request id".to_string());
         }
         let queue = self.inner.lock().await;
+        let mut seen = BTreeSet::new();
         for request_id in request_ids {
+            if !seen.insert(request_id.as_str()) {
+                return Err(format!(
+                    "batch approval contains duplicate permission request `{request_id}`"
+                ));
+            }
             let request = queue
                 .get(request_id)
                 .ok_or_else(|| format!("unknown permission request `{request_id}`"))?;
@@ -237,6 +279,19 @@ impl CccxPermissionQueue {
         if request_ids.first().map(String::as_str) != Some(active_id) {
             return Err(format!(
                 "batch approval must start with the current active request `{active_id}`"
+            ));
+        }
+        let pending_ids = queue.pending_request_ids_ordered();
+        let expected_prefix = pending_ids
+            .iter()
+            .take(request_ids.len())
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let requested = request_ids.iter().map(String::as_str).collect::<Vec<_>>();
+        if requested != expected_prefix {
+            return Err(format!(
+                "batch approval request ids must be the exact active-queue prefix: {}",
+                expected_prefix.join(", ")
             ));
         }
         Ok(())
@@ -638,6 +693,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_one_request_preserves_same_worker_sibling() {
+        let queue = CccxPermissionQueue::new();
+        let first = queue
+            .enqueue(
+                "worker-a".to_string(),
+                "worker A".to_string(),
+                "T1".to_string(),
+                action("T1"),
+                "first".to_string(),
+            )
+            .await;
+        let second = queue
+            .enqueue(
+                "worker-a".to_string(),
+                "worker A".to_string(),
+                "T2".to_string(),
+                action("T2"),
+                "second".to_string(),
+            )
+            .await;
+
+        queue.cancel_request(&first).await;
+
+        assert_eq!(
+            queue.get(&first).await.map(|request| request.status),
+            Some(PermissionRequestStatus::Cancelled)
+        );
+        assert_eq!(
+            queue.active_request_id().await.as_deref(),
+            Some(second.as_str())
+        );
+    }
+
+    #[tokio::test]
     async fn batch_validation_requires_explicit_active_safe_ids() {
         let queue = CccxPermissionQueue::new();
         let active = queue
@@ -698,5 +787,63 @@ mod tests {
                 .expect_err("high risk cannot be batch-approved")
                 .contains("High")
         );
+    }
+
+    #[tokio::test]
+    async fn batch_validation_rejects_duplicate_reordered_or_noncontiguous_ids() {
+        let queue = CccxPermissionQueue::new();
+        let active = queue
+            .enqueue(
+                "worker-a".to_string(),
+                "worker A".to_string(),
+                "T1".to_string(),
+                action("T1"),
+                "first".to_string(),
+            )
+            .await;
+        let second = queue
+            .enqueue(
+                "worker-b".to_string(),
+                "worker B".to_string(),
+                "T2".to_string(),
+                action("T2"),
+                "second".to_string(),
+            )
+            .await;
+        let third = queue
+            .enqueue(
+                "worker-c".to_string(),
+                "worker C".to_string(),
+                "T3".to_string(),
+                action("T3"),
+                "third".to_string(),
+            )
+            .await;
+
+        assert!(
+            queue
+                .validate_batch_request_ids(&[active.clone(), active.clone()])
+                .await
+                .expect_err("duplicate request ids must be rejected")
+                .contains("duplicate")
+        );
+        assert!(
+            queue
+                .validate_batch_request_ids(&[second.clone(), active.clone()])
+                .await
+                .expect_err("reordered request ids must be rejected")
+                .contains(&active)
+        );
+        assert!(
+            queue
+                .validate_batch_request_ids(&[active.clone(), third])
+                .await
+                .expect_err("batch ids must be a contiguous active-queue prefix")
+                .contains(&second)
+        );
+        queue
+            .validate_batch_request_ids(&[active, second])
+            .await
+            .expect("active-queue prefix should be eligible");
     }
 }

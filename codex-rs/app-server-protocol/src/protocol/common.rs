@@ -859,6 +859,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::CccxPermissionListResponse,
     },
+    CccxPermissionInspect => "cccx/permission/inspect" {
+        params: v2::CccxPermissionInspectParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::CccxPermissionInspectResponse,
+    },
     CccxPermissionBatchApprove => "cccx/permission/batch_approve" {
         params: v2::CccxPermissionBatchApproveParams,
         serialization: thread_id(params.thread_id),
@@ -2057,6 +2062,35 @@ mod tests {
                 "params": {
                     "threadId": "root-thread",
                     "requestIds": ["pr-1", "pr-2"]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn cccx_permission_inspect_is_scoped_to_exact_request_id() {
+        let request = ClientRequest::CccxPermissionInspect {
+            request_id: request_id(),
+            params: v2::CccxPermissionInspectParams {
+                thread_id: "root-thread".to_string(),
+                request_id: "pr-42".to_string(),
+            },
+        };
+
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: "root-thread".to_string(),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "method": "cccx/permission/inspect",
+                "id": 1,
+                "params": {
+                    "threadId": "root-thread",
+                    "requestId": "pr-42"
                 }
             })
         );

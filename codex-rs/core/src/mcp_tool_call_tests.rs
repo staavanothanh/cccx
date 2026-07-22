@@ -2957,6 +2957,14 @@ async fn prompt_mode_waits_for_approval_when_annotations_do_not_require_approval
             .is_err(),
         "prompt mode should wait for approval instead of auto-allowing"
     );
+    assert!(matches!(
+        session
+            .services
+            .cccx_permission_queue
+            .native_approval("pr-0")
+            .await,
+        Some(NativeApproval::McpUserInput { .. } | NativeApproval::McpElicitation { .. })
+    ));
     approval_task.abort();
 }
 

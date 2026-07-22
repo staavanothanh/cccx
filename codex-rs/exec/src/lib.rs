@@ -268,6 +268,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let SharedCliOptions {
         images,
         model: model_cli_arg,
+        mode,
         oss,
         oss_provider,
         config_profile_v2,
@@ -422,6 +423,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 
     let overrides = ConfigOverrides {
         model,
+        cccx_mode: mode.map(Into::into),
         review_model: None,
         // Default to never ask for approvals in headless mode. Rebuild below if
         // the fully resolved reviewer is AutoReview.

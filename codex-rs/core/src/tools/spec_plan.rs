@@ -200,11 +200,14 @@ fn build_tool_specs_and_registry(
 }
 
 fn apply_cccx_child_tool_projection(turn_context: &TurnContext, planned_tools: &mut PlannedTools) {
-    let allowed_tools = &turn_context.config.cccx_child_allowed_tools;
-    if allowed_tools.is_empty() {
+    if !matches!(
+        turn_context.config.cccx_actor_identity,
+        cccx_protocol::ActorIdentity::CcSubagent | cccx_protocol::ActorIdentity::CxSubagent
+    ) {
         return;
     }
 
+    let allowed_tools = &turn_context.config.cccx_child_allowed_tools;
     planned_tools
         .runtimes
         .retain(|runtime| cccx_tool_name_allowed(allowed_tools, &runtime.tool_name()));

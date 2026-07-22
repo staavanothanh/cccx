@@ -8,9 +8,9 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use cccx_protocol::ActorIdentity;
-use tokio::sync::RwLock;
 use tokio::sync::OwnedRwLockReadGuard;
 use tokio::sync::OwnedRwLockWriteGuard;
+use tokio::sync::RwLock;
 use tokio::task::JoinError;
 use tokio_util::either::Either;
 use tokio_util::sync::CancellationToken;
@@ -311,9 +311,9 @@ async fn cccx_project_write_lease_for_tool_call(
     };
 
     match cccx_project_write_lease_kind(call) {
-        CccxProjectWriteLeaseKind::SharedRead => Some(CccxProjectWriteLeaseGuard::Shared(
-            lease.read_owned().await,
-        )),
+        CccxProjectWriteLeaseKind::SharedRead => {
+            Some(CccxProjectWriteLeaseGuard::Shared(lease.read_owned().await))
+        }
         CccxProjectWriteLeaseKind::ExclusiveWrite => Some(CccxProjectWriteLeaseGuard::Exclusive(
             lease.write_owned().await,
         )),
@@ -343,6 +343,7 @@ fn cccx_tool_call_is_known_read_only(call: &ToolCall) -> bool {
         None => matches!(
             name,
             "view_image"
+                | "request_permissions"
                 | "list_mcp_resources"
                 | "list_mcp_resource_templates"
                 | "read_mcp_resource"
@@ -747,8 +748,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cccx_project_write_lease_allows_read_only_subagents_in_parallel()
-    -> anyhow::Result<()> {
+    async fn cccx_project_write_lease_allows_read_only_subagents_in_parallel() -> anyhow::Result<()>
+    {
         let release = CancellationToken::new();
         let (runtime_a, tool_name_a, started_a) = lease_test_runtime(
             ActorIdentity::CxSubagent,
@@ -789,6 +790,16 @@ mod tests {
         task_b.await.expect("second task should join")?;
 
         Ok(())
+    }
+
+    #[test]
+    fn request_permissions_only_negotiates_capability_and_uses_shared_lease() {
+        assert!(matches!(
+            cccx_project_write_lease_kind(&lease_test_call(codex_tools::ToolName::plain(
+                "request_permissions",
+            ))),
+            CccxProjectWriteLeaseKind::SharedRead
+        ));
     }
 
     #[tokio::test]

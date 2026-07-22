@@ -91,6 +91,7 @@ use codex_models_manager::ModelsManagerConfig;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -685,6 +686,9 @@ pub struct Config {
 
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
+
+    /// Effective initial cccx permission mode after layered config and CLI overrides.
+    pub cccx_default_mode: ModeKind,
 
     /// cccx runtime actor identity for this agent instance.
     ///
@@ -2439,6 +2443,7 @@ fn apply_managed_filesystem_constraints(
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
     pub model: Option<String>,
+    pub cccx_mode: Option<ModeKind>,
     pub review_model: Option<String>,
     pub cwd: Option<PathBuf>,
     pub approval_policy: Option<AskForApproval>,
@@ -3102,6 +3107,7 @@ impl Config {
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
             model,
+            cccx_mode,
             review_model: override_review_model,
             cwd,
             approval_policy: approval_policy_override,
@@ -3943,6 +3949,7 @@ impl Config {
             base_instructions,
             personality,
             developer_instructions,
+            cccx_default_mode: cccx_mode.or(cfg.default_mode).unwrap_or(ModeKind::Plan),
             cccx_actor_identity: cccx_protocol::ActorIdentity::MainCc,
             cccx_harness: cccx_protocol::HarnessKind::Cc,
             cccx_child_permission_policy: None,

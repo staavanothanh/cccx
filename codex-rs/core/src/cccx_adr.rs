@@ -60,6 +60,21 @@ pub(crate) fn maybe_intercept_adr_commit(
     })
 }
 
+pub(crate) fn maybe_intercept_namespaced_adr_commit(
+    actor: ActorIdentity,
+    harness: HarnessKind,
+    namespace: Option<&str>,
+    tool: &str,
+    arguments: Option<&JsonValue>,
+) -> Option<CallToolResult> {
+    let server = namespace.and_then(mcp_server_from_tool_namespace)?;
+    maybe_intercept_adr_commit(actor, harness, &server, tool, arguments)
+}
+
+fn mcp_server_from_tool_namespace(namespace: &str) -> Option<String> {
+    namespace.strip_prefix("mcp__").map(ToString::to_string)
+}
+
 fn is_adr_commit_tool(server: &str, tool: &str) -> bool {
     let normalized_server = server.to_ascii_lowercase();
     let normalized_tool = tool.to_ascii_lowercase();
@@ -145,5 +160,28 @@ mod tests {
         );
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn cx_subagent_namespaced_mcp_adr_commit_becomes_structured_proposal() {
+        let result = maybe_intercept_namespaced_adr_commit(
+            ActorIdentity::CxSubagent,
+            HarnessKind::Cx,
+            Some("mcp__codebase_memory_mcp"),
+            "manage_adr",
+            Some(&serde_json::json!({"title": "Use 9router only"})),
+        )
+        .expect("namespaced MCP ADR commit must be intercepted");
+
+        let structured = result
+            .structured_content
+            .expect("ADR proposal must be structured");
+        assert_eq!(structured["schema"], ADR_PROPOSAL_SCHEMA);
+        assert_eq!(structured["source_actor"], "cx_subagent");
+        assert_eq!(structured["requested_server"], "codebase_memory_mcp");
+        assert_eq!(
+            structured["proposed_arguments"]["title"],
+            "Use 9router only"
+        );
     }
 }

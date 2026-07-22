@@ -17,6 +17,7 @@ use crate::sandbox_tags::permission_profile_policy_tag;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::McpToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -447,6 +448,45 @@ impl ToolRegistry {
         let tool = match self.tool(&tool_name) {
             Some(tool) => tool,
             None => {
+                if let ToolPayload::Function { arguments } = &invocation.payload {
+                    let arguments_value =
+                        serde_json::from_str::<Value>(arguments).unwrap_or(Value::Null);
+                    if let Some(result) = crate::cccx_adr::maybe_intercept_namespaced_adr_commit(
+                        invocation.turn.cccx_actor_identity(),
+                        invocation.turn.cccx_harness(),
+                        tool_name.namespace.as_deref(),
+                        &tool_name.name,
+                        Some(&arguments_value),
+                    ) {
+                        notify_tool_start(&invocation).await;
+                        let output = McpToolOutput {
+                            result,
+                            tool_input: arguments_value,
+                            wall_time: Duration::ZERO,
+                            original_image_detail_supported: false,
+                            truncation_policy: invocation.turn.model_info.truncation_policy.into(),
+                        };
+                        let success = output.success_for_logging();
+                        notify_tool_finish_if_unclaimed(
+                            &invocation,
+                            terminal_outcome_reached.as_deref(),
+                            ToolCallOutcome::Completed { success },
+                        )
+                        .await;
+                        dispatch_trace.record_completed(
+                            &invocation,
+                            &call_id_owned,
+                            &invocation.payload,
+                            &output,
+                        );
+                        return Ok(AnyToolResult {
+                            call_id: call_id_owned,
+                            payload: invocation.payload,
+                            result: Box::new(output),
+                            post_tool_use_payload: None,
+                        });
+                    }
+                }
                 let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
                 let log_payload = invocation.payload.log_payload();
                 otel.tool_result_with_tags(
