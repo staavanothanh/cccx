@@ -1,4 +1,7 @@
-use cccx_protocol::{Artifact, ArtifactProvenance, ArtifactStatus, Evidence, EvidenceKind};
+use cccx_protocol::{
+    Artifact, ArtifactProvenance, ArtifactStatus, CommandExecution, Evidence, EvidenceKind,
+    TestRunRecord,
+};
 use std::collections::BTreeSet;
 
 /// Accumulates subagent execution evidence and produces an Artifact on completion.
@@ -8,6 +11,7 @@ pub struct ArtifactCollector {
     attempt_id: String,
     changed_paths: BTreeSet<String>,
     evidence_entries: Vec<Evidence>,
+    test_runs: Vec<TestRunRecord>,
 }
 
 impl ArtifactCollector {
@@ -18,6 +22,7 @@ impl ArtifactCollector {
             attempt_id: attempt_id.to_string(),
             changed_paths: BTreeSet::new(),
             evidence_entries: Vec::new(),
+            test_runs: Vec::new(),
         }
     }
 
@@ -27,10 +32,30 @@ impl ArtifactCollector {
 
     pub fn record_test_run(&mut self, command: &str, exit_code: i32, log: &str) {
         let digest = sha256_digest(log);
+        self.test_runs.push(TestRunRecord {
+            command: command.to_string(),
+            exit_code,
+            log_digest: digest.clone(),
+        });
         self.evidence_entries.push(Evidence {
             kind: EvidenceKind::TestLog,
             summary: format!("`{command}` exited {exit_code}"),
             digest,
+        });
+    }
+
+    pub fn record_verification_execution(&mut self, command: &CommandExecution) {
+        let rendered =
+            serde_json::to_string(&command.argv).unwrap_or_else(|_| command.argv.join(" "));
+        self.test_runs.push(TestRunRecord {
+            command: rendered.clone(),
+            exit_code: command.exit_code,
+            log_digest: command.log_digest.clone(),
+        });
+        self.evidence_entries.push(Evidence {
+            kind: EvidenceKind::TestLog,
+            summary: format!("`{rendered}` exited {}", command.exit_code),
+            digest: command.log_digest.clone(),
         });
     }
 
@@ -87,10 +112,12 @@ impl ArtifactCollector {
             summary,
             changed_files: self.changed_paths.clone(),
             changed_paths: self.changed_paths,
-            tests_run: Vec::new(),
+            tests_run: self.test_runs,
             residual_risks: Vec::new(),
             follow_up: Vec::new(),
             evidence: self.evidence_entries,
+            findings: Vec::new(),
+            raw_log_excerpt: None,
             provenance: Some(provenance),
             verification: None,
         }

@@ -16,6 +16,8 @@ impl GoalEvaluator {
     pub fn evaluate_execution(
         task: &TaskNode,
         attempt_id: &str,
+        work_spec_id: &str,
+        artifact_id: &str,
         command: CommandExecution,
         protected_input_digest: String,
         artifact_digest: String,
@@ -27,6 +29,8 @@ impl GoalEvaluator {
             schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
             task_id: task.task_id.clone(),
             attempt_id: attempt_id.to_string(),
+            work_spec_id: Some(work_spec_id.to_string()),
+            artifact_id: Some(artifact_id.to_string()),
             verifier: "cccx-verification-runner".to_string(),
             policy_id: task.verification_spec.spec_digest.clone(),
             command: Some(command),
@@ -72,6 +76,8 @@ impl GoalEvaluator {
             schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
             task_id: task.task_id.clone(),
             attempt_id: attempt_id.to_string(),
+            work_spec_id: None,
+            artifact_id: None,
             verifier: "goal-evaluator".to_string(),
             policy_id: task.verification_spec.spec_digest.clone(),
             command: None,
@@ -113,6 +119,8 @@ mod tests {
             "prove the task with command evidence",
             VerificationSpec {
                 command: None,
+                commands: Vec::new(),
+                protected_paths: std::collections::BTreeSet::new(),
                 protected_digests: BTreeMap::new(),
                 verification_policy_id: Some("focused-tests".to_string()),
                 spec_digest: "sha256:spec".to_string(),
@@ -154,6 +162,8 @@ mod tests {
         let record = GoalEvaluator::evaluate_execution(
             &task(),
             "attempt-42",
+            "ws-42",
+            "artifact-42",
             CommandExecution {
                 argv: vec!["cargo".to_string(), "test".to_string()],
                 cwd: "D:/repo".to_string(),
@@ -167,6 +177,8 @@ mod tests {
         );
         assert!(record.passed);
         assert_eq!(record.attempt_id, "attempt-42");
+        assert_eq!(record.work_spec_id.as_deref(), Some("ws-42"));
+        assert_eq!(record.artifact_id.as_deref(), Some("artifact-42"));
         assert_eq!(record.command.unwrap().argv, vec!["cargo", "test"]);
         assert_eq!(
             record.protected_input_digest.as_deref(),

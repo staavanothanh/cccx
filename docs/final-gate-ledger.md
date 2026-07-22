@@ -22,16 +22,16 @@ interactive/TUI events and headless JSONL where a gate crosses either surface.
 | 4 | PASS | Config precedence plus six-mode action outcomes are proven through runtime | Shift+Tab excludes DontAsk/Bypass; Bypass without attestation rejects | mode/policy/TUI |
 | 5 | PASS (disabled) | Owner-selected Windows/app-server behavior rejects Bypass because no trusted OS-isolation backend exists; circuit breaker remains invariant | Missing/untrusted attestation denies and mode remains unchanged | sandbox/app-server/core |
 | 6 | PASS | Multiple workers produce one native active approval prompt | Cancelled/stale request never renders | queue/session/TUI |
-| 7 | PARTIAL | Main WorkSpec → child Artifact → acceptance runtime flow | Bad schema/binding rejects | spawn/runtime/task graph |
+| 7 | PASS | Main WorkSpec → child Artifact → acceptance runtime flow | Bad schema/binding rejects | spawn/runtime/task graph |
 | 8 | PASS | Child receives live parent capability intersection | Empty intersection is read-only | spawn/executor |
 | 9 | PASS | Spawned child tool/MCP/executor/sandbox agree on projection | Unknown/forbidden capability denies | spawn/tools/sandbox |
 | 10 | PASS | Shell, MCP and patch writes use canonical observed targets | Junction, multi-target, stale target deny | executor/policy |
-| 11 | PARTIAL | Default child input is structured WorkSpec/Artifact only | Raw parent context fork rejects | multi-agent spawn/runtime |
+| 11 | PASS | Default child input is structured WorkSpec/Artifact only | Raw parent context fork rejects | multi-agent spawn/runtime |
 | 12 | PASS | Preserve real verification-command regression | Prose-only completion cannot verify | verification/task graph |
-| 13 | PARTIAL | Concurrent process state writes retain both valid updates | Live competing writer rejects | state/task graph |
+| 13 | PASS | Concurrent process state writes retain both valid updates | Live competing writer rejects | state/task graph |
 | 14 | PASS | Preserve actual stop-path regression | Unverified task blocks terminal completion | stop hook/task graph |
 | 15 | PASS | TUI commands inspect/approve/deny exact queue IDs | Invalid ID/digest and unsafe batch reject | queue/slash/TUI |
-| 16 | PARTIAL | TUI/session interrupt-resume preserves logical ID | Cancelled worker cannot resume | runtime/checkpoint/TUI |
+| 16 | PASS | TUI/session interrupt-resume preserves logical ID | Cancelled worker cannot resume | runtime/checkpoint/TUI |
 | 17 | PASS | Spawned child dispatch uses project lease; writers serialize while readers overlap | Unknown writer class serializes | tool runtime |
 | 18 | PARTIAL | Complete LLM-path inventory reaches 9router boundary | Any non-9router route fails before transport | client/gateway |
 | 19 | PARTIAL | Stream/retry attempts persist factual route/provenance | Metadata omission remains `unknown` | gateway/provenance |

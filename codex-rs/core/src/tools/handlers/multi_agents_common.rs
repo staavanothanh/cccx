@@ -36,6 +36,17 @@ pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIME
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
 pub(crate) const MAX_SPAWN_AGENT_MODEL_OVERRIDES: usize = 5;
+const CCCX_SPAWN_INPUT_ENVELOPE_SCHEMA_VERSION: &str = "cccx.spawn_input.v1";
+const CCCX_MAX_EXECUTION_BRIEF_CHARS: usize = 4_000;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CccxSpawnInputEnvelope<'a> {
+    schema_version: &'static str,
+    kind: &'static str,
+    work_spec: &'a cccx_protocol::WorkSpec,
+    execution_brief: &'a str,
+}
 
 fn filter_cx_extension_mcp_grants_for_projection(
     parent_allowed_mcp_tools: &mut BTreeSet<String>,
@@ -175,6 +186,109 @@ pub(crate) fn parse_collab_input(
             Ok(items)
         }
     }
+}
+
+fn bounded_cccx_execution_brief(message: &str) -> Result<String, FunctionCallError> {
+    if message.trim().is_empty() {
+        return Err(FunctionCallError::RespondToModel(
+            "cccx WorkSpec spawn requires a non-empty bounded execution brief in `message`"
+                .to_string(),
+        ));
+    }
+    if message.chars().count() > CCCX_MAX_EXECUTION_BRIEF_CHARS {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "cccx WorkSpec spawn execution brief is too large; keep `message` under {CCCX_MAX_EXECUTION_BRIEF_CHARS} characters and put durable state in WorkSpec/Artifact"
+        )));
+    }
+    Ok(message.to_string())
+}
+
+pub(crate) fn cccx_spawn_v1_execution_brief(
+    work_spec: Option<&cccx_protocol::WorkSpec>,
+    message: Option<&str>,
+    items: Option<&[UserInput]>,
+) -> Result<Option<String>, FunctionCallError> {
+    if !cccx_owns_spawn_model_resolution(work_spec) {
+        return Ok(None);
+    }
+    if items.is_some() {
+        return Err(FunctionCallError::RespondToModel(
+            "cccx WorkSpec spawn accepts only a bounded `message` execution brief; structured `items` would expose arbitrary parent context to the child"
+                .to_string(),
+        ));
+    }
+    let message = message.ok_or_else(|| {
+        FunctionCallError::RespondToModel(
+            "cccx WorkSpec spawn requires `message` as a bounded execution brief".to_string(),
+        )
+    })?;
+    bounded_cccx_execution_brief(message).map(Some)
+}
+
+pub(crate) fn cccx_spawn_v2_execution_brief(
+    work_spec: Option<&cccx_protocol::WorkSpec>,
+    message: &str,
+) -> Result<Option<String>, FunctionCallError> {
+    if !cccx_owns_spawn_model_resolution(work_spec) {
+        return Ok(None);
+    }
+    bounded_cccx_execution_brief(message).map(Some)
+}
+
+pub(crate) fn cccx_work_spec_spawn_envelope_text(
+    work_spec: &cccx_protocol::WorkSpec,
+    execution_brief: &str,
+) -> Result<String, FunctionCallError> {
+    work_spec.validate().map_err(|err| {
+        FunctionCallError::RespondToModel(format!("cccx WorkSpec is invalid: {err}"))
+    })?;
+    let execution_brief = bounded_cccx_execution_brief(execution_brief)?;
+    serde_json::to_string(&CccxSpawnInputEnvelope {
+        schema_version: CCCX_SPAWN_INPUT_ENVELOPE_SCHEMA_VERSION,
+        kind: "cccx.work_spec_spawn",
+        work_spec,
+        execution_brief: execution_brief.as_str(),
+    })
+    .map_err(|err| {
+        FunctionCallError::RespondToModel(format!(
+            "cccx could not serialize WorkSpec spawn envelope: {err}"
+        ))
+    })
+}
+
+pub(crate) fn cccx_work_spec_spawn_input_items(
+    cccx_runtime: Option<&Arc<CccxSpawnRuntime>>,
+    execution_brief: Option<&str>,
+) -> Result<Option<Vec<UserInput>>, FunctionCallError> {
+    let Some(runtime) = cccx_runtime else {
+        return Ok(None);
+    };
+    let execution_brief = execution_brief.ok_or_else(|| {
+        FunctionCallError::RespondToModel(
+            "cccx WorkSpec spawn missing bounded execution brief after runtime projection"
+                .to_string(),
+        )
+    })?;
+    Ok(Some(vec![UserInput::Text {
+        text: cccx_work_spec_spawn_envelope_text(&runtime.work_spec, execution_brief)?,
+        text_elements: Vec::new(),
+    }]))
+}
+
+pub(crate) fn cccx_work_spec_spawn_message(
+    cccx_runtime: Option<&Arc<CccxSpawnRuntime>>,
+    execution_brief: Option<&str>,
+) -> Result<Option<String>, FunctionCallError> {
+    let Some(runtime) = cccx_runtime else {
+        return Ok(None);
+    };
+    let execution_brief = execution_brief.ok_or_else(|| {
+        FunctionCallError::RespondToModel(
+            "cccx WorkSpec spawn missing bounded execution brief after runtime projection"
+                .to_string(),
+        )
+    })?;
+    cccx_work_spec_spawn_envelope_text(&runtime.work_spec, execution_brief).map(Some)
 }
 
 /// Builds the base config snapshot for a newly spawned sub-agent.
@@ -355,6 +469,31 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
         route_id: resolved_model_route.route_id.clone(),
     };
     work_spec.fallback_policy_id = resolved_model_route.fallback_policy_id.clone();
+    work_spec.resolved_model_route = Some(cccx_protocol::ResolvedModelRoute {
+        selection_source: match resolved_model_route.selection_source.as_str() {
+            "user_override" => cccx_protocol::RouteSelectionSource::UserOverride,
+            "role_preset" => cccx_protocol::RouteSelectionSource::RolePreset,
+            "agent_suggested" => cccx_protocol::RouteSelectionSource::AgentSuggested,
+            "session_default" => cccx_protocol::RouteSelectionSource::SessionDefault,
+            "inherit_main_requested" => cccx_protocol::RouteSelectionSource::InheritMainRequested,
+            "inherit_main_effective" => cccx_protocol::RouteSelectionSource::InheritMainEffective,
+            "global_default" => cccx_protocol::RouteSelectionSource::GlobalDefault,
+            source => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "cccx model route resolver returned unknown selection source `{source}`"
+                )));
+            }
+        },
+        requested_route_id: resolved_model_route.route_id.clone(),
+        model_profile_id: resolved_model_route.model_profile_id.clone(),
+        capability_profile_id: resolved_model_route.capability_profile_id.clone(),
+        fallback_policy_id: resolved_model_route.fallback_policy_id.clone(),
+        parent_attempt_id: Some(turn.sub_id.clone()),
+        parent_requested_route_id: Some(turn.model_info.slug.clone()),
+        parent_effective_route_id: main_effective_route_id.clone(),
+        fallback_chain: Vec::new(),
+        candidate_route_ids: configured_model_catalog.available_models.clone(),
+    });
 
     let parent_router = built_tools(session, step_context, cancellation_token)
         .await
@@ -457,7 +596,60 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
 #[cfg(test)]
 mod cccx_plugin_projection_tests {
     use super::*;
+    use cccx_protocol::{
+        ForkPolicy, HarnessKind, ModelRouteSelection, PermissionPolicy, RevisionRef, WorkRole,
+        WorkScope, WorkSpec,
+    };
     use codex_core_plugins::cccx_extension::CccxExtensionMcpCatalog;
+    use serde_json::Value;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    fn work_spec() -> WorkSpec {
+        WorkSpec {
+            schema_version: cccx_protocol::CCCX_WORK_SPEC_SCHEMA_VERSION.to_string(),
+            work_spec_id: "ws-boundary-1".to_string(),
+            task_id: "T-boundary".to_string(),
+            attempt_id: "attempt-boundary-1".to_string(),
+            created_at: "2026-07-22T00:00:00Z".to_string(),
+            expires_at: None,
+            base_revision: RevisionRef {
+                git_head: Some("base-head".to_string()),
+                working_tree_digest: None,
+            },
+            harness: HarnessKind::Cx,
+            role: WorkRole::Implementer,
+            runtime_identity: None,
+            objective: "Apply the bounded patch and run focused tests".to_string(),
+            scope: WorkScope {
+                canonical_paths: BTreeSet::from(["D:/repo/codex-rs/core".to_string()]),
+                protected_paths: BTreeSet::new(),
+                advisory_globs: BTreeSet::new(),
+            },
+            allowed_tools: BTreeSet::from(["shell_command".to_string()]),
+            forbidden_tools: BTreeSet::new(),
+            allowed_mcp_tools: BTreeSet::new(),
+            tool_grants: Vec::new(),
+            permission_policy: PermissionPolicy::Ask,
+            model_route: ModelRouteSelection::Explicit {
+                route_id: "9router/cx-implementer".to_string(),
+            },
+            resolved_model_route: None,
+            fallback_policy_id: "strict".to_string(),
+            fork_policy: ForkPolicy::WorkSpecOnly,
+            enforced_constraints: vec!["do-not-touch-unowned-files".to_string()],
+            typed_constraints: Vec::new(),
+            advisory_constraints: Vec::new(),
+            risk_threshold: None,
+            action_classes: None,
+            approval_policy: None,
+            verification_spec: None,
+            audit_depth: None,
+            expected_artifact: None,
+            checkpoint_id: None,
+            base_commit: None,
+        }
+    }
 
     #[test]
     fn cx_projection_strips_incompatible_extension_mcp_but_preserves_builtin_mcp() {
@@ -484,6 +676,84 @@ mod cccx_plugin_projection_tests {
             ]),
             "CX child projection must fail closed for extension MCP grants that are not CX-compatible while preserving non-extension MCP grants"
         );
+    }
+
+    #[test]
+    fn cccx_spawn_envelope_contains_validated_work_spec_and_bounded_brief() {
+        let ws = work_spec();
+        let envelope =
+            cccx_work_spec_spawn_envelope_text(&ws, "Use the WorkSpec as authority.").unwrap();
+        let value: Value = serde_json::from_str(&envelope).unwrap();
+
+        assert_eq!(value["schemaVersion"], "cccx.spawn_input.v1");
+        assert_eq!(value["kind"], "cccx.work_spec_spawn");
+        assert_eq!(value["executionBrief"], "Use the WorkSpec as authority.");
+        assert_eq!(value["workSpec"]["schema_version"], "cccx.work_spec.v1");
+        assert_eq!(value["workSpec"]["work_spec_id"], "ws-boundary-1");
+        assert_eq!(
+            value["workSpec"]["model_route"]["route_id"],
+            "9router/cx-implementer"
+        );
+    }
+
+    #[test]
+    fn cccx_spawn_envelope_rejects_invalid_work_spec() {
+        let mut ws = work_spec();
+        ws.objective.clear();
+
+        let err = cccx_work_spec_spawn_envelope_text(&ws, "brief").unwrap_err();
+
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "cccx WorkSpec is invalid: missing required field `objective`".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn cccx_v1_work_spec_spawn_rejects_structured_items() {
+        let ws = work_spec();
+        let items = vec![UserInput::Text {
+            text: "raw parent context".to_string(),
+            text_elements: Vec::new(),
+        }];
+
+        let err =
+            cccx_spawn_v1_execution_brief(Some(&ws), None, Some(items.as_slice())).unwrap_err();
+
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "cccx WorkSpec spawn accepts only a bounded `message` execution brief; structured `items` would expose arbitrary parent context to the child"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn cccx_work_spec_spawn_input_items_replaces_free_form_child_input() {
+        let runtime = Arc::new(CccxSpawnRuntime {
+            project_root: std::path::PathBuf::from("D:/repo"),
+            logical_session_id: "ws-boundary-1".to_string(),
+            work_spec: work_spec(),
+            display_name: "boundary-worker".to_string(),
+            model_route_summary: "9router/cx-implementer".to_string(),
+            model_route_selection_source: None,
+            gateway_provenance: None,
+            tool_call_sequence_digest: None,
+            parent_capabilities: None,
+        });
+
+        let input = cccx_work_spec_spawn_input_items(Some(&runtime), Some("brief only")).unwrap();
+        let input = input.unwrap();
+
+        let [UserInput::Text { text, .. }] = input.as_slice() else {
+            panic!("expected one text envelope input");
+        };
+        assert!(text.contains("\"schemaVersion\":\"cccx.spawn_input.v1\""));
+        assert!(text.contains("\"work_spec_id\":\"ws-boundary-1\""));
+        assert!(!text.contains("raw parent context"));
     }
 }
 

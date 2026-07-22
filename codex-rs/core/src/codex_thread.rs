@@ -249,7 +249,10 @@ impl CodexThread {
             .flat_map(|task| {
                 task.attempts.iter().map(move |attempt| CccxWorkerView {
                     logical_session_id: attempt.worker.logical_session_id.clone(),
-                    worker_incarnation_id: attempt.attempt_id.clone(),
+                    worker_incarnation_id: attempt
+                        .worker
+                        .worker_incarnation_id(&attempt.attempt_id)
+                        .to_string(),
                     display_name: attempt.worker.display_name.clone(),
                     role: attempt.worker.role.clone(),
                     task_id: task.task_id.clone(),
@@ -274,7 +277,7 @@ impl CodexThread {
         let (_, attempt) = graph
             .find_worker_attempt(worker_identifier)
             .map_err(|error| error.to_string())?;
-        ThreadId::from_string(&attempt.attempt_id)
+        ThreadId::from_string(attempt.worker.worker_incarnation_id(&attempt.attempt_id))
             .map_err(|error| format!("CCCX worker incarnation is invalid: {error}"))
     }
 
@@ -396,10 +399,22 @@ impl CodexThread {
             revalidate,
         )
         .await?;
-        let work_spec = checkpoint
+        let mut work_spec = checkpoint
             .work_spec
             .clone()
             .ok_or_else(|| "checkpoint is missing the pinned WorkSpec".to_string())?;
+        {
+            use sha2::{Digest, Sha256};
+            let checkpoint_key = format!(
+                "{}\u{0}{}\u{0}{}",
+                checkpoint.logical_session_id, checkpoint.attempt_id, checkpoint.checkpointed_at
+            );
+            work_spec.checkpoint_id = Some(format!(
+                "checkpoint-{:x}",
+                Sha256::digest(checkpoint_key.as_bytes())
+            ));
+            work_spec.base_commit = checkpoint.base_commit.clone();
+        }
         let display_name = checkpoint
             .display_name
             .clone()
@@ -413,13 +428,19 @@ impl CodexThread {
         })?;
         crate::cccx_spawn::apply_cccx_harness_to_config(&mut config, &parent, &work_spec)
             .map_err(|error| error.to_string())?;
-        let resume_input = format!(
+        let resume_brief = format!(
             "Resume the existing CCCX worker. Continue from checkpoint only; do not expand scope.\n\
              Last completed step: {}\nPending steps: {}\nPartial diff: {}",
             checkpoint.last_completed_step,
             checkpoint.pending_steps.join("; "),
             checkpoint.partial_diff,
         );
+        let resume_input =
+            crate::tools::handlers::multi_agents_common::cccx_work_spec_spawn_envelope_text(
+                &work_spec,
+                &resume_brief,
+            )
+            .map_err(|error| error.to_string())?;
         let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: self.session.thread_id,
             depth: 1,

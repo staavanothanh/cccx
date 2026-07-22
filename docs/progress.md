@@ -3786,3 +3786,103 @@ $env:RUST_MIN_STACK = "33554432"
 
 - Final Phase 3 status: Gates **8, 9, 10, 17 and 21 PASS**. Phase 4 has not
   started in this commit.
+
+## 2026-07-22 — Final-gate Phase 4 complete
+
+### Gate 7 PASS: WorkSpec → Artifact → verification → verified Task
+
+- `cccx.work_spec.v1` now carries typed enforced/advisory constraints, advisory
+  globs, resolved model-route metadata, command arrays, protected paths,
+  expected Artifact fields/policy, checkpoint reference and base commit.
+- Spawn resolves and pins the opaque 9router route plus profile/fallback
+  metadata before serialization. Conflicting requested route or fallback
+  policy fails validation.
+- Terminal Artifacts bind to the exact task, WorkSpec, logical attempt and
+  Artifact ID. Real verification commands add structured `testsRun`/`TestLog`
+  evidence; expected Artifact status/evidence/fields/policy are enforced.
+- Multiple pinned commands run in order. A task is verified only after every
+  required record exists and passes; terminal prose or one partial pass cannot
+  satisfy the acceptance boundary.
+
+### Gate 11 PASS: WorkSpec-only cross-harness input
+
+- Native v1 and v2 CCCX spawns replace free-form child input with one validated,
+  bounded `cccx.spawn_input.v1` envelope. v1 rejects structured item injection.
+- The golden spawned child receives the WorkSpec and bounded brief but not the
+  parent's raw-history sentinel.
+- Resume uses the same envelope, including checkpoint/base revision metadata;
+  the resumed request proves raw parent history is absent.
+
+### Gate 13 PASS: atomic TaskGraph transactions across processes
+
+- TaskGraph mutations use one read-modify-write transaction under an
+  in-process project mutex and process-visible writer lease, followed by atomic
+  replacement.
+- Windows release/read and stale-cleanup `NotFound` races retry within the
+  bounded lease timeout; other errors remain fail-closed.
+- Two synchronized child processes concurrently add sibling tasks and the
+  final graph retains both. The inter-process case passed once in the full
+  state suite and five additional direct repetitions.
+
+### Gates 12 and 14 remain PASS; Gate 16 PASS
+
+- Verification still comes only from harness-owned command/evidence records;
+  a success Artifact alone leaves the task unverified.
+- The real Main CC golden flow now calls native `wait_agent`, waits for the
+  child Artifact transaction, observes real command verification and then
+  passes the production StopHook. The negative flow emits the production
+  StopHook continuation and remains blocked while its task is unverified.
+- Interrupt/checkpoint/resume preserves one WorkSpec attempt and stable
+  `logicalSessionId`, while native `workerIncarnationId` changes. Cancel remains
+  terminal, cannot resume, revokes its live lifecycle, and preserves prior
+  audit checkpoint metadata when one exists.
+
+Validation commands and exact results:
+
+```powershell
+$env:RUST_MIN_STACK = "33554432"
+
+cargo +1.95.0 test -p cccx-protocol -j 1 -- --test-threads=1
+# 36 passed; 0 failed
+
+cargo +1.95.0 test -p cccx-task-graph -j 1 -- --test-threads=1
+# 19 unit + 5 lifecycle passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-70c02e5181d9035e.exe" "cccx_runtime::tests" --test-threads=1
+# 35 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-70c02e5181d9035e.exe" "cccx_task_graph_state::tests" --test-threads=1
+# 14 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-70c02e5181d9035e.exe" "verification_runner::tests" --test-threads=1
+# 6 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\all-2100892d4fbb243a.exe" "suite::cccx_final_gate::" --test-threads=1
+# 7 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\all-2100892d4fbb243a.exe" "suite::cccx_identity_authority::" --test-threads=1
+# 2 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\all-2100892d4fbb243a.exe" "suite::cccx_authority_runtime::" --test-threads=1
+# 3 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\all-2100892d4fbb243a.exe" "suite::cccx_permission_runtime::" --test-threads=1
+# 1 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --test all cccx_ -j 1
+# 17 passed; 0 failed (default test parallelism)
+```
+
+- Security review verified that protected-input paths resolve physically under
+  the project root, every declared protected path has a pinned digest, and
+  digests are checked both before and after each verification command. The
+  legacy runtime path also binds every verification record to its WorkSpec and
+  Artifact. No High/Medium Phase 4 security finding remains open.
+- Runtime integration fixtures now share the `cccx_runtime` serial-isolation
+  key. This removes cross-test scheduler/mock contention under the aggregate
+  command while preserving the deliberate multi-worker concurrency exercised
+  inside the permission-queue test.
+
+- Final Phase 4 status: Gates **7, 11, 13 and 16 PASS**; Gates **12 and 14
+  remain PASS**. Overall ledger: **19/25 PASS**, with Gates **18, 19, 20, 22,
+  24 and 25** remaining for Phases 5–8.

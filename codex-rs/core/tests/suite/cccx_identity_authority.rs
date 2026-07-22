@@ -41,6 +41,7 @@ use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use serial_test::serial;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
@@ -75,6 +76,7 @@ fn cx_work_spec(project_root: &Path, objective: &str) -> WorkSpec {
         scope: WorkScope {
             canonical_paths: BTreeSet::from([project_root.to_string_lossy().to_string()]),
             protected_paths: BTreeSet::new(),
+            advisory_globs: BTreeSet::new(),
         },
         allowed_tools: BTreeSet::from(["shell_command".to_string()]),
         forbidden_tools: BTreeSet::from(["multi_agent_v1__spawn_agent".to_string()]),
@@ -82,10 +84,12 @@ fn cx_work_spec(project_root: &Path, objective: &str) -> WorkSpec {
         tool_grants: Vec::new(),
         permission_policy: PermissionPolicy::Allow,
         model_route: ModelRouteSelection::InheritMainRequested,
+        resolved_model_route: None,
         fallback_policy_id: "strict".to_string(),
         fork_policy: ForkPolicy::WorkSpecOnly,
         enforced_constraints: vec!["phase1-bounded-worker".to_string()],
         typed_constraints: Vec::new(),
+        advisory_constraints: Vec::new(),
         risk_threshold: None,
         action_classes: None,
         approval_policy: None,
@@ -94,7 +98,11 @@ fn cx_work_spec(project_root: &Path, objective: &str) -> WorkSpec {
         expected_artifact: Some(ExpectedArtifact {
             required_status: ArtifactStatus::Success,
             required_evidence_kinds: vec![EvidenceKind::RuntimeLog],
+            required_fields: Vec::new(),
+            verification_policy_id: None,
         }),
+        checkpoint_id: None,
+        base_commit: None,
     }
 }
 
@@ -196,6 +204,7 @@ async fn submit_default_disabled_turn(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
 async fn spawned_cx_checkpoint_resume_preserves_typed_identity_and_single_harness() -> Result<()> {
     let server = start_mock_server().await;
     let test = build_cccx_collab_fixture(&server).await?;
@@ -288,7 +297,11 @@ async fn spawned_cx_checkpoint_resume_preserves_typed_identity_and_single_harnes
         .context("spawn must persist a CCCX TaskGraph")?;
     let attempt = &graph.tasks[TASK_ID].attempts[0];
     assert_eq!(attempt.worker.logical_session_id, WORK_SPEC_ID);
-    assert_eq!(attempt.attempt_id, child_thread_id.to_string());
+    assert_eq!(attempt.attempt_id, "attempt-phase1-identity");
+    assert_eq!(
+        attempt.worker.worker_incarnation_id,
+        child_thread_id.to_string()
+    );
 
     test.codex.submit(Op::Interrupt).await?;
     wait_for_event_with_timeout(
@@ -298,7 +311,7 @@ async fn spawned_cx_checkpoint_resume_preserves_typed_identity_and_single_harnes
     )
     .await;
 
-    mount_sse_once_match(
+    let resumed_child_request = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
             request_body_contains(request, "Resume the existing CCCX worker")
@@ -331,17 +344,38 @@ async fn spawned_cx_checkpoint_resume_preserves_typed_identity_and_single_harnes
         BTreeSet::from(["shell_command".to_string()]),
         "resume must re-apply the pinned WorkSpec projection, not inherit root authority"
     );
+    let resumed_request = wait_for_captured_request(&resumed_child_request).await;
+    assert!(resumed_request.body_contains_text("cccx.spawn_input.v1"));
+    assert!(resumed_request.body_contains_text("cccx.work_spec.v1"));
+    assert!(resumed_request.body_contains_text("checkpoint-"));
+    assert!(resumed_request.body_contains_text("attempt-phase1-identity"));
+    assert!(
+        !resumed_request.body_contains_text(PARENT_RESUME_PROMPT),
+        "resume must not fork the raw parent history into the child"
+    );
     wait_for_event_with_timeout(
         &resumed,
         |event| matches!(event, EventMsg::TurnComplete(_)),
         Duration::from_secs(10),
     )
     .await;
+    let resumed_graph = codex_core::cccx_task_graph_state::load_task_graph(test.cwd_path())
+        .await?
+        .context("resume must preserve the CCCX TaskGraph")?;
+    let attempts = &resumed_graph.tasks[TASK_ID].attempts;
+    assert_eq!(attempts.len(), 1, "resume must not create a second attempt");
+    assert_eq!(attempts[0].attempt_id, "attempt-phase1-identity");
+    assert_eq!(attempts[0].worker.logical_session_id, WORK_SPEC_ID);
+    assert_eq!(
+        attempts[0].worker.worker_incarnation_id,
+        resumed_thread_id.to_string()
+    );
 
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
 async fn spawned_cx_hides_spawn_catalog_and_injected_spawn_fails_closed() -> Result<()> {
     let server = start_mock_server().await;
     let test = build_cccx_collab_fixture(&server).await?;

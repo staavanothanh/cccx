@@ -22,6 +22,8 @@ fn verification_spec(command: &str, digest: &str) -> VerificationSpec {
             cwd: ".".to_string(),
             timeout_ms: Some(60_000),
         }),
+        commands: Vec::new(),
+        protected_paths: BTreeSet::new(),
         protected_digests: BTreeMap::new(),
         verification_policy_id: Some("integration".to_string()),
         spec_digest: digest.to_string(),
@@ -31,6 +33,7 @@ fn verification_spec(command: &str, digest: &str) -> VerificationSpec {
 fn worker(role: &str, display_name: &str) -> WorkerRecord {
     WorkerRecord {
         logical_session_id: format!("ls-{display_name}"),
+        worker_incarnation_id: format!("inc-{display_name}"),
         display_name: display_name.to_string(),
         role: role.to_string(),
         status: WorkerStatus::Running,
@@ -48,11 +51,11 @@ fn attempt(work_spec_id: &str) -> AttemptRecord {
     }
 }
 
-fn success_artifact(art_id: &str, work_spec_id: &str, attempt_id: &str) -> Artifact {
+fn success_artifact(task_id: &str, art_id: &str, work_spec_id: &str, attempt_id: &str) -> Artifact {
     Artifact {
         schema_version: CCCX_ARTIFACT_SCHEMA_VERSION.to_string(),
         artifact_id: art_id.to_string(),
-        task_id: "T1".to_string(),
+        task_id: task_id.to_string(),
         work_spec_id: work_spec_id.to_string(),
         attempt_id: attempt_id.to_string(),
         status: ArtifactStatus::Success,
@@ -67,6 +70,8 @@ fn success_artifact(art_id: &str, work_spec_id: &str, attempt_id: &str) -> Artif
             summary: "tests pass".to_string(),
             digest: "sha256:log".to_string(),
         }],
+        findings: Vec::new(),
+        raw_log_excerpt: None,
         provenance: Some(ArtifactProvenance {
             producer_harness: HarnessKind::Cx,
             producer_role: WorkRole::Implementer,
@@ -95,6 +100,8 @@ fn passed_verification(task_id: &str, attempt_id: &str) -> VerificationRecord {
         schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
         task_id: task_id.to_string(),
         attempt_id: attempt_id.to_string(),
+        work_spec_id: None,
+        artifact_id: None,
         verifier: "goal-evaluator".to_string(),
         policy_id: "integration".to_string(),
         command: None,
@@ -127,7 +134,7 @@ fn artifact_success_without_verification_does_not_mark_task_verified() {
         .expect("start attempt");
 
     // Apply an Artifact with Success status — but no VerificationRecord.
-    let artifact = success_artifact("art-1", "ws-1", "attempt-ws-1");
+    let artifact = success_artifact("T1", "art-1", "ws-1", "attempt-ws-1");
     graph
         .apply_artifact("T1", artifact)
         .expect("apply artifact");
@@ -153,12 +160,17 @@ fn verification_record_passed_marks_task_verified_and_allows_stop() {
         .expect("start attempt");
 
     // Complete: artifact + passed verification
-    let artifact = success_artifact("art-1", "ws-1", "attempt-ws-1");
+    let artifact = success_artifact("T1", "art-1", "ws-1", "attempt-ws-1");
     graph
         .apply_artifact("T1", artifact)
         .expect("apply artifact");
     graph
-        .record_verification("T1", "attempt-ws-1", passed_verification("T1", "attempt-ws-1"), "sha256:spec")
+        .record_verification(
+            "T1",
+            "attempt-ws-1",
+            passed_verification("T1", "attempt-ws-1"),
+            "sha256:spec",
+        )
         .expect("record verification");
 
     let task = graph.tasks.get("T1").expect("task exists");
@@ -198,10 +210,18 @@ fn blocked_task_cannot_start_until_dependency_is_verified() {
         .start_attempt("T1", attempt("ws-1"))
         .expect("start T1");
     graph
-        .apply_artifact("T1", success_artifact("art-1", "ws-1", "attempt-ws-1"))
+        .apply_artifact(
+            "T1",
+            success_artifact("T1", "art-1", "ws-1", "attempt-ws-1"),
+        )
         .expect("apply T1 artifact");
     graph
-        .record_verification("T1", "attempt-ws-1", passed_verification("T1", "attempt-ws-1"), "sha256:spec")
+        .record_verification(
+            "T1",
+            "attempt-ws-1",
+            passed_verification("T1", "attempt-ws-1"),
+            "sha256:spec",
+        )
         .expect("verify T1");
 
     // Now T2 and T3 can start
@@ -214,16 +234,32 @@ fn blocked_task_cannot_start_until_dependency_is_verified() {
 
     // Complete T2 + T3
     graph
-        .apply_artifact("T2", success_artifact("art-2", "ws-2", "attempt-ws-2"))
+        .apply_artifact(
+            "T2",
+            success_artifact("T2", "art-2", "ws-2", "attempt-ws-2"),
+        )
         .expect("apply T2");
     graph
-        .record_verification("T2", "attempt-ws-2", passed_verification("T2", "attempt-ws-2"), "sha256:spec")
+        .record_verification(
+            "T2",
+            "attempt-ws-2",
+            passed_verification("T2", "attempt-ws-2"),
+            "sha256:spec",
+        )
         .expect("verify T2");
     graph
-        .apply_artifact("T3", success_artifact("art-3", "ws-3", "attempt-ws-3"))
+        .apply_artifact(
+            "T3",
+            success_artifact("T3", "art-3", "ws-3", "attempt-ws-3"),
+        )
         .expect("apply T3");
     graph
-        .record_verification("T3", "attempt-ws-3", passed_verification("T3", "attempt-ws-3"), "sha256:spec")
+        .record_verification(
+            "T3",
+            "attempt-ws-3",
+            passed_verification("T3", "attempt-ws-3"),
+            "sha256:spec",
+        )
         .expect("verify T3");
 
     assert!(graph.can_stop());
@@ -249,10 +285,18 @@ fn stop_is_blocked_when_any_task_remains_unverified() {
         .start_attempt("T1", attempt("ws-1"))
         .expect("start T1");
     graph
-        .apply_artifact("T1", success_artifact("art-1", "ws-1", "attempt-ws-1"))
+        .apply_artifact(
+            "T1",
+            success_artifact("T1", "art-1", "ws-1", "attempt-ws-1"),
+        )
         .expect("apply T1");
     graph
-        .record_verification("T1", "attempt-ws-1", passed_verification("T1", "attempt-ws-1"), "sha256:spec")
+        .record_verification(
+            "T1",
+            "attempt-ws-1",
+            passed_verification("T1", "attempt-ws-1"),
+            "sha256:spec",
+        )
         .expect("verify T1");
 
     // T1 verified, T2 NOT started → can_stop must be false
@@ -264,10 +308,18 @@ fn stop_is_blocked_when_any_task_remains_unverified() {
         .start_attempt("T2", attempt("ws-2"))
         .expect("start T2");
     graph
-        .apply_artifact("T2", success_artifact("art-2", "ws-2", "attempt-ws-2"))
+        .apply_artifact(
+            "T2",
+            success_artifact("T2", "art-2", "ws-2", "attempt-ws-2"),
+        )
         .expect("apply T2");
     graph
-        .record_verification("T2", "attempt-ws-2", passed_verification("T2", "attempt-ws-2"), "sha256:spec")
+        .record_verification(
+            "T2",
+            "attempt-ws-2",
+            passed_verification("T2", "attempt-ws-2"),
+            "sha256:spec",
+        )
         .expect("verify T2");
 
     // Now can stop
@@ -289,7 +341,10 @@ fn verification_spec_change_blocks_tampered_verification() {
         .start_attempt("T1", attempt("ws-1"))
         .expect("start attempt");
     graph
-        .apply_artifact("T1", success_artifact("art-1", "ws-1", "attempt-ws-1"))
+        .apply_artifact(
+            "T1",
+            success_artifact("T1", "art-1", "ws-1", "attempt-ws-1"),
+        )
         .expect("apply artifact");
 
     // Try verifying with a DIFFERENT spec digest (tampered)

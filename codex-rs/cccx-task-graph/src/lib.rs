@@ -47,6 +47,10 @@ pub struct VerificationSpec {
     #[serde(default)]
     pub command: Option<CommandSpec>,
     #[serde(default)]
+    pub commands: Vec<CommandSpec>,
+    #[serde(default)]
+    pub protected_paths: BTreeSet<String>,
+    #[serde(default)]
     pub protected_digests: BTreeMap<String, String>,
     #[serde(default)]
     pub verification_policy_id: Option<String>,
@@ -57,15 +61,35 @@ impl VerificationSpec {
     pub fn digest_matches(&self, observed_digest: &str) -> bool {
         self.spec_digest == observed_digest
     }
+
+    fn required_record_count(&self) -> usize {
+        if self.commands.is_empty() {
+            usize::from(self.command.is_some()).max(1)
+        } else {
+            self.commands.len()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerRecord {
     pub logical_session_id: String,
+    #[serde(default)]
+    pub worker_incarnation_id: String,
     pub display_name: String,
     pub role: String,
     pub status: WorkerStatus,
     pub model_route_summary: String,
+}
+
+impl WorkerRecord {
+    pub fn worker_incarnation_id<'a>(&'a self, attempt_id_fallback: &'a str) -> &'a str {
+        if self.worker_incarnation_id.is_empty() {
+            attempt_id_fallback
+        } else {
+            &self.worker_incarnation_id
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,8 +234,43 @@ impl TaskGraph {
             .get_mut(task_id)
             .ok_or_else(|| TaskGraphError::UnknownTask(task_id.to_string()))?;
 
+        if task
+            .attempts
+            .iter()
+            .any(|existing| existing.attempt_id == attempt.attempt_id)
+        {
+            return Err(TaskGraphError::DuplicateAttempt(attempt.attempt_id));
+        }
+
         task.status = TaskStatus::InProgress;
         task.attempts.push(attempt);
+        Ok(())
+    }
+
+    pub fn resume_attempt(
+        &mut self,
+        task_id: &str,
+        attempt_id: &str,
+        worker_incarnation_id: String,
+    ) -> Result<(), TaskGraphError> {
+        let task = self
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| TaskGraphError::UnknownTask(task_id.to_string()))?;
+        let attempt = task
+            .attempts
+            .iter_mut()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .ok_or_else(|| TaskGraphError::UnknownAttempt(attempt_id.to_string()))?;
+        if attempt.worker.status != WorkerStatus::Resumable {
+            return Err(TaskGraphError::AttemptNotResumable {
+                attempt_id: attempt_id.to_string(),
+                status: attempt.worker.status.clone(),
+            });
+        }
+        attempt.worker.worker_incarnation_id = worker_incarnation_id;
+        attempt.worker.status = WorkerStatus::Running;
+        task.status = TaskStatus::InProgress;
         Ok(())
     }
 
@@ -254,6 +313,8 @@ impl TaskGraph {
 
         task.attempts[attempt_index].worker.status = match artifact.status {
             ArtifactStatus::Success => WorkerStatus::Completed,
+            ArtifactStatus::Waiting => WorkerStatus::Waiting,
+            ArtifactStatus::NeedsReview => WorkerStatus::Completed,
             ArtifactStatus::Blocked | ArtifactStatus::Failed => WorkerStatus::Failed,
             ArtifactStatus::Interrupted => WorkerStatus::Resumable,
             ArtifactStatus::Cancelled => WorkerStatus::Cancelled,
@@ -261,7 +322,8 @@ impl TaskGraph {
 
         task.status = match artifact.status {
             ArtifactStatus::Success => TaskStatus::Blocked,
-            ArtifactStatus::Blocked => TaskStatus::Blocked,
+            ArtifactStatus::Waiting => TaskStatus::InProgress,
+            ArtifactStatus::NeedsReview | ArtifactStatus::Blocked => TaskStatus::Blocked,
             ArtifactStatus::Interrupted => TaskStatus::Interrupted,
             ArtifactStatus::Cancelled => TaskStatus::Cancelled,
             ArtifactStatus::Failed => TaskStatus::Failed,
@@ -311,21 +373,55 @@ impl TaskGraph {
             .position(|attempt| attempt.attempt_id == attempt_id)
             .ok_or_else(|| TaskGraphError::UnknownAttempt(attempt_id.to_string()))?;
 
-        if record.passed {
-            task.status = TaskStatus::Verified;
-            task.verified_at = Some(record.checked_at.clone());
-            task.correction_required = None;
-        } else {
-            task.status = TaskStatus::Blocked;
-            task.correction_required = Some(record.reason.clone());
+        let attempt = &task.attempts[attempt_index];
+        if let Some(work_spec_id) = record.work_spec_id.as_deref()
+            && work_spec_id != attempt.work_spec_id
+        {
+            return Err(TaskGraphError::VerificationWorkSpecMismatch {
+                expected: attempt.work_spec_id.clone(),
+                actual: work_spec_id.to_string(),
+            });
         }
-        if task.goal_condition.is_some() {
-            task.goal_condition_met = Some(record.passed);
+        if let Some(artifact_id) = record.artifact_id.as_deref()
+            && !attempt
+                .artifact_ids
+                .iter()
+                .any(|expected| expected == artifact_id)
+        {
+            return Err(TaskGraphError::VerificationArtifactMismatch(
+                artifact_id.to_string(),
+            ));
         }
 
         task.attempts[attempt_index]
             .verification_records
-            .push(record);
+            .push(record.clone());
+        let required_records = task.verification_spec.required_record_count();
+        let all_required_passed = task.attempts[attempt_index]
+            .verification_records
+            .iter()
+            .rev()
+            .take(required_records)
+            .count()
+            == required_records
+            && task.attempts[attempt_index]
+                .verification_records
+                .iter()
+                .rev()
+                .take(required_records)
+                .all(|record| record.passed);
+
+        if record.passed && all_required_passed {
+            task.status = TaskStatus::Verified;
+            task.verified_at = Some(record.checked_at.clone());
+            task.correction_required = None;
+        } else if !record.passed {
+            task.status = TaskStatus::Blocked;
+            task.correction_required = Some(record.reason.clone());
+        }
+        if task.goal_condition.is_some() {
+            task.goal_condition_met = Some(all_required_passed);
+        }
         Ok(())
     }
 
@@ -445,6 +541,13 @@ pub enum TaskGraphError {
     TaskBlocked(String),
     #[error("unknown attempt `{0}`")]
     UnknownAttempt(String),
+    #[error("duplicate attempt `{0}`")]
+    DuplicateAttempt(String),
+    #[error("attempt `{attempt_id}` is {status:?}, not resumable")]
+    AttemptNotResumable {
+        attempt_id: String,
+        status: WorkerStatus,
+    },
     #[error("unknown CCCX worker `{0}`")]
     UnknownWorker(String),
     #[error("ambiguous CCCX worker display name `{0}`; use logicalSessionId")]
@@ -463,6 +566,10 @@ pub enum TaskGraphError {
     VerificationTaskMismatch { expected: String, actual: String },
     #[error("verification record attempt mismatch: expected `{expected}`, got `{actual}`")]
     VerificationAttemptMismatch { expected: String, actual: String },
+    #[error("verification WorkSpec mismatch: expected `{expected}`, got `{actual}`")]
+    VerificationWorkSpecMismatch { expected: String, actual: String },
+    #[error("verification references unknown artifact `{0}` for its attempt")]
+    VerificationArtifactMismatch(String),
     #[error("goal condition is empty for task `{0}`")]
     EmptyGoalCondition(String),
 }
@@ -487,6 +594,8 @@ mod tests {
     fn verification_spec() -> VerificationSpec {
         VerificationSpec {
             command: None,
+            commands: Vec::new(),
+            protected_paths: BTreeSet::new(),
             protected_digests: BTreeMap::from([(
                 "codex-rs/cccx-task-graph/src/lib.rs".to_string(),
                 "sha256:protected".to_string(),
@@ -499,6 +608,7 @@ mod tests {
     fn worker() -> WorkerRecord {
         WorkerRecord {
             logical_session_id: "ls-a1".to_string(),
+            worker_incarnation_id: "inc-1".to_string(),
             display_name: "a1-task".to_string(),
             role: "cx:implementer".to_string(),
             status: WorkerStatus::Running,
@@ -535,6 +645,8 @@ mod tests {
                 summary: "test log".to_string(),
                 digest: "sha256:test-log".to_string(),
             }],
+            findings: Vec::new(),
+            raw_log_excerpt: None,
             provenance: Some(ArtifactProvenance {
                 producer_harness: HarnessKind::Cx,
                 producer_role: WorkRole::Implementer,
@@ -563,6 +675,8 @@ mod tests {
             schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
             task_id: "T1".to_string(),
             attempt_id: "attempt-1".to_string(),
+            work_spec_id: None,
+            artifact_id: None,
             verifier: "cccx:self".to_string(),
             policy_id: "task-graph-lifecycle".to_string(),
             command: None,
@@ -591,6 +705,77 @@ mod tests {
             .expect("add task");
         graph.start_attempt("T1", attempt()).expect("start attempt");
         graph
+    }
+
+    #[test]
+    fn legacy_worker_record_deserialization_falls_back_to_attempt_id_for_incarnation() {
+        let encoded = r#"{
+            "attempt_id": "legacy-thread-id",
+            "work_spec_id": "ws-1",
+            "worker": {
+                "logical_session_id": "ls-a1",
+                "display_name": "a1-task",
+                "role": "cx:implementer",
+                "status": "running",
+                "model_route_summary": "inherit-main-requested"
+            },
+            "artifact_ids": [],
+            "verification_records": []
+        }"#;
+        let decoded: AttemptRecord = serde_json::from_str(encoded).expect("legacy attempt");
+        assert_eq!(decoded.worker.worker_incarnation_id, "");
+        assert_eq!(
+            decoded.worker.worker_incarnation_id(&decoded.attempt_id),
+            "legacy-thread-id"
+        );
+    }
+
+    #[test]
+    fn start_attempt_rejects_duplicate_logical_attempt_id() {
+        let mut graph = graph_with_one_started_task();
+        let mut duplicate = attempt();
+        duplicate.worker.worker_incarnation_id = "inc-2".to_string();
+
+        assert_eq!(
+            graph.start_attempt("T1", duplicate),
+            Err(TaskGraphError::DuplicateAttempt("attempt-1".to_string()))
+        );
+        assert_eq!(graph.tasks["T1"].attempts.len(), 1);
+    }
+
+    #[test]
+    fn resume_attempt_keeps_logical_attempt_and_changes_current_incarnation() {
+        let mut graph = graph_with_one_started_task();
+        let mut interrupted = success_artifact();
+        interrupted.status = ArtifactStatus::Interrupted;
+        graph
+            .apply_artifact("T1", interrupted)
+            .expect("interrupt attempt");
+
+        graph
+            .resume_attempt("T1", "attempt-1", "inc-2".to_string())
+            .expect("resume attempt");
+
+        let attempts = &graph.tasks["T1"].attempts;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].attempt_id, "attempt-1");
+        assert_eq!(attempts[0].worker.logical_session_id, "ls-a1");
+        assert_eq!(attempts[0].worker.worker_incarnation_id, "inc-2");
+        assert_eq!(attempts[0].worker.status, WorkerStatus::Running);
+        assert_eq!(graph.tasks["T1"].status, TaskStatus::InProgress);
+    }
+
+    #[test]
+    fn resume_attempt_rejects_non_resumable_attempts() {
+        let mut graph = graph_with_one_started_task();
+
+        assert_eq!(
+            graph.resume_attempt("T1", "attempt-1", "inc-2".to_string()),
+            Err(TaskGraphError::AttemptNotResumable {
+                attempt_id: "attempt-1".to_string(),
+                status: WorkerStatus::Running,
+            })
+        );
     }
 
     #[test]
@@ -681,6 +866,52 @@ mod tests {
     }
 
     #[test]
+    fn multiple_pinned_commands_require_every_verification_record_to_pass() {
+        let mut graph = TaskGraph::new("G1", "multi-command verification");
+        let mut spec = verification_spec();
+        spec.command = None;
+        spec.commands = vec![
+            CommandSpec {
+                argv: vec!["first".to_string()],
+                cwd: ".".to_string(),
+                timeout_ms: None,
+            },
+            CommandSpec {
+                argv: vec!["second".to_string()],
+                cwd: ".".to_string(),
+                timeout_ms: None,
+            },
+        ];
+        graph
+            .add_task(TaskNode::new("T1", "task", spec))
+            .expect("add task");
+        graph.start_attempt("T1", attempt()).expect("start attempt");
+        graph
+            .apply_artifact("T1", success_artifact())
+            .expect("apply artifact");
+
+        graph
+            .record_verification(
+                "T1",
+                "attempt-1",
+                passed_verification(),
+                "sha256:verification-spec",
+            )
+            .expect("record first command");
+        assert!(!graph.tasks["T1"].is_verified());
+
+        graph
+            .record_verification(
+                "T1",
+                "attempt-1",
+                passed_verification(),
+                "sha256:verification-spec",
+            )
+            .expect("record second command");
+        assert!(graph.tasks["T1"].is_verified());
+    }
+
+    #[test]
     fn protected_verification_spec_change_blocks_verification() {
         let mut graph = graph_with_one_started_task();
         graph
@@ -715,6 +946,43 @@ mod tests {
             graph.record_verification("T1", "attempt-1", record, "sha256:verification-spec"),
             Err(TaskGraphError::VerificationAttemptMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn verification_record_must_bind_to_the_attempt_work_spec_and_artifact() {
+        let mut graph = graph_with_one_started_task();
+        graph
+            .apply_artifact("T1", success_artifact())
+            .expect("apply success artifact");
+
+        let mut wrong_work_spec = passed_verification();
+        wrong_work_spec.work_spec_id = Some("ws-other".to_string());
+        wrong_work_spec.artifact_id = Some("artifact-1".to_string());
+        assert!(matches!(
+            graph.record_verification(
+                "T1",
+                "attempt-1",
+                wrong_work_spec,
+                "sha256:verification-spec"
+            ),
+            Err(TaskGraphError::VerificationWorkSpecMismatch { .. })
+        ));
+
+        let mut wrong_artifact = passed_verification();
+        wrong_artifact.work_spec_id = Some("ws-1".to_string());
+        wrong_artifact.artifact_id = Some("artifact-other".to_string());
+        assert_eq!(
+            graph.record_verification(
+                "T1",
+                "attempt-1",
+                wrong_artifact,
+                "sha256:verification-spec"
+            ),
+            Err(TaskGraphError::VerificationArtifactMismatch(
+                "artifact-other".to_string()
+            ))
+        );
+        assert!(!graph.tasks["T1"].is_verified());
     }
 
     #[test]
@@ -807,7 +1075,9 @@ mod tests {
         graph.start_attempt("T2", duplicate).unwrap();
         assert_eq!(
             graph.find_worker_attempt("a1-task"),
-            Err(TaskGraphError::AmbiguousWorkerDisplayName("a1-task".to_string()))
+            Err(TaskGraphError::AmbiguousWorkerDisplayName(
+                "a1-task".to_string()
+            ))
         );
     }
 

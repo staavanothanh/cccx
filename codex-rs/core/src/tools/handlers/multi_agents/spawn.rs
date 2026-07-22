@@ -63,12 +63,22 @@ async fn handle_spawn_agent(
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     enforce_cccx_fork_policy(args.work_spec.as_ref(), args.fork_context)?;
+    let cccx_execution_brief = cccx_spawn_v1_execution_brief(
+        args.work_spec.as_ref(),
+        args.message.as_deref(),
+        args.items.as_deref(),
+    )?;
     let role_name = args
         .agent_type
         .as_deref()
         .map(str::trim)
         .filter(|role| !role.is_empty());
-    let input_items = parse_collab_input(args.message, args.items)?;
+    let upstream_input_items = if cccx_execution_brief.is_none() {
+        Some(parse_collab_input(args.message, args.items)?)
+    } else {
+        None
+    };
+    let input_items = upstream_input_items.clone().unwrap_or_default();
     let prompt = render_input_preview(&input_items);
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
@@ -146,6 +156,15 @@ async fn handle_spawn_agent(
     )
     .await?;
     let cccx_runtime_update = cccx_runtime.clone();
+    let input_items =
+        cccx_work_spec_spawn_input_items(cccx_runtime.as_ref(), cccx_execution_brief.as_deref())?
+            .or(upstream_input_items)
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "spawn_agent could not construct child input".to_string(),
+                )
+            })?;
+    let prompt = render_input_preview(&input_items);
 
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,

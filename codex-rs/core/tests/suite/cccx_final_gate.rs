@@ -3,6 +3,7 @@ use cccx_mode::CccxModeState;
 use cccx_policy::MainMode;
 use cccx_protocol::ActorIdentity;
 use cccx_protocol::ArtifactStatus;
+use cccx_protocol::CommandSpec;
 use cccx_protocol::EvidenceKind;
 use cccx_protocol::ExpectedArtifact;
 use cccx_protocol::ForkPolicy;
@@ -12,6 +13,7 @@ use cccx_protocol::ParentCapabilitySet;
 use cccx_protocol::PermissionPolicy;
 use cccx_protocol::RevisionRef;
 use cccx_protocol::ToolGrant;
+use cccx_protocol::VerificationSpec;
 use cccx_protocol::WorkRole;
 use cccx_protocol::WorkScope;
 use cccx_protocol::WorkSpec;
@@ -29,21 +31,76 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_response_once_match;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
+use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use serial_test::serial;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
+use wiremock::Mock;
+use wiremock::Respond;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path_regex;
 
 const SPAWN_CALL_ID: &str = "cccx-final-gate-spawn";
 const SPAWN_CHILD_SHELL_CALL_ID: &str = "cccx-final-gate-child-shell";
-const SPAWN_PARENT_PROMPT: &str = "spawn the final-gate CX worker";
+const SPAWN_PARENT_WAIT_CALL_ID: &str = "cccx-final-gate-parent-wait";
+const SPAWN_PARENT_PROMPT: &str =
+    "spawn the final-gate CX worker; RAW_PARENT_SENTINEL_MUST_NOT_REACH_CHILD";
 const SPAWN_CHILD_PROMPT: &str = "perform the bounded final-gate child task";
+
+struct ParentWaitForSpawnedWorker;
+
+impl Respond for ParentWaitForSpawnedWorker {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let body: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("parent follow-up request JSON");
+        let agent_id = find_agent_id(&body).expect("spawn output must contain agent_id");
+        let arguments = json!({
+            "targets": [agent_id],
+            "timeout_ms": 10_000,
+        })
+        .to_string();
+        sse_response(sse(vec![
+            ev_response_created("cccx-final-gate-parent-wait-response"),
+            ev_function_call_with_namespace(
+                SPAWN_PARENT_WAIT_CALL_ID,
+                "multi_agent_v1",
+                "wait_agent",
+                &arguments,
+            ),
+            ev_completed("cccx-final-gate-parent-wait-response"),
+        ]))
+    }
+}
+
+fn find_agent_id(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => map
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| map.values().find_map(find_agent_id)),
+        serde_json::Value::Array(values) => values.iter().find_map(find_agent_id),
+        serde_json::Value::String(encoded)
+            if encoded.trim_start().starts_with('{') || encoded.trim_start().starts_with('[') =>
+        {
+            serde_json::from_str(encoded)
+                .ok()
+                .and_then(|decoded| find_agent_id(&decoded))
+        }
+        serde_json::Value::String(_) => None,
+        _ => None,
+    }
+}
 
 fn test_work_spec(harness: HarnessKind, role: WorkRole) -> WorkSpec {
     WorkSpec {
@@ -64,6 +121,7 @@ fn test_work_spec(harness: HarnessKind, role: WorkRole) -> WorkSpec {
         scope: WorkScope {
             canonical_paths: BTreeSet::from(["D:/workspace/project/src".to_string()]),
             protected_paths: BTreeSet::from(["D:/workspace/project/src/protected".to_string()]),
+            advisory_globs: BTreeSet::new(),
         },
         allowed_tools: BTreeSet::from(["shell_command".to_string(), "apply_patch".to_string()]),
         forbidden_tools: BTreeSet::from(["tool_search".to_string()]),
@@ -80,10 +138,12 @@ fn test_work_spec(harness: HarnessKind, role: WorkRole) -> WorkSpec {
         model_route: ModelRouteSelection::Explicit {
             route_id: "route/cx-test".to_string(),
         },
+        resolved_model_route: None,
         fallback_policy_id: "fail-closed".to_string(),
         fork_policy: ForkPolicy::WorkSpecOnly,
         enforced_constraints: vec!["bounded-scope".to_string()],
         typed_constraints: Vec::new(),
+        advisory_constraints: Vec::new(),
         risk_threshold: None,
         action_classes: None,
         approval_policy: None,
@@ -92,7 +152,11 @@ fn test_work_spec(harness: HarnessKind, role: WorkRole) -> WorkSpec {
         expected_artifact: Some(ExpectedArtifact {
             required_status: ArtifactStatus::Success,
             required_evidence_kinds: vec![EvidenceKind::TestLog],
+            required_fields: Vec::new(),
+            verification_policy_id: None,
         }),
+        checkpoint_id: None,
+        base_commit: None,
     }
 }
 
@@ -118,6 +182,7 @@ fn runtime_work_spec(project_root: &Path) -> WorkSpec {
     work_spec.scope = WorkScope {
         canonical_paths: BTreeSet::from([project_root.to_string_lossy().to_string()]),
         protected_paths: BTreeSet::new(),
+        advisory_globs: BTreeSet::new(),
     };
     work_spec.allowed_tools = BTreeSet::from(["shell_command".to_string()]);
     work_spec.forbidden_tools.clear();
@@ -167,6 +232,7 @@ async fn root_session_bootstrap_is_typed_main_cc_cc_harness() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
 async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
     let server = start_mock_server().await;
     let mock_base_url = server.uri();
@@ -193,7 +259,30 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
     });
     let test = builder.build(&server).await?;
 
-    let live_work_spec = runtime_work_spec(test.cwd_path());
+    let mut live_work_spec = runtime_work_spec(test.cwd_path());
+    live_work_spec.verification_spec = Some(VerificationSpec {
+        command: Some(CommandSpec {
+            argv: if cfg!(windows) {
+                vec![
+                    "cmd".to_string(),
+                    "/C".to_string(),
+                    "echo cccx-final-gate".to_string(),
+                ]
+            } else {
+                vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "printf cccx-final-gate".to_string(),
+                ]
+            },
+            cwd: ".".to_string(),
+            timeout_ms: Some(5_000),
+        }),
+        commands: Vec::new(),
+        protected_paths: Default::default(),
+        protected_digests: Default::default(),
+        verification_policy_id: Some("final-gate-live".to_string()),
+    });
     let live_spawn_args = serde_json::to_string(&json!({
         "message": SPAWN_CHILD_PROMPT,
         "work_spec": live_work_spec,
@@ -243,18 +332,25 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
         ]),
     )
     .await;
-    // Mount this last because the follow-up also contains the original parent
-    // prompt in history; wiremock gives the latest matching mock priority.
     mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| request_body_contains(request, SPAWN_CALL_ID),
+        |request: &wiremock::Request| request_body_contains(request, SPAWN_PARENT_WAIT_CALL_ID),
         sse(vec![
             ev_response_created("cccx-final-gate-parent-follow-up"),
-            ev_assistant_message("cccx-final-gate-parent-message", "child started"),
+            ev_assistant_message("cccx-final-gate-parent-message", "child verified"),
             ev_completed("cccx-final-gate-parent-follow-up"),
         ]),
     )
     .await;
+    // The parent must explicitly wait for the child. This removes the timing
+    // race where terminal prose arrived before the child Artifact transaction.
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .and(|request: &wiremock::Request| request_body_contains(request, SPAWN_CALL_ID))
+        .respond_with(ParentWaitForSpawnedWorker)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
 
     let mut created_threads = test.thread_manager.subscribe_thread_created();
     test.codex
@@ -319,10 +415,16 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
     wait_for_event_with_timeout(
         &child,
         |event| matches!(event, EventMsg::TurnComplete(_)),
-        Duration::from_secs(10),
+        Duration::from_secs(20),
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let parent_terminal = wait_for_event_with_timeout(
+        &test.codex,
+        |event| matches!(event, EventMsg::TurnComplete(_)),
+        Duration::from_secs(20),
+    )
+    .await;
+    assert!(matches!(parent_terminal, EventMsg::TurnComplete(_)));
     let requests = server
         .received_requests()
         .await
@@ -345,30 +447,58 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
         })
         .expect("spawned child must send a model request");
     let child_tools = request_tool_names(child_request);
+    assert!(request_body_contains(
+        child_request,
+        cccx_protocol::CCCX_WORK_SPEC_SCHEMA_VERSION
+    ));
+    assert!(request_body_contains(child_request, "ws-final-gate-1"));
+    assert!(request_body_contains(child_request, "task-final-gate-1"));
+    assert!(!request_body_contains(
+        child_request,
+        "RAW_PARENT_SENTINEL_MUST_NOT_REACH_CHILD"
+    ));
     assert!(child_tools.contains("shell_command"));
     assert!(!child_tools.contains("apply_patch"));
     assert!(!child_tools.contains("tool_search"));
     assert!(!child_tools.iter().any(|tool| tool.starts_with("mcp__")));
     assert!(!child_tools.iter().any(|tool| tool.contains("spawn_agent")));
-    // The spawned task is deliberately unverified, so the StopHook must keep
-    // the parent turn open. Interrupt only to tear down this focused Phase 1
-    // fixture after the real spawn and child lifecycle have been observed.
-    test.codex.submit(Op::Interrupt).await?;
-    let parent_terminal = wait_for_event_with_timeout(
-        &test.codex,
-        |event| matches!(event, EventMsg::TurnAborted(_)),
-        Duration::from_secs(10),
-    )
-    .await;
+    let graph = codex_core::cccx_task_graph_state::load_task_graph(test.cwd_path())
+        .await?
+        .expect("the live spawn must persist a TaskGraph");
+    let task = graph
+        .tasks
+        .get("task-final-gate-1")
+        .expect("the WorkSpec task must exist");
+    let attempt = task.attempts.last().expect("the child attempt must exist");
+    let artifact_id = attempt
+        .artifact_ids
+        .last()
+        .expect("the terminal child must return an Artifact");
+    let artifact = graph
+        .artifacts
+        .get(artifact_id)
+        .expect("the Artifact must be bound into the graph");
+    assert_eq!(artifact.task_id, task.task_id);
+    assert_eq!(artifact.work_spec_id, attempt.work_spec_id);
+    assert_eq!(artifact.attempt_id, attempt.attempt_id);
+    assert!(task.is_verified());
+    assert!(attempt.verification_records.iter().any(|record| {
+        record.passed
+            && record
+                .command
+                .as_ref()
+                .is_some_and(|command| command.exit_code == 0)
+    }));
     assert!(
-        matches!(parent_terminal, EventMsg::TurnAborted(_)),
-        "focused fixture cleanup must abort the still-unverified parent turn"
+        codex_core::cccx_task_graph_state::stop_guard(&graph).is_ok(),
+        "the real root StopHook predicate must allow the verified graph"
     );
 
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
 async fn spawned_cx_empty_intersections_are_read_only_and_fail_closed() -> Result<()> {
     const PARENT_PROMPT: &str = "spawn the deny-by-default CX worker";
     const CHILD_PROMPT: &str = "inspect the deny-by-default child boundary";
@@ -447,6 +577,17 @@ async fn spawned_cx_empty_intersections_are_read_only_and_fail_closed() -> Resul
         ]),
     )
     .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            request_body_contains(request, "cccx StopGuard blocked completion")
+        },
+        sse_response(sse(vec![ev_response_created(
+            "cccx-deny-stopguard-blocked",
+        )]))
+        .set_delay(Duration::from_secs(30)),
+    )
+    .await;
 
     let mut created_threads = test.thread_manager.subscribe_thread_created();
     test.codex
@@ -504,6 +645,27 @@ async fn spawned_cx_empty_intersections_are_read_only_and_fail_closed() -> Resul
             || unknown_follow_up_body.contains("unavailable"),
         "unknown tool denial must be returned to the child model: {unknown_follow_up_body}"
     );
+
+    let mut stop_guard_request_seen = false;
+    for _ in 0..100 {
+        let requests = server.received_requests().await.unwrap_or_default();
+        if requests
+            .iter()
+            .any(|request| request_body_contains(request, "cccx StopGuard blocked completion"))
+        {
+            stop_guard_request_seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        stop_guard_request_seen,
+        "the root turn must be continued by the production StopHook while its child task is unverified"
+    );
+    let graph = codex_core::cccx_task_graph_state::load_task_graph(test.cwd_path())
+        .await?
+        .expect("the unverified child must persist a TaskGraph");
+    assert!(codex_core::cccx_task_graph_state::stop_guard(&graph).is_err());
 
     test.codex.submit(Op::Interrupt).await?;
     let _ = wait_for_event_with_timeout(

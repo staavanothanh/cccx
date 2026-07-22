@@ -24,6 +24,7 @@ use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_with_timeout;
 use serde_json::json;
+use serial_test::serial;
 use std::time::Duration;
 
 fn mode(mode: ModeKind, model: String) -> CollaborationMode {
@@ -51,6 +52,7 @@ async fn build_mode_test(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
 async fn cccx_new_session_uses_effective_configured_startup_mode() -> Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex().with_config(|config| {
@@ -214,6 +216,7 @@ async fn submit_shell_turn(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
 async fn cccx_plan_and_dontask_modes_hard_deny_shell_without_native_prompt() -> Result<()> {
     for (mode_kind, prompt, call_id, expected) in [
         (
@@ -308,6 +311,7 @@ async fn cccx_plan_and_dontask_modes_hard_deny_shell_without_native_prompt() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
 async fn cccx_default_accept_edits_and_auto_modes_request_shell_approval() -> Result<()> {
     for (mode_kind, command, call_id) in [
         (
@@ -369,6 +373,7 @@ async fn cccx_default_accept_edits_and_auto_modes_request_shell_approval() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(cccx_runtime)]
 async fn cccx_bypass_mode_without_backend_attestation_is_rejected() -> Result<()> {
     let server = start_mock_server().await;
     let test = build_mode_test(&server).await?;

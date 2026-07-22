@@ -105,31 +105,61 @@ impl CccxRuntimeState {
     pub(crate) fn register_work_spec(
         &mut self,
         work_spec: WorkSpec,
-        attempt_id: String,
+        worker_incarnation_id: String,
         logical_session_id: String,
         display_name: String,
         model_route_summary: String,
     ) -> Result<(), String> {
         work_spec.validate().map_err(|error| error.to_string())?;
         self.ensure_task_exists(&work_spec)?;
-        self.task_graph
-            .start_attempt(
-                &work_spec.task_id,
-                AttemptRecord {
-                    attempt_id: attempt_id.clone(),
-                    work_spec_id: work_spec.work_spec_id.clone(),
-                    worker: WorkerRecord {
-                        logical_session_id,
-                        display_name,
-                        role: format!("{:?}", work_spec.role),
-                        status: WorkerStatus::Running,
-                        model_route_summary: model_route_summary.clone(),
+        let attempt_id = work_spec.attempt_id.clone();
+        let existing_attempt = self
+            .task_graph
+            .tasks
+            .get(&work_spec.task_id)
+            .and_then(|task| {
+                task.attempts
+                    .iter()
+                    .find(|attempt| attempt.attempt_id == attempt_id)
+            })
+            .cloned();
+        if let Some(existing_attempt) = existing_attempt {
+            if existing_attempt.work_spec_id != work_spec.work_spec_id {
+                return Err(format!(
+                    "attempt `{attempt_id}` belongs to WorkSpec `{}`, not `{}`",
+                    existing_attempt.work_spec_id, work_spec.work_spec_id
+                ));
+            }
+            if existing_attempt.worker.logical_session_id != logical_session_id {
+                return Err(format!(
+                    "attempt `{attempt_id}` belongs to logicalSessionId `{}`, not `{logical_session_id}`",
+                    existing_attempt.worker.logical_session_id
+                ));
+            }
+            self.task_graph
+                .resume_attempt(&work_spec.task_id, &attempt_id, worker_incarnation_id)
+                .map_err(|error| error.to_string())?;
+        } else {
+            self.task_graph
+                .start_attempt(
+                    &work_spec.task_id,
+                    AttemptRecord {
+                        attempt_id: attempt_id.clone(),
+                        work_spec_id: work_spec.work_spec_id.clone(),
+                        worker: WorkerRecord {
+                            logical_session_id,
+                            worker_incarnation_id,
+                            display_name,
+                            role: format!("{:?}", work_spec.role),
+                            status: WorkerStatus::Running,
+                            model_route_summary: model_route_summary.clone(),
+                        },
+                        artifact_ids: Vec::new(),
+                        verification_records: Vec::new(),
                     },
-                    artifact_ids: Vec::new(),
-                    verification_records: Vec::new(),
-                },
-            )
-            .map_err(|error| error.to_string())?;
+                )
+                .map_err(|error| error.to_string())?;
+        }
         self.track_existing_attempt(work_spec, attempt_id);
         Ok(())
     }
@@ -150,7 +180,7 @@ impl CccxRuntimeState {
             .get(&artifact.attempt_id)
             .ok_or_else(|| format!("unknown cccx work spec `{}`", artifact.work_spec_id))?;
         if matches!(artifact.status, ArtifactStatus::Success) {
-            artifact.verification = GoalEvaluator::evaluate(
+            let mut verification = GoalEvaluator::evaluate(
                 self.task_graph
                     .tasks
                     .get(&attempt.work_spec.task_id)
@@ -159,6 +189,11 @@ impl CccxRuntimeState {
                 exit_code,
                 log_digest,
             );
+            if let Some(record) = &mut verification {
+                record.work_spec_id = Some(attempt.work_spec.work_spec_id.clone());
+                record.artifact_id = Some(artifact.artifact_id.clone());
+            }
+            artifact.verification = verification;
         }
         artifact.validate().map_err(|error| error.to_string())?;
         let attempt_id = artifact.attempt_id.clone();
@@ -217,6 +252,8 @@ impl CccxRuntimeState {
                 .clone()
                 .unwrap_or(cccx_protocol::VerificationSpec {
                     command: None,
+                    commands: Vec::new(),
+                    protected_paths: BTreeSet::new(),
                     protected_digests: BTreeMap::new(),
                     verification_policy_id: None,
                 });
@@ -228,6 +265,8 @@ impl CccxRuntimeState {
                 work_spec.objective.clone(),
                 VerificationSpec {
                     command: protocol_spec.command,
+                    commands: protocol_spec.commands,
+                    protected_paths: protocol_spec.protected_paths,
                     protected_digests: protocol_spec.protected_digests,
                     verification_policy_id: protocol_spec.verification_policy_id,
                     spec_digest,
@@ -421,7 +460,7 @@ impl CccxRuntimeRegistry {
             logical_session_id: runtime.logical_session_id.clone(),
             worker_incarnation_id: child_thread_id.to_string(),
             task_id: runtime.work_spec.task_id.clone(),
-            attempt_id: child_thread_id.to_string(),
+            attempt_id: runtime.work_spec.attempt_id.clone(),
             work_spec: Some(runtime.work_spec.clone()),
             display_name: Some(runtime.display_name.clone()),
             last_completed_step,
@@ -454,7 +493,7 @@ impl CccxRuntimeRegistry {
                 logical_session_id: runtime.logical_session_id.clone(),
                 worker_incarnation_id: child_thread_id.to_string(),
                 task_id: runtime.work_spec.task_id.clone(),
-                attempt_id: child_thread_id.to_string(),
+                attempt_id: runtime.work_spec.attempt_id.clone(),
                 work_spec: Some(runtime.work_spec.clone()),
                 display_name: Some(runtime.display_name.clone()),
                 last_completed_step: status_summary.clone(),
@@ -493,7 +532,7 @@ impl CccxRuntimeRegistry {
         let mut collector = ArtifactCollector::new(
             &runtime.work_spec.task_id,
             &runtime.work_spec.work_spec_id,
-            &child_thread_id.to_string(),
+            &runtime.work_spec.attempt_id,
         );
         collector.record_runtime_log("subagent terminal status", &status_summary);
         let artifact_status = if success {
@@ -501,18 +540,6 @@ impl CccxRuntimeRegistry {
         } else {
             ArtifactStatus::Interrupted
         };
-        let artifact = collector.finalize(
-            artifact_status,
-            status_summary.clone(),
-            provenance_for_runtime(
-                &runtime.work_spec,
-                &runtime.model_route_summary,
-                &status_summary,
-                gateway_provenance.as_ref(),
-                runtime.tool_call_sequence_digest.as_deref(),
-            ),
-        );
-
         let mut verification_run = None;
         let mut verification_error = None;
         if success {
@@ -529,36 +556,67 @@ impl CccxRuntimeRegistry {
                 Err(error) => verification_error = Some(error.to_string()),
             }
         }
+        if let Some(run) = &verification_run {
+            for command in &run.commands {
+                collector.record_verification_execution(command);
+            }
+        }
+        let artifact = collector.finalize(
+            artifact_status,
+            status_summary.clone(),
+            provenance_for_runtime(
+                &runtime.work_spec,
+                &runtime.model_route_summary,
+                &status_summary,
+                gateway_provenance.as_ref(),
+                runtime.tool_call_sequence_digest.as_deref(),
+            ),
+        );
+        validate_expected_artifact(&runtime.work_spec, &artifact, verification_run.is_some())?;
+        let artifact_id = artifact.artifact_id.clone();
+        let artifact_digest = {
+            use sha2::{Digest, Sha256};
+            let bytes = serde_json::to_vec(&artifact)
+                .map_err(|error| format!("failed to serialize terminal Artifact: {error}"))?;
+            format!("sha256:{:x}", Sha256::digest(bytes))
+        };
         let initial = TaskGraph::new("cccx-runtime", "cccx runtime graph");
         let task_update =
             cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
                 let mut state = CccxRuntimeState::new(graph.clone());
-                state
-                    .track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
+                state.track_existing_attempt(
+                    runtime.work_spec.clone(),
+                    runtime.work_spec.attempt_id.clone(),
+                );
                 // A terminal worker status is an Artifact, not independent verification evidence.
                 state
                     .complete(artifact, None, None)
                     .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
                 if let Some(run) = verification_run {
-                    use sha2::{Digest, Sha256};
                     let task_id = runtime.work_spec.task_id.clone();
-                    let artifact_digest =
-                        format!("sha256:{:x}", Sha256::digest(status_summary.as_bytes()));
-                    let task = state.task_graph().tasks.get(&task_id).ok_or_else(|| {
-                        cccx_task_graph_state::TaskGraphStateError::Mutation(format!(
-                            "unknown cccx task `{task_id}`"
-                        ))
-                    })?;
-                    let record = GoalEvaluator::evaluate_execution(
-                        task,
-                        &child_thread_id.to_string(),
-                        run.command,
-                        run.protected_input_digest,
-                        artifact_digest,
-                    );
-                    state
-                        .record_harness_verification(&task_id, &child_thread_id.to_string(), record)
-                        .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
+                    for command in run.commands {
+                        let task = state.task_graph().tasks.get(&task_id).ok_or_else(|| {
+                            cccx_task_graph_state::TaskGraphStateError::Mutation(format!(
+                                "unknown cccx task `{task_id}`"
+                            ))
+                        })?;
+                        let record = GoalEvaluator::evaluate_execution(
+                            task,
+                            &runtime.work_spec.attempt_id,
+                            &runtime.work_spec.work_spec_id,
+                            &artifact_id,
+                            command,
+                            run.protected_input_digest.clone(),
+                            artifact_digest.clone(),
+                        );
+                        state
+                            .record_harness_verification(
+                                &task_id,
+                                &runtime.work_spec.attempt_id,
+                                record,
+                            )
+                            .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
+                    }
                 }
                 *graph = state.task_graph.clone();
                 task_update_from_graph(graph, &runtime.work_spec.task_id)
@@ -595,7 +653,7 @@ impl CccxRuntimeRegistry {
         let mut collector = ArtifactCollector::new(
             &runtime.work_spec.task_id,
             &runtime.work_spec.work_spec_id,
-            &child_thread_id.to_string(),
+            &runtime.work_spec.attempt_id,
         );
         collector.record_runtime_log("subagent cancelled", &reason);
         let artifact = collector.finalize(
@@ -613,8 +671,10 @@ impl CccxRuntimeRegistry {
         let task_update =
             cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
                 let mut state = CccxRuntimeState::new(graph.clone());
-                state
-                    .track_existing_attempt(runtime.work_spec.clone(), child_thread_id.to_string());
+                state.track_existing_attempt(
+                    runtime.work_spec.clone(),
+                    runtime.work_spec.attempt_id.clone(),
+                );
                 state
                     .complete(artifact, None, None)
                     .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
@@ -641,6 +701,73 @@ fn task_update_from_graph(
         status: task_status_label(&task.status).to_string(),
         verified: task.is_verified(),
     })
+}
+
+fn validate_expected_artifact(
+    work_spec: &WorkSpec,
+    artifact: &Artifact,
+    has_harness_verification: bool,
+) -> Result<(), String> {
+    let Some(expected) = &work_spec.expected_artifact else {
+        return Ok(());
+    };
+    if artifact.status != ArtifactStatus::Success {
+        return Ok(());
+    }
+    if artifact.status != expected.required_status {
+        return Err(format!(
+            "terminal Artifact status {:?} does not satisfy expected status {:?}",
+            artifact.status, expected.required_status
+        ));
+    }
+    for kind in &expected.required_evidence_kinds {
+        if !artifact
+            .evidence
+            .iter()
+            .any(|evidence| &evidence.kind == kind)
+        {
+            return Err(format!(
+                "terminal Artifact is missing required evidence kind {kind:?}"
+            ));
+        }
+    }
+    if let Some(expected_policy) = expected.verification_policy_id.as_deref() {
+        let actual_policy = work_spec
+            .verification_spec
+            .as_ref()
+            .and_then(|spec| spec.verification_policy_id.as_deref());
+        if actual_policy != Some(expected_policy) {
+            return Err(format!(
+                "expected Artifact verification policy `{expected_policy}` does not match pinned WorkSpec policy `{}`",
+                actual_policy.unwrap_or("<missing>")
+            ));
+        }
+    }
+    for field in &expected.required_fields {
+        let present = match field.as_str() {
+            "schemaVersion" | "schema_version" | "id" | "artifactId" | "artifact_id" | "taskId"
+            | "task_id" | "workSpecId" | "work_spec_id" | "attemptId" | "attempt_id" | "status"
+            | "summary" | "diffSummary" | "diff_summary" | "changedFiles" | "changed_files"
+            | "residualRisks" | "residual_risks" | "followUp" | "follow_up" => true,
+            "testsRun" | "tests_run" => !artifact.tests_run.is_empty(),
+            "evidence" => !artifact.evidence.is_empty(),
+            "findings" => !artifact.findings.is_empty(),
+            "rawLogExcerpt" | "raw_log_excerpt" => artifact.raw_log_excerpt.is_some(),
+            "provenance" => artifact.provenance.is_some(),
+            "verification" => has_harness_verification,
+            unknown => {
+                return Err(format!(
+                    "expectedArtifact requires unsupported field `{unknown}`"
+                ));
+            }
+        };
+        if !present {
+            return Err(format!(
+                "terminal Artifact is missing required field `{field}`"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn task_status_label(status: &TaskStatus) -> &'static str {
@@ -824,8 +951,8 @@ mod tests {
     use super::*;
     use crate::artifact_collector::ArtifactCollector;
     use cccx_protocol::{
-        ArtifactProvenance, CommandSpec, ForkPolicy, HarnessKind, ModelRouteSelection,
-        PermissionPolicy, RevisionRef, WorkRole, WorkScope,
+        ArtifactProvenance, CommandSpec, EvidenceKind, ExpectedArtifact, ForkPolicy, HarnessKind,
+        ModelRouteSelection, PermissionPolicy, RevisionRef, WorkRole, WorkScope,
     };
     use cccx_task_graph::{TaskNode, VerificationSpec};
     use std::collections::BTreeSet;
@@ -849,6 +976,7 @@ mod tests {
             scope: WorkScope {
                 canonical_paths: ["D:/repo".into()].into_iter().collect(),
                 protected_paths: BTreeSet::new(),
+                advisory_globs: BTreeSet::new(),
             },
             allowed_tools: ["shell_command".into()].into_iter().collect(),
             forbidden_tools: BTreeSet::new(),
@@ -856,16 +984,20 @@ mod tests {
             tool_grants: Vec::new(),
             permission_policy: PermissionPolicy::Ask,
             model_route: ModelRouteSelection::InheritMainEffective,
+            resolved_model_route: None,
             fallback_policy_id: "strict".into(),
             fork_policy: ForkPolicy::WorkSpecOnly,
             enforced_constraints: vec![],
             typed_constraints: Vec::new(),
+            advisory_constraints: Vec::new(),
             risk_threshold: None,
             action_classes: None,
             approval_policy: None,
             verification_spec: None,
             audit_depth: None,
             expected_artifact: None,
+            checkpoint_id: None,
+            base_commit: None,
         }
     }
     fn provenance() -> ArtifactProvenance {
@@ -889,6 +1021,28 @@ mod tests {
             stream_termination_status: None,
         }
     }
+
+    #[test]
+    fn successful_artifact_missing_pinned_evidence_is_rejected() {
+        let mut spec = work_spec();
+        spec.expected_artifact = Some(ExpectedArtifact {
+            required_status: ArtifactStatus::Success,
+            required_evidence_kinds: vec![EvidenceKind::TestLog],
+            required_fields: vec!["verification".to_string(), "provenance".to_string()],
+            verification_policy_id: None,
+        });
+        let mut collector = ArtifactCollector::new("T1", "ws-1", "attempt-1");
+        collector.record_runtime_log("terminal prose", "tests passed");
+        let artifact = collector.finalize(
+            ArtifactStatus::Success,
+            "tests passed".to_string(),
+            provenance(),
+        );
+
+        let error = validate_expected_artifact(&spec, &artifact, false)
+            .expect_err("terminal prose must not satisfy TestLog evidence");
+        assert!(error.contains("TestLog"));
+    }
     #[test]
     fn completion_applies_artifact_and_verifies_its_task() {
         let mut graph = TaskGraph::new("g", "test");
@@ -898,6 +1052,8 @@ mod tests {
                 "test",
                 VerificationSpec {
                     command: None,
+                    commands: Vec::new(),
+                    protected_paths: BTreeSet::new(),
                     protected_digests: BTreeMap::new(),
                     verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:s".into(),
@@ -908,7 +1064,7 @@ mod tests {
         runtime
             .register_work_spec(
                 work_spec(),
-                "attempt-1".into(),
+                "inc-1".into(),
                 "thread-1".into(),
                 "tester".into(),
                 "route".into(),
@@ -948,6 +1104,8 @@ mod tests {
                 cwd: ".".to_string(),
                 timeout_ms: Some(5_000),
             }),
+            commands: Vec::new(),
+            protected_paths: BTreeSet::new(),
             protected_digests: BTreeMap::new(),
             verification_policy_id: Some("pinned-test".to_string()),
         });
@@ -1027,6 +1185,7 @@ mod tests {
             checkpoint.worker_incarnation_id,
             child_thread_id.to_string()
         );
+        assert_eq!(checkpoint.attempt_id, "attempt-1");
         assert_eq!(
             checkpoint.last_completed_step,
             "apply_patch completed (call-1)"
@@ -1158,8 +1317,12 @@ mod tests {
             .unwrap()
             .expect("spawn must persist TaskGraph state");
         let attempt = &graph.tasks["T1"].attempts[0];
-        assert_eq!(attempt.attempt_id, child_thread_id.to_string());
+        assert_eq!(attempt.attempt_id, "attempt-1");
         assert_eq!(attempt.worker.logical_session_id, "logical-worker-a1");
+        assert_eq!(
+            attempt.worker.worker_incarnation_id,
+            child_thread_id.to_string()
+        );
     }
 
     #[tokio::test]
@@ -1176,6 +1339,8 @@ mod tests {
                 cwd: ".".to_string(),
                 timeout_ms: Some(5_000),
             }),
+            commands: Vec::new(),
+            protected_paths: BTreeSet::new(),
             protected_digests: BTreeMap::new(),
             verification_policy_id: Some("pinned-test".to_string()),
         });
@@ -1318,7 +1483,7 @@ mod tests {
         .await
         .expect("interrupted latest incarnation must be resumable by logicalSessionId");
         assert_eq!(checkpoint.logical_session_id, "logical-a1");
-        assert_eq!(checkpoint.attempt_id, first_incarnation.to_string());
+        assert_eq!(checkpoint.attempt_id, "attempt-1");
         assert_eq!(
             checkpoint.worker_incarnation_id,
             first_incarnation.to_string()
@@ -1354,13 +1519,14 @@ mod tests {
             .unwrap()
             .unwrap();
         let attempts = &graph.tasks["T1"].attempts;
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(attempts[0].attempt_id, first_incarnation.to_string());
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].attempt_id, "attempt-1");
         assert_eq!(attempts[0].worker.logical_session_id, "logical-a1");
-        assert_eq!(attempts[0].worker.status, WorkerStatus::Resumable);
-        assert_eq!(attempts[1].attempt_id, resumed_incarnation.to_string());
-        assert_eq!(attempts[1].worker.logical_session_id, "logical-a1");
-        assert_eq!(attempts[1].worker.status, WorkerStatus::Running);
+        assert_eq!(
+            attempts[0].worker.worker_incarnation_id,
+            resumed_incarnation.to_string()
+        );
+        assert_eq!(attempts[0].worker.status, WorkerStatus::Running);
 
         let running_resume_error = CccxRuntimeRegistry::prepare_resume(
             project.path(),
@@ -1389,9 +1555,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let attempts = &graph.tasks["T1"].attempts;
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(attempts[0].worker.status, WorkerStatus::Resumable);
-        assert_eq!(attempts[1].worker.status, WorkerStatus::Cancelled);
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].worker.status, WorkerStatus::Cancelled);
         assert!(
             attempts
                 .iter()
@@ -1448,7 +1613,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            crate::checkpoint::load_checkpoint(project.path(), &child_thread_id.to_string())
+            crate::checkpoint::load_checkpoint(project.path(), "logical-cancelled")
                 .await
                 .unwrap()
                 .is_none()
@@ -1772,6 +1937,8 @@ mod tests {
                 "prove the task",
                 VerificationSpec {
                     command: None,
+                    commands: Vec::new(),
+                    protected_paths: BTreeSet::new(),
                     protected_digests: BTreeMap::new(),
                     verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:spec".to_string(),
@@ -1825,6 +1992,8 @@ mod tests {
                 "prove the task with evidence",
                 VerificationSpec {
                     command: None,
+                    commands: Vec::new(),
+                    protected_paths: BTreeSet::new(),
                     protected_digests: BTreeMap::new(),
                     verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:s".to_string(),
@@ -2071,6 +2240,7 @@ mod tests {
         // Step 1: WorkSpec defines CX scope — task_id must match graph node
         let mut ws = work_spec();
         ws.task_id = "T-p13".to_string();
+        ws.attempt_id = "attempt-p13".to_string();
         ws.allowed_tools.insert("edit".to_string());
         ws.allowed_tools.insert("shell".to_string());
         ws.allowed_mcp_tools
@@ -2113,6 +2283,8 @@ mod tests {
                 "prove E2E spawn chain",
                 VerificationSpec {
                     command: None,
+                    commands: Vec::new(),
+                    protected_paths: BTreeSet::new(),
                     protected_digests: BTreeMap::new(),
                     verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:p13".to_string(),
@@ -2170,6 +2342,8 @@ mod tests {
                 "prove regression detection",
                 VerificationSpec {
                     command: None,
+                    commands: Vec::new(),
+                    protected_paths: BTreeSet::new(),
                     protected_digests: BTreeMap::new(),
                     verification_policy_id: Some("focused-tests".to_string()),
                     spec_digest: "sha256:p13r".to_string(),
@@ -2178,10 +2352,13 @@ mod tests {
             .unwrap();
 
         let mut runtime = CccxRuntimeState::new(graph);
+        let mut ws = work_spec();
+        ws.task_id = "T-p13r".to_string();
+        ws.attempt_id = "attempt-p13r".to_string();
         runtime
             .register_work_spec(
-                work_spec(),
-                "attempt-p13r".into(),
+                ws,
+                "incarnation-p13r".into(),
                 "thread-p13r".into(),
                 "cx-worker".into(),
                 "9router/main".into(),
@@ -2189,7 +2366,7 @@ mod tests {
             .unwrap();
 
         // Apply Artifact with NO verification (None, None)
-        let mut collector = ArtifactCollector::new("T1", "ws-1", "attempt-p13r");
+        let mut collector = ArtifactCollector::new("T-p13r", "ws-1", "attempt-p13r");
         collector.record_runtime_log("tests pass", "3/3 ok");
         let artifact =
             collector.finalize(ArtifactStatus::Success, "tests passed".into(), provenance());

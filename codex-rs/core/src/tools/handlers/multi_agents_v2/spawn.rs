@@ -65,7 +65,13 @@ async fn handle_spawn_agent(
         .map(str::trim)
         .filter(|role| !role.is_empty());
 
-    let message = message_content(args.message)?;
+    let cccx_execution_brief =
+        cccx_spawn_v2_execution_brief(args.work_spec.as_ref(), args.message.as_str())?;
+    let upstream_message = if cccx_execution_brief.is_none() {
+        Some(message_content(args.message)?)
+    } else {
+        None
+    };
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
     let mut config =
@@ -119,6 +125,14 @@ async fn handle_spawn_agent(
     )
     .await?;
     let cccx_runtime_update = cccx_runtime.clone();
+    let message =
+        cccx_work_spec_spawn_message(cccx_runtime.as_ref(), cccx_execution_brief.as_deref())?
+            .or(upstream_message)
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "spawn_agent could not construct child message".to_string(),
+                )
+            })?;
 
     let spawn_source = thread_spawn_source(
         session.thread_id,

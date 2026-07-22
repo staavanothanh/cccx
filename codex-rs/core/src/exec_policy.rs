@@ -2055,6 +2055,7 @@ mod cccx_policy_wiring_tests {
                     .into_iter()
                     .collect(),
                 protected_paths: std::collections::BTreeSet::new(),
+                advisory_globs: std::collections::BTreeSet::new(),
             },
             allowed_tools: ["shell_command".to_string()].into_iter().collect(),
             forbidden_tools: std::collections::BTreeSet::new(),
@@ -2062,16 +2063,20 @@ mod cccx_policy_wiring_tests {
             tool_grants: Vec::new(),
             permission_policy: cccx_protocol::PermissionPolicy::Allow,
             model_route: cccx_protocol::ModelRouteSelection::InheritMainRequested,
+            resolved_model_route: None,
             fallback_policy_id: "strict".to_string(),
             fork_policy: cccx_protocol::ForkPolicy::WorkSpecOnly,
             enforced_constraints: Vec::new(),
             typed_constraints: Vec::new(),
+            advisory_constraints: Vec::new(),
             risk_threshold: None,
             action_classes: None,
             approval_policy: None,
             verification_spec: None,
             audit_depth: None,
             expected_artifact: None,
+            checkpoint_id: None,
+            base_commit: None,
         };
 
         let requirement = cccx_subagent_shell_requirement(

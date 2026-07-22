@@ -43,6 +43,8 @@ pub enum AgentModelRouteStoreError {
 pub struct ResolvedSpawnModelRoute {
     pub route_id: String,
     pub selection_source: String,
+    pub model_profile_id: String,
+    pub capability_profile_id: String,
     pub fallback_policy_id: String,
 }
 
@@ -178,6 +180,8 @@ pub fn resolve_spawn_model_route_with_agent_suggestion_and_main_effective(
     Ok(ResolvedSpawnModelRoute {
         route_id: resolved.route.route_id,
         selection_source: selection_source_label(resolved.provenance.selection_source).to_string(),
+        model_profile_id: resolved.route.model_profile_id,
+        capability_profile_id: resolved.route.capability_profile_id,
         fallback_policy_id: fallback_policy_label(resolved.route.fallback_policy_id).to_string(),
     })
 }

@@ -215,6 +215,7 @@ mod phase0_tests {
             scope: cccx_protocol::WorkScope {
                 canonical_paths: BTreeSet::from(["reduced-scope-path".into()]),
                 protected_paths: BTreeSet::new(),
+                advisory_globs: BTreeSet::new(),
             },
             allowed_tools: BTreeSet::from(["shell_command".into()]),
             forbidden_tools: BTreeSet::new(),
@@ -222,16 +223,20 @@ mod phase0_tests {
             tool_grants: Vec::new(),
             permission_policy: PermissionPolicy::Ask,
             model_route: ModelRouteSelection::InheritMainEffective,
+            resolved_model_route: None,
             fallback_policy_id: "strict".into(),
             fork_policy: cccx_protocol::ForkPolicy::WorkSpecOnly,
             enforced_constraints: vec![],
             typed_constraints: Vec::new(),
+            advisory_constraints: Vec::new(),
             risk_threshold: None,
             action_classes: None,
             approval_policy: None,
             verification_spec: None,
             audit_depth: None,
             expected_artifact: None,
+            checkpoint_id: None,
+            base_commit: None,
         }
     }
 

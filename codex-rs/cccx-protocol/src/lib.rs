@@ -9,6 +9,7 @@ pub mod plugin;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use thiserror::Error;
@@ -63,6 +64,8 @@ pub enum WorkRole {
 pub enum ArtifactStatus {
     Success,
     Blocked,
+    Waiting,
+    NeedsReview,
     Interrupted,
     Cancelled,
     Failed,
@@ -127,6 +130,9 @@ pub struct WorkScope {
     pub canonical_paths: BTreeSet<String>,
     #[serde(default)]
     pub protected_paths: BTreeSet<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub advisory_globs: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -186,6 +192,11 @@ pub enum ConstraintKind {
     PathAllow,
     PathDeny,
     ActionClass,
+    MaxFilesChanged,
+    MaxLinesChanged,
+    NoNetwork,
+    RequireTestCommand,
+    CustomStaticRule,
     RiskThreshold,
     VerificationBoundary,
 }
@@ -195,6 +206,9 @@ pub struct WorkConstraint {
     pub id: String,
     pub kind: ConstraintKind,
     pub description: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub value: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -212,6 +226,12 @@ pub struct VerificationSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<CommandSpec>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<CommandSpec>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub protected_paths: BTreeSet<String>,
+    #[serde(default)]
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub protected_digests: BTreeMap<String, String>,
     #[serde(default)]
@@ -224,6 +244,48 @@ pub struct ExpectedArtifact {
     pub required_status: ArtifactStatus,
     #[serde(default)]
     pub required_evidence_kinds: Vec<EvidenceKind>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub required_fields: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_policy_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteSelectionSource {
+    UserOverride,
+    RolePreset,
+    AgentSuggested,
+    SessionDefault,
+    InheritMainRequested,
+    InheritMainEffective,
+    GlobalDefault,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ResolvedModelRoute {
+    pub selection_source: RouteSelectionSource,
+    pub requested_route_id: String,
+    pub model_profile_id: String,
+    pub capability_profile_id: String,
+    pub fallback_policy_id: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_attempt_id: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_requested_route_id: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_effective_route_id: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fallback_chain: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub candidate_route_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -254,12 +316,18 @@ pub struct WorkSpec {
     pub tool_grants: Vec<ToolGrant>,
     pub permission_policy: PermissionPolicy,
     pub model_route: ModelRouteSelection,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_model_route: Option<ResolvedModelRoute>,
     pub fallback_policy_id: String,
     pub fork_policy: ForkPolicy,
     #[serde(default)]
     pub enforced_constraints: Vec<String>,
     #[serde(default)]
     pub typed_constraints: Vec<WorkConstraint>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub advisory_constraints: Vec<String>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub risk_threshold: Option<RiskThreshold>,
@@ -280,6 +348,12 @@ pub struct WorkSpec {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_artifact: Option<ExpectedArtifact>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
 }
 
 impl WorkSpec {
@@ -327,8 +401,26 @@ impl WorkSpec {
         if let Some(route_id) = self.model_route.explicit_route() {
             require_non_empty("model_route.route_id", route_id)?;
         }
+        if let Some(route) = &self.resolved_model_route {
+            route.validate()?;
+            if let Some(explicit_route_id) = self.model_route.explicit_route()
+                && route.requested_route_id != explicit_route_id
+            {
+                return Err(ProtocolError::ConflictingField(
+                    "resolved_model_route.requested_route_id",
+                ));
+            }
+            if route.fallback_policy_id != self.fallback_policy_id {
+                return Err(ProtocolError::ConflictingField(
+                    "resolved_model_route.fallback_policy_id",
+                ));
+            }
+        }
         for constraint in &self.typed_constraints {
             constraint.validate()?;
+        }
+        for constraint in &self.advisory_constraints {
+            require_non_empty("advisory_constraints", constraint)?;
         }
         if let Some(spec) = &self.verification_spec {
             spec.validate()?;
@@ -342,6 +434,15 @@ impl WorkSpec {
             && (!matches!(self.harness, HarnessKind::Cx) || !matches!(self.role, WorkRole::Auditor))
         {
             return Err(ProtocolError::AuditDepthRequiresCxAuditor);
+        }
+        if let Some(expected) = &self.expected_artifact {
+            expected.validate()?;
+        }
+        if let Some(checkpoint_id) = &self.checkpoint_id {
+            require_non_empty("checkpoint_id", checkpoint_id)?;
+        }
+        if let Some(base_commit) = &self.base_commit {
+            validate_git_commit("base_commit", base_commit)?;
         }
         Ok(())
     }
@@ -389,6 +490,21 @@ pub struct ArtifactProvenance {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditFindingSeverity {
+    Info,
+    Warn,
+    Critical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AuditFinding {
+    pub location: String,
+    pub severity: AuditFindingSeverity,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Artifact {
     pub schema_version: String,
     pub artifact_id: String,
@@ -409,6 +525,12 @@ pub struct Artifact {
     pub follow_up: Vec<String>,
     #[serde(default)]
     pub evidence: Vec<Evidence>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<AuditFinding>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_log_excerpt: Option<String>,
     pub provenance: Option<ArtifactProvenance>,
     pub verification: Option<VerificationRecord>,
 }
@@ -435,9 +557,9 @@ impl Artifact {
         }
 
         if let Some(provenance) = &self.provenance {
-            provenance.validate()?;
             // Phase 5: reject placeholder digests like sha256:cccx-runtime-*
             provenance.verify_placeholders()?;
+            provenance.validate()?;
         }
 
         for evidence in &self.evidence {
@@ -448,6 +570,12 @@ impl Artifact {
             test_run.validate()?;
         }
 
+        for finding in &self.findings {
+            finding.validate()?;
+        }
+        if let Some(excerpt) = &self.raw_log_excerpt {
+            require_non_empty("raw_log_excerpt", excerpt)?;
+        }
         if let Some(verification) = &self.verification {
             verification.validate()?;
         }
@@ -459,7 +587,8 @@ impl Artifact {
 impl Evidence {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         require_non_empty("evidence.summary", &self.summary)?;
-        require_non_empty("evidence.digest", &self.digest)
+        require_non_empty("evidence.digest", &self.digest)?;
+        validate_digest("evidence.digest", &self.digest)
     }
 }
 
@@ -479,7 +608,13 @@ impl ArtifactProvenance {
         require_non_empty("provenance.requested_route_id", &self.requested_route_id)?;
         require_non_empty("provenance.effective_route_id", &self.effective_route_id)?;
         require_non_empty("provenance.input_digest", &self.input_digest)?;
-        require_non_empty("provenance.output_digest", &self.output_digest)
+        validate_digest("provenance.input_digest", &self.input_digest)?;
+        require_non_empty("provenance.output_digest", &self.output_digest)?;
+        validate_digest("provenance.output_digest", &self.output_digest)?;
+        if let Some(digest) = &self.tool_call_sequence_digest {
+            validate_digest("provenance.tool_call_sequence_digest", digest)?;
+        }
+        Ok(())
     }
 
     /// Phase 5: reject provenance entries that carry placeholder-style digests.
@@ -531,11 +666,24 @@ impl ArtifactProvenance {
     }
 }
 
+impl AuditFinding {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        require_non_empty("finding.location", &self.location)?;
+        require_non_empty("finding.detail", &self.detail)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VerificationRecord {
     pub schema_version: String,
     pub task_id: String,
     pub attempt_id: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_spec_id: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
     pub verifier: String,
     pub policy_id: String,
     #[serde(default)]
@@ -569,9 +717,18 @@ impl VerificationRecord {
         require_non_empty("verification.evidence_digest", &self.evidence_digest)?;
         if let Some(digest) = &self.protected_input_digest {
             require_non_empty("verification.protected_input_digest", digest)?;
+            validate_digest("verification.protected_input_digest", digest)?;
         }
         require_non_empty("verification.artifact_digest", &self.artifact_digest)?;
+        validate_digest("verification.artifact_digest", &self.artifact_digest)?;
         require_non_empty("verification.reason", &self.reason)?;
+        validate_digest("verification.evidence_digest", &self.evidence_digest)?;
+        if let Some(work_spec_id) = &self.work_spec_id {
+            require_non_empty("verification.work_spec_id", work_spec_id)?;
+        }
+        if let Some(artifact_id) = &self.artifact_id {
+            require_non_empty("verification.artifact_id", artifact_id)?;
+        }
         if let Some(command) = &self.command {
             command.validate()?;
         }
@@ -589,7 +746,8 @@ pub struct TestRunRecord {
 impl TestRunRecord {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         require_non_empty("test_run.command", &self.command)?;
-        require_non_empty("test_run.log_digest", &self.log_digest)
+        require_non_empty("test_run.log_digest", &self.log_digest)?;
+        validate_digest("test_run.log_digest", &self.log_digest)
     }
 }
 
@@ -611,7 +769,8 @@ impl CommandExecution {
         require_non_empty("verification.command.cwd", &self.cwd)?;
         require_non_empty("verification.command.started_at", &self.started_at)?;
         require_non_empty("verification.command.finished_at", &self.finished_at)?;
-        require_non_empty("verification.command.log_digest", &self.log_digest)
+        require_non_empty("verification.command.log_digest", &self.log_digest)?;
+        validate_digest("verification.command.log_digest", &self.log_digest)
     }
 }
 
@@ -760,6 +919,10 @@ pub enum ProtocolError {
     AuditDepthExceeded(u8),
     #[error("audit depth is reserved for a CX auditor work spec")]
     AuditDepthRequiresCxAuditor,
+    #[error("conflicting field `{0}`")]
+    ConflictingField(&'static str),
+    #[error("invalid field `{0}`")]
+    InvalidField(&'static str),
 }
 
 fn require_exact_version(
@@ -779,6 +942,55 @@ fn require_non_empty(field: &'static str, value: &str) -> Result<(), ProtocolErr
         Err(ProtocolError::MissingField(field))
     } else {
         Ok(())
+    }
+}
+
+fn validate_digest(field: &'static str, value: &str) -> Result<(), ProtocolError> {
+    let digest = value.trim();
+    if !digest.starts_with("sha256:") || digest.len() <= "sha256:".len() {
+        return Err(ProtocolError::InvalidField(field));
+    }
+    if digest.contains(char::is_whitespace) || digest.contains("cccx-runtime") {
+        return Err(ProtocolError::InvalidField(field));
+    }
+    Ok(())
+}
+
+fn validate_git_commit(field: &'static str, value: &str) -> Result<(), ProtocolError> {
+    let commit = value.trim();
+    if !(commit.len() == 40 || commit.len() == 64) {
+        return Err(ProtocolError::InvalidField(field));
+    }
+    if !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ProtocolError::InvalidField(field));
+    }
+    Ok(())
+}
+
+fn validate_constraint_value(kind: &ConstraintKind, value: &Value) -> Result<(), ProtocolError> {
+    let valid = match kind {
+        ConstraintKind::NoEdit | ConstraintKind::NoNetwork => value.as_bool().is_some(),
+        ConstraintKind::PathAllow | ConstraintKind::PathDeny => {
+            value.as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .all(|item| item.as_str().is_some_and(|s| !s.trim().is_empty()))
+            })
+        }
+        ConstraintKind::ActionClass | ConstraintKind::RequireTestCommand => {
+            value.as_str().is_some_and(|s| !s.trim().is_empty())
+        }
+        ConstraintKind::MaxFilesChanged | ConstraintKind::MaxLinesChanged => {
+            value.as_u64().is_some()
+        }
+        ConstraintKind::CustomStaticRule
+        | ConstraintKind::RiskThreshold
+        | ConstraintKind::VerificationBoundary => value.as_object().is_some(),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(ProtocolError::InvalidField("typed_constraints.value"))
     }
 }
 
@@ -848,26 +1060,99 @@ impl RuntimeIdentity {
 impl WorkConstraint {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         require_non_empty("typed_constraints.id", &self.id)?;
-        require_non_empty("typed_constraints.description", &self.description)
+        require_non_empty("typed_constraints.description", &self.description)?;
+        validate_constraint_value(&self.kind, &self.value)
     }
 }
 
 impl VerificationSpec {
     pub fn validate(&self) -> Result<(), ProtocolError> {
+        if self.command.is_some() && !self.commands.is_empty() {
+            return Err(ProtocolError::ConflictingField("verification_spec.command"));
+        }
         if let Some(command) = &self.command {
-            if command.argv.is_empty() {
-                return Err(ProtocolError::MissingField(
-                    "verification_spec.command.argv",
-                ));
-            }
-            require_non_empty("verification_spec.command.cwd", &command.cwd)?;
+            command.validate_for_spec("verification_spec.command")?;
+        }
+        for command in &self.commands {
+            command.validate_for_spec("verification_spec.commands")?;
+        }
+        for path in &self.protected_paths {
+            require_non_empty("verification_spec.protected_paths", path)?;
         }
         for (path, digest) in &self.protected_digests {
             require_non_empty("verification_spec.protected_digests.path", path)?;
             require_non_empty("verification_spec.protected_digests.digest", digest)?;
+            validate_digest("verification_spec.protected_digests.digest", digest)?;
         }
         if let Some(policy_id) = &self.verification_policy_id {
             require_non_empty("verification_spec.verification_policy_id", policy_id)?;
+        }
+        Ok(())
+    }
+}
+
+impl CommandSpec {
+    pub fn validate_for_spec(&self, field: &'static str) -> Result<(), ProtocolError> {
+        if self.argv.is_empty() {
+            return Err(ProtocolError::MissingField(
+                "verification_spec.command.argv",
+            ));
+        }
+        for arg in &self.argv {
+            require_non_empty("verification_spec.command.argv", arg)?;
+        }
+        require_non_empty("verification_spec.command.cwd", &self.cwd)?;
+        if matches!(self.timeout_ms, Some(0)) {
+            return Err(ProtocolError::InvalidField(field));
+        }
+        Ok(())
+    }
+}
+
+impl ExpectedArtifact {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        for field in &self.required_fields {
+            require_non_empty("expected_artifact.required_fields", field)?;
+        }
+        if let Some(policy_id) = &self.verification_policy_id {
+            require_non_empty("expected_artifact.verification_policy_id", policy_id)?;
+        }
+        Ok(())
+    }
+}
+
+impl ResolvedModelRoute {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        require_non_empty(
+            "resolved_model_route.requested_route_id",
+            &self.requested_route_id,
+        )?;
+        require_non_empty(
+            "resolved_model_route.model_profile_id",
+            &self.model_profile_id,
+        )?;
+        require_non_empty(
+            "resolved_model_route.capability_profile_id",
+            &self.capability_profile_id,
+        )?;
+        require_non_empty(
+            "resolved_model_route.fallback_policy_id",
+            &self.fallback_policy_id,
+        )?;
+        if let Some(parent_attempt_id) = &self.parent_attempt_id {
+            require_non_empty("resolved_model_route.parent_attempt_id", parent_attempt_id)?;
+        }
+        if let Some(route_id) = &self.parent_requested_route_id {
+            require_non_empty("resolved_model_route.parent_requested_route_id", route_id)?;
+        }
+        if let Some(route_id) = &self.parent_effective_route_id {
+            require_non_empty("resolved_model_route.parent_effective_route_id", route_id)?;
+        }
+        for route_id in &self.fallback_chain {
+            require_non_empty("resolved_model_route.fallback_chain", route_id)?;
+        }
+        for route_id in &self.candidate_route_ids {
+            require_non_empty("resolved_model_route.candidate_route_ids", route_id)?;
         }
         Ok(())
     }
@@ -906,6 +1191,7 @@ mod tests {
             scope: WorkScope {
                 canonical_paths: set(&["D:/repo/src/auth"]),
                 protected_paths: set(&["D:/repo/src/auth/generated"]),
+                advisory_globs: set(&["codex-rs/cccx-protocol/src/**/*.rs"]),
             },
             allowed_tools: set(&["apply_patch"]),
             forbidden_tools: set(&["shell"]),
@@ -926,27 +1212,52 @@ mod tests {
                 id: "no-out-of-scope-edits".to_string(),
                 kind: ConstraintKind::PathAllow,
                 description: "Only edit paths in scope".to_string(),
+                value: json!(["D:/repo/src/auth"]),
             }],
+            advisory_constraints: vec!["preserve retry behavior".to_string()],
             risk_threshold: None,
             action_classes: None,
             approval_policy: None,
             verification_spec: Some(VerificationSpec {
-                command: Some(CommandSpec {
-                    argv: vec!["cargo".to_string(), "test".to_string()],
-                    cwd: "D:/repo".to_string(),
-                    timeout_ms: Some(60_000),
-                }),
+                command: None,
                 protected_digests: BTreeMap::from([(
                     "D:/repo/src/auth/generated".to_string(),
                     "sha256:protected".to_string(),
                 )]),
+                commands: vec![CommandSpec {
+                    argv: vec![
+                        "cargo".to_string(),
+                        "test".to_string(),
+                        "-p".to_string(),
+                        "cccx-protocol".to_string(),
+                    ],
+                    cwd: "D:/repo".to_string(),
+                    timeout_ms: Some(120_000),
+                }],
+                protected_paths: set(&["D:/repo/src/auth/generated"]),
                 verification_policy_id: Some("focused-tests".to_string()),
             }),
             audit_depth: None,
             expected_artifact: Some(ExpectedArtifact {
                 required_status: ArtifactStatus::Success,
                 required_evidence_kinds: vec![EvidenceKind::TestLog],
+                required_fields: vec!["verification".to_string(), "provenance".to_string()],
+                verification_policy_id: Some("focused-tests".to_string()),
             }),
+            resolved_model_route: Some(ResolvedModelRoute {
+                selection_source: RouteSelectionSource::UserOverride,
+                requested_route_id: "9router/anthropic/claude-sonnet-4.5".to_string(),
+                model_profile_id: "profile-claude-sonnet".to_string(),
+                capability_profile_id: "coding-tools-v1".to_string(),
+                fallback_policy_id: "compatible".to_string(),
+                parent_attempt_id: Some("main-attempt-1".to_string()),
+                parent_requested_route_id: Some("9router/openai/gpt-5.6".to_string()),
+                parent_effective_route_id: Some("9router/openai/gpt-5.6".to_string()),
+                fallback_chain: Vec::new(),
+                candidate_route_ids: vec!["9router/anthropic/claude-sonnet-4.5".to_string()],
+            }),
+            checkpoint_id: Some("checkpoint-auth-1".to_string()),
+            base_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
         }
     }
 
@@ -973,6 +1284,12 @@ mod tests {
                 summary: "auth_session_tests passed".to_string(),
                 digest: "sha256:test-log".to_string(),
             }],
+            findings: vec![AuditFinding {
+                location: "D:/repo/src/auth/session.rs:42".to_string(),
+                severity: AuditFindingSeverity::Info,
+                detail: "focused verification covered changed path".to_string(),
+            }],
+            raw_log_excerpt: Some("test auth_session_tests ... ok".to_string()),
             provenance: Some(ArtifactProvenance {
                 producer_harness: HarnessKind::Cx,
                 producer_role: WorkRole::Implementer,
@@ -996,6 +1313,8 @@ mod tests {
                 schema_version: CCCX_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
                 task_id: "T1".to_string(),
                 attempt_id: "attempt-1".to_string(),
+                work_spec_id: Some("ws-auth-1".to_string()),
+                artifact_id: Some("art-auth-1".to_string()),
                 verifier: "cccx:self".to_string(),
                 policy_id: "focused-tests".to_string(),
                 command: Some(CommandExecution {
@@ -1061,6 +1380,7 @@ mod tests {
                 "objective": "Implement bounded auth fix",
                 "scope": {
                     "canonical_paths": ["D:/repo/src/auth"],
+                    "advisory_globs": ["codex-rs/cccx-protocol/src/**/*.rs"],
                     "protected_paths": ["D:/repo/src/auth/generated"]
                 },
                 "allowed_tools": ["apply_patch"],
@@ -1081,14 +1401,28 @@ mod tests {
                 "typed_constraints": [{
                     "id": "no-out-of-scope-edits",
                     "kind": "path_allow",
-                    "description": "Only edit paths in scope"
+                    "description": "Only edit paths in scope",
+                    "value": ["D:/repo/src/auth"]
                 }],
+                "advisory_constraints": ["preserve retry behavior"],
+                "resolved_model_route": {
+                    "selection_source": "user_override",
+                    "requested_route_id": "9router/anthropic/claude-sonnet-4.5",
+                    "model_profile_id": "profile-claude-sonnet",
+                    "capability_profile_id": "coding-tools-v1",
+                    "fallback_policy_id": "compatible",
+                    "parent_attempt_id": "main-attempt-1",
+                    "parent_requested_route_id": "9router/openai/gpt-5.6",
+                    "parent_effective_route_id": "9router/openai/gpt-5.6",
+                    "candidate_route_ids": ["9router/anthropic/claude-sonnet-4.5"]
+                },
                 "verification_spec": {
-                    "command": {
-                    "argv": ["cargo", "test"],
-                    "cwd": "D:/repo",
-                    "timeout_ms": 60000
-                    },
+                    "commands": [{
+                        "argv": ["cargo", "test", "-p", "cccx-protocol"],
+                        "cwd": "D:/repo",
+                        "timeout_ms": 120000
+                    }],
+                    "protected_paths": ["D:/repo/src/auth/generated"],
                     "protected_digests": {
                         "D:/repo/src/auth/generated": "sha256:protected"
                     },
@@ -1096,14 +1430,164 @@ mod tests {
                 },
                 "expected_artifact": {
                     "required_status": "success",
-                    "required_evidence_kinds": ["test_log"]
-                }
+                    "required_evidence_kinds": ["test_log"],
+                    "required_fields": ["verification", "provenance"],
+                    "verification_policy_id": "focused-tests"
+                },
+                "checkpoint_id": "checkpoint-auth-1",
+                "base_commit": "0123456789abcdef0123456789abcdef01234567"
             })
         );
 
         let decoded: WorkSpec = serde_json::from_value(value).expect("deserialize workspec");
         assert_eq!(decoded, work_spec);
         decoded.validate().expect("valid workspec");
+    }
+
+    #[test]
+    fn phase4_legacy_single_command_json_deserializes_with_new_defaults() {
+        let value = json!({
+            "schema_version": "cccx.work_spec.v1",
+            "work_spec_id": "ws-legacy",
+            "task_id": "T1",
+            "attempt_id": "attempt-legacy",
+            "created_at": "2026-07-16T00:00:00Z",
+            "base_revision": {},
+            "harness": "cx",
+            "role": "implementer",
+            "objective": "Run legacy verification",
+            "scope": {
+                "canonical_paths": ["D:/repo/src/auth"]
+            },
+            "allowed_tools": ["apply_patch"],
+            "forbidden_tools": [],
+            "allowed_mcp_tools": [],
+            "permission_policy": "ask",
+            "model_route": {
+                "type": "inherit_main_requested"
+            },
+            "fallback_policy_id": "compatible",
+            "fork_policy": "work_spec_only",
+            "verification_spec": {
+                "command": {
+                    "argv": ["cargo", "test"],
+                    "cwd": "D:/repo"
+                }
+            }
+        });
+
+        let decoded: WorkSpec = serde_json::from_value(value).expect("legacy shape");
+        decoded.validate().expect("legacy command remains valid");
+        assert!(decoded.scope.advisory_globs.is_empty());
+        assert!(decoded.advisory_constraints.is_empty());
+        assert!(decoded.resolved_model_route.is_none());
+        assert!(decoded.checkpoint_id.is_none());
+        assert!(decoded.base_commit.is_none());
+    }
+
+    #[test]
+    fn phase4_workspec_rejects_route_fallback_conflict() {
+        let mut spec = sample_work_spec();
+        spec.resolved_model_route
+            .as_mut()
+            .unwrap()
+            .fallback_policy_id = "strict".to_string();
+
+        assert_eq!(
+            spec.validate(),
+            Err(ProtocolError::ConflictingField(
+                "resolved_model_route.fallback_policy_id"
+            ))
+        );
+
+        let mut spec = sample_work_spec();
+        spec.resolved_model_route
+            .as_mut()
+            .unwrap()
+            .requested_route_id = "route/other".to_string();
+        assert_eq!(
+            spec.validate(),
+            Err(ProtocolError::ConflictingField(
+                "resolved_model_route.requested_route_id"
+            ))
+        );
+    }
+
+    #[test]
+    fn phase4_workspec_rejects_invalid_constraint_value() {
+        let mut spec = sample_work_spec();
+        spec.typed_constraints = vec![WorkConstraint {
+            id: "max-files".to_string(),
+            kind: ConstraintKind::MaxFilesChanged,
+            description: "cap changed files".to_string(),
+            value: json!("five"),
+        }];
+
+        assert_eq!(
+            spec.validate(),
+            Err(ProtocolError::InvalidField("typed_constraints.value"))
+        );
+    }
+
+    #[test]
+    fn phase4_verification_spec_rejects_command_conflicts_and_invalid_commands() {
+        let mut spec = sample_work_spec();
+        let verification = spec.verification_spec.as_mut().unwrap();
+        verification.command = Some(CommandSpec {
+            argv: vec!["cargo".to_string(), "test".to_string()],
+            cwd: "D:/repo".to_string(),
+            timeout_ms: None,
+        });
+
+        assert_eq!(
+            spec.validate(),
+            Err(ProtocolError::ConflictingField("verification_spec.command"))
+        );
+
+        let mut spec = sample_work_spec();
+        let verification = spec.verification_spec.as_mut().unwrap();
+        verification.commands[0].argv[0].clear();
+
+        assert_eq!(
+            spec.validate(),
+            Err(ProtocolError::MissingField(
+                "verification_spec.command.argv"
+            ))
+        );
+
+        let mut spec = sample_work_spec();
+        let verification = spec.verification_spec.as_mut().unwrap();
+        verification.commands[0].timeout_ms = Some(0);
+
+        assert_eq!(
+            spec.validate(),
+            Err(ProtocolError::InvalidField("verification_spec.commands"))
+        );
+    }
+
+    #[test]
+    fn phase4_verification_spec_rejects_invalid_digest_and_base_commit() {
+        let mut spec = sample_work_spec();
+        spec.verification_spec
+            .as_mut()
+            .unwrap()
+            .protected_digests
+            .insert("D:/repo/golden.json".to_string(), "md5:bad".to_string());
+
+        assert_eq!(
+            spec.validate(),
+            Err(ProtocolError::InvalidField(
+                "verification_spec.protected_digests.digest"
+            ))
+        );
+
+        let mut spec = sample_work_spec();
+        spec.base_commit = Some("not-a-commit".to_string());
+
+        assert_eq!(
+            spec.validate(),
+            Err(ProtocolError::InvalidField("base_commit"))
+        );
     }
 
     #[test]

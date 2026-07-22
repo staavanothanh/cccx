@@ -14,11 +14,13 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
-use chrono::Utc;
 use cccx_mode::CccxModeState;
 use cccx_task_graph::ActiveAttemptMetadata;
 use cccx_task_graph::TaskGraph;
+use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -27,6 +29,8 @@ use tokio::fs;
 const CCCX_STATE_DIR: &str = ".cccx/state";
 const TASK_GRAPH_FILE: &str = "task-graph.json";
 const STATE_WRITER_LOCK_FILE: &str = ".writer.lock";
+const STATE_WRITER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const STATE_WRITER_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 static STATE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PROJECT_WRITERS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
@@ -89,7 +93,7 @@ pub async fn save_task_graph(
 ) -> Result<(), TaskGraphStateError> {
     let writer = project_writer(project_root);
     let _process_lease = writer.lock().await;
-    let _state_lease = StateWriterLease::acquire(project_root).await?;
+    let _state_lease = acquire_state_writer_lease(project_root).await?;
     write_task_graph(project_root, task_graph).await
 }
 
@@ -131,7 +135,7 @@ where
 {
     let writer = project_writer(project_root);
     let _process_lease = writer.lock().await;
-    let _state_lease = StateWriterLease::acquire(project_root).await?;
+    let _state_lease = acquire_state_writer_lease(project_root).await?;
     let mut graph = load_task_graph(project_root).await?.unwrap_or(initial);
     let result = mutate(&mut graph)?;
     write_task_graph(project_root, &graph).await?;
@@ -181,6 +185,40 @@ fn state_dir_path(project_root: &Path) -> PathBuf {
 
 fn state_writer_lock_path(project_root: &Path) -> PathBuf {
     state_dir_path(project_root).join(STATE_WRITER_LOCK_FILE)
+}
+
+async fn acquire_state_writer_lease(
+    project_root: &Path,
+) -> Result<StateWriterLease, TaskGraphStateError> {
+    let started = Instant::now();
+    loop {
+        match StateWriterLease::acquire(project_root).await {
+            Ok(lease) => return Ok(lease),
+            Err(TaskGraphStateError::WriterLeaseContended { .. })
+                if started.elapsed() < STATE_WRITER_WAIT_TIMEOUT =>
+            {
+                tokio::time::sleep(STATE_WRITER_RETRY_INTERVAL).await;
+            }
+            Err(TaskGraphStateError::Read { source, .. })
+                if source.kind() == ErrorKind::NotFound
+                    && started.elapsed() < STATE_WRITER_WAIT_TIMEOUT =>
+            {
+                // The previous holder can release the lock between our
+                // create-new failure and lease-record read. Retry creation.
+                tokio::time::sleep(STATE_WRITER_RETRY_INTERVAL).await;
+            }
+            Err(TaskGraphStateError::Write { source, .. })
+                if source.kind() == ErrorKind::NotFound
+                    && started.elapsed() < STATE_WRITER_WAIT_TIMEOUT =>
+            {
+                // A stale holder can disappear between liveness inspection
+                // and cleanup. Retry rather than treating that race as I/O
+                // corruption.
+                tokio::time::sleep(STATE_WRITER_RETRY_INTERVAL).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,8 +365,7 @@ fn platform_process_is_live(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) does not send a signal; it only asks the OS whether
     // a process with this pid is visible to the current process.
     let result = unsafe { libc::kill(pid, 0) };
-    result == 0
-        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -422,7 +459,7 @@ pub async fn save_mode_state(
     // interleave with a lifecycle transaction for the same project.
     let writer = project_writer(project_root);
     let _process_lease = writer.lock().await;
-    let _state_lease = StateWriterLease::acquire(project_root).await?;
+    let _state_lease = acquire_state_writer_lease(project_root).await?;
     let path = mode_state_path(project_root);
     let Some(parent) = path.parent() else {
         return Err(TaskGraphStateError::Write {
@@ -456,6 +493,8 @@ mod tests {
     fn verification_spec() -> VerificationSpec {
         VerificationSpec {
             command: None,
+            commands: Vec::new(),
+            protected_paths: std::collections::BTreeSet::new(),
             protected_digests: BTreeMap::new(),
             verification_policy_id: Some("focused-tests".to_string()),
             spec_digest: "sha256:spec".to_string(),
@@ -624,6 +663,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_process_transactions_retain_both_updates() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let go_path = temp_dir.path().join("children-go");
+        let first_ready = temp_dir.path().join("first-ready");
+        let second_ready = temp_dir.path().join("second-ready");
+        let executable = std::env::current_exe().expect("current test executable");
+        let mut first = std::process::Command::new(&executable)
+            .arg("state_writer_transaction_child_process_entrypoint")
+            .env("CCCX_STATE_TX_ROOT", temp_dir.path())
+            .env("CCCX_STATE_TX_READY", &first_ready)
+            .env("CCCX_STATE_TX_GO", &go_path)
+            .env("CCCX_STATE_TX_TASK", "T1")
+            .spawn()
+            .expect("spawn first transaction child");
+        let mut second = std::process::Command::new(&executable)
+            .arg("state_writer_transaction_child_process_entrypoint")
+            .env("CCCX_STATE_TX_ROOT", temp_dir.path())
+            .env("CCCX_STATE_TX_READY", &second_ready)
+            .env("CCCX_STATE_TX_GO", &go_path)
+            .env("CCCX_STATE_TX_TASK", "T2")
+            .spawn()
+            .expect("spawn second transaction child");
+
+        wait_for_path(&first_ready);
+        wait_for_path(&second_ready);
+        std::fs::write(&go_path, b"go").expect("release transaction children");
+        let first_status = first.wait().expect("wait first transaction child");
+        let second_status = second.wait().expect("wait second transaction child");
+        assert!(first_status.success(), "first child failed: {first_status}");
+        assert!(
+            second_status.success(),
+            "second child failed: {second_status}"
+        );
+
+        let graph = load_task_graph(temp_dir.path())
+            .await
+            .expect("load merged graph")
+            .expect("graph exists");
+        assert_eq!(
+            graph.tasks.keys().cloned().collect::<Vec<_>>(),
+            vec!["T1".to_string(), "T2".to_string()]
+        );
+        assert!(
+            !state_writer_lock_path(temp_dir.path()).exists(),
+            "the process-safe writer lease must be released after both transactions"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_writer_transaction_child_process_entrypoint() {
+        let Some(root) = std::env::var_os("CCCX_STATE_TX_ROOT") else {
+            return;
+        };
+        let ready_path =
+            PathBuf::from(std::env::var_os("CCCX_STATE_TX_READY").expect("ready path"));
+        let go_path = PathBuf::from(std::env::var_os("CCCX_STATE_TX_GO").expect("go path"));
+        let task_id = std::env::var("CCCX_STATE_TX_TASK").expect("task id");
+        std::fs::write(&ready_path, b"ready").expect("signal transaction ready");
+        wait_for_path(&go_path);
+
+        let initial = TaskGraph::new("graph-1", "interprocess transactions");
+        update_task_graph(Path::new(&root), initial, |graph| {
+            graph
+                .add_task(TaskNode::new(
+                    task_id.clone(),
+                    format!("task {task_id}"),
+                    verification_spec(),
+                ))
+                .map_err(|error| TaskGraphStateError::Mutation(error.to_string()))
+        })
+        .await
+        .expect("transaction child update");
+    }
+
+    #[tokio::test]
     async fn state_writer_lease_child_process_entrypoint() {
         let Some(root) = std::env::var_os("CCCX_STATE_LEASE_CHILD_ROOT") else {
             return;
@@ -693,6 +807,7 @@ mod tests {
                     work_spec_id: "ws-1".to_string(),
                     worker: cccx_task_graph::WorkerRecord {
                         logical_session_id: "logical-1".to_string(),
+                        worker_incarnation_id: "inc-1".to_string(),
                         display_name: "worker-1".to_string(),
                         role: "Implementer".to_string(),
                         status: cccx_task_graph::WorkerStatus::Running,

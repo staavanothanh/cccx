@@ -40,6 +40,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event_with_timeout;
 use serde_json::json;
+use serial_test::serial;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -68,6 +69,7 @@ fn worker_spec(project_root: &Path, index: usize) -> WorkSpec {
         scope: WorkScope {
             canonical_paths: BTreeSet::from([project_root.to_string_lossy().to_string()]),
             protected_paths: BTreeSet::new(),
+            advisory_globs: BTreeSet::new(),
         },
         allowed_tools: BTreeSet::from(["request_permissions".to_string()]),
         forbidden_tools: BTreeSet::from(["multi_agent_v1__spawn_agent".to_string()]),
@@ -75,10 +77,12 @@ fn worker_spec(project_root: &Path, index: usize) -> WorkSpec {
         tool_grants: Vec::new(),
         permission_policy: PermissionPolicy::Ask,
         model_route: ModelRouteSelection::InheritMainRequested,
+        resolved_model_route: None,
         fallback_policy_id: "strict".to_string(),
         fork_policy: ForkPolicy::WorkSpecOnly,
         enforced_constraints: vec!["permission-queue-runtime-test".to_string()],
         typed_constraints: Vec::new(),
+        advisory_constraints: Vec::new(),
         risk_threshold: None,
         action_classes: None,
         approval_policy: None,
@@ -87,7 +91,11 @@ fn worker_spec(project_root: &Path, index: usize) -> WorkSpec {
         expected_artifact: Some(ExpectedArtifact {
             required_status: ArtifactStatus::Success,
             required_evidence_kinds: vec![EvidenceKind::RuntimeLog],
+            required_fields: Vec::new(),
+            verification_policy_id: None,
         }),
+        checkpoint_id: None,
+        base_commit: None,
     }
 }
 
@@ -287,6 +295,7 @@ async fn wait_for_pending(test: &TestCodex, count: usize) -> Result<Vec<Permissi
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial(cccx_runtime)]
 async fn two_workers_share_one_active_permission_prompt_and_exact_request_ids() -> Result<()> {
     let server = start_mock_server().await;
     let test = build_fixture(&server).await?;
