@@ -35,8 +35,18 @@ cargo +1.95.0 llvm-cov `
   -p cccx-protocol -p cccx-harness-cc -p cccx-harness-cx `
   -p cccx-mode -p cccx-policy -p cccx-provider-gateway `
   -p cccx-task-graph -p cccx-ux -p cccx-headless `
+  --lcov --output-path D:\cargo-targets\cccx-coverage.lcov `
+  --fail-under-lines 80
+
+cargo +1.95.0 llvm-cov report `
+  -p cccx-protocol -p cccx-harness-cc -p cccx-harness-cx `
+  -p cccx-mode -p cccx-policy -p cccx-provider-gateway `
+  -p cccx-task-graph -p cccx-ux -p cccx-headless `
   --summary-only --fail-under-lines 80
 ```
+
+The LCOV artifact is intentionally written outside the repository. Record its
+SHA-256 digest in `docs/progress.md` for each final release-gate run.
 
 ## Generated-source allowlist
 

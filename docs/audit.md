@@ -64,8 +64,8 @@ deliberate fail-closed `PASS (disabled)`: Bypass cannot activate without a
 trusted OS-isolation attestation backend, and the circuit breaker remains
 invariant.
 
-Fresh release evidence includes 88.19% aggregate line coverage for the nine
-cccx-owned crates; 28 cross-crate core E2E tests; 187 focused core runtime
+Fresh release evidence includes 88.15% aggregate line coverage for the nine
+cccx-owned crates; 29 cross-crate core E2E tests; 187 focused core runtime
 tests; plugin, TUI, secure-input, stream-error and headless/exec lanes; a final
 binary build/smoke; and a deterministic tracked-artifact/generated-source
 hygiene gate. Exact commands and counts are recorded at the end of

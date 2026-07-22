@@ -105,8 +105,7 @@ async fn cccx_new_session_uses_effective_configured_startup_mode() -> Result<()>
 
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
-    let submission_id = test
-        .codex
+    test.codex
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "configured mode should govern the first turn".to_string(),
@@ -126,7 +125,7 @@ async fn cccx_new_session_uses_effective_configured_startup_mode() -> Result<()>
         })
         .await?;
 
-    let event = wait_for_submission_event(&test, &submission_id, |event| {
+    let event = wait_for_turn_event(&test, |event| {
         matches!(event, EventMsg::ExecApprovalRequest(_))
     })
     .await;
@@ -148,9 +147,8 @@ async fn cccx_new_session_uses_effective_configured_startup_mode() -> Result<()>
     Ok(())
 }
 
-async fn wait_for_submission_event(
+async fn wait_for_turn_event(
     test: &core_test_support::test_codex::TestCodex,
-    submission_id: &str,
     mut predicate: impl FnMut(&EventMsg) -> bool,
 ) -> EventMsg {
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -160,7 +158,11 @@ async fn wait_for_submission_event(
                 .next_event()
                 .await
                 .expect("event stream ended unexpectedly");
-            if event.id == submission_id && predicate(&event.msg) {
+            // Event ids identify protocol cells and are not guaranteed to equal
+            // the Op submission id for approval/terminal events. The test
+            // harness drains one turn at a time, so the semantic predicate is
+            // the stable correlation boundary here.
+            if predicate(&event.msg) {
                 return event.msg;
             }
         }
@@ -283,8 +285,7 @@ async fn cccx_plan_and_dontask_modes_hard_deny_shell_without_native_prompt() -> 
         .await?;
         let (sandbox_policy, permission_profile) =
             turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
-        let submission_id = test
-            .codex
+        test.codex
             .submit(Op::UserInput {
                 items: vec![UserInput::Text {
                     text: prompt.to_string(),
@@ -306,7 +307,7 @@ async fn cccx_plan_and_dontask_modes_hard_deny_shell_without_native_prompt() -> 
 
         let mut saw_approval = false;
         let mut denial_output = None;
-        wait_for_submission_event(&test, &submission_id, |event| {
+        wait_for_turn_event(&test, |event| {
             saw_approval |= matches!(event, EventMsg::ExecApprovalRequest(_));
             if let EventMsg::ExecCommandEnd(end) = event {
                 denial_output = Some(end.aggregated_output.to_lowercase());

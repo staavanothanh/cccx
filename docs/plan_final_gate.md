@@ -26,12 +26,15 @@ binary startup
 
 Gate 5 yêu cầu Bypass chỉ hoạt động khi có sandbox attestation thật và circuit breaker luôn còn hiệu lực. Hiện app-server đã fail-closed đúng, nhưng chưa có backend chứng minh OS isolation thật.
 
-Để Gate 5 PASS theo báo cáo hiện tại, cần cả hai:
+Nếu Bypass được bật, Gate 5 chỉ PASS khi có cả hai bằng chứng:
 
 - Negative: không có attestation → Bypass bị từ chối.
 - Positive: môi trường thực sự isolated → backend phát hành attestation typed và Bypass hoạt động, circuit breaker vẫn chặn.
 
-Mock, env var hoặc confirmation dialog không đủ. Nếu Windows/app-server không cung cấp primitive phù hợp, phải dừng hỏi owner hoặc sửa acceptance; không được hạ chuẩn.
+Mock, env var hoặc confirmation dialog không đủ. Owner đã chọn phương án
+fail-closed cho bản Windows cá nhân ngày 2026-07-21: Bypass không được bật khi
+chưa có backend attestation đáng tin, vì vậy Gate 5 hiện là `PASS (disabled)`.
+Muốn re-enable Bypass phải bổ sung positive proof ở trên; không được hạ chuẩn.
 
 ### High — Ma trận progress chưa đồng bộ với các remediation bên dưới
 
@@ -108,7 +111,9 @@ Cover Gate **5, 6, 15**.
 - Approve/deny/inspect/batch dùng exact `requestId`.
 - Digest mismatch, stale request và cancelled worker đều không thể được approve.
 
-Exit: multi-worker session-to-TUI proof xanh; Gate 5 chỉ PASS khi có positive attestation proof.
+Exit: multi-worker session-to-TUI proof xanh; Gate 5 chỉ PASS theo một trong
+hai nhánh không nhập nhằng: Bypass bị vô hiệu hóa fail-closed, hoặc Bypass được
+bật với positive attestation proof thật và circuit breaker vẫn hiệu lực.
 
 ### Phase 3 — Child capability boundary
 

@@ -4111,9 +4111,12 @@ cargo +1.95.0 llvm-cov `
   --summary-only --fail-under-lines 80
 ```
 
-- Result: **88.19% line coverage** (4,211/4,775), 88.12% region coverage and
+- Result: **88.15% line coverage** (4,211/4,777), 88.12% region coverage and
   84.79% function coverage. The 80% command gate passed. The dedicated target
   was then removed with `cargo clean`, reclaiming 3.1 GiB.
+- Machine-readable evidence: `D:\cargo-targets\cccx-coverage.lcov` (133,116
+  bytes), SHA-256
+  `C24529CDC6CB09224B77EBC034CBA4FEEFDF2D5B49DD1EA127CB18E4161D4E9F`.
 - The first combined core E2E run exposed stale local mock fixtures that used
   a bare server URL. Production correctly rejected them before transport under
   the parsed 9router-only boundary. Authority, identity, mode and permission
@@ -4124,7 +4127,7 @@ Golden runtime regression results on shared `D:\cargo-targets\cccx`:
 
 ```powershell
 cargo +1.95.0 test -p codex-core --test all "suite::cccx_" -j 1 -- --test-threads=1
-# 28 passed; 0 failed
+# 29 passed; 0 failed
 
 cargo +1.95.0 test -p codex-core cccx --lib -j 1 -- --test-threads=1
 # 187 passed; 0 failed
@@ -4157,7 +4160,7 @@ secure input and factual provenance.
   test CA PEMs have one exact fixture-only exception.
 - The generated-source allowlist is exactly four roots: app-server JSON and
   TypeScript schemas, hooks schemas, and the generated Python SDK package.
-- Final hygiene result: 5,589 tracked files, 0 forbidden tracked artifacts,
+- Final hygiene result: 5,593 tracked files, 0 forbidden tracked artifacts,
   4/4 generated roots allowlisted. `git diff --check` passes.
 - `cargo fmt --all --check` is not a usable whole-fork gate yet: rustfmt 1.95
   reports pre-existing formatting drift across unrelated upstream files and
@@ -4177,3 +4180,52 @@ cargo +1.95.0 build -p cccx-cli --bin cccx -j 1
 Final status: **25/25 PASS, 0 OPEN/PARTIAL**. Gate 5 remains intentionally
 `PASS (disabled)` by owner decision until a trustworthy Windows sandbox
 attestation backend exists.
+
+## 2026-07-22 — Final completion evidence audit
+
+The Phase 8 evidence was independently re-read against the final-gate plan.
+Five proof gaps were found and closed without weakening production policy:
+
+- Gate 5 wording now matches the owner decision: the current Windows build is
+  fail-closed `PASS (disabled)`; positive attestation remains mandatory before
+  Bypass can ever be re-enabled.
+- The top-level CLI startup E2E now proves the complete startup bundle through
+  the real binary: opaque 9router model routing, Main CC/CC identity, Project
+  Memory injection, both default MCP registry entries and degraded MCP health.
+- Plugin trust/isolation now has one integrated core regression proving native
+  plugin admission, invalid-sidecar fail-closed behavior, immutable admitted
+  sidecar snapshots, stable-ID compatibility and WorkSpec-granted CX projection
+  without CC-only leakage.
+- The authority fixture now makes Main CC wait for its spawned worker before
+  terminal prose, removing the prior timing-dependent drain race.
+- A review rerun exposed a timing-sensitive mode test helper that incorrectly
+  required approval/terminal event IDs to equal the Op submission ID. Those
+  protocol cell IDs are not the same correlation key; the helper now drains the
+  isolated turn by semantic event predicate. The focused mode lane is 4/4 and
+  the subsequent combined cccx lane is 29/29.
+- Repository hygiene now has eight executable cases: one positive allowlist
+  case and seven negative cases covering target/local state/logs/tmp, `.env`,
+  non-exempt PEM, key files and unexpected generated roots.
+
+Final rerun results on the shared target:
+
+```powershell
+cargo +1.95.0 test -p codex-core --test all "suite::cccx_" -j 1 -- --test-threads=1
+# 29 passed; 0 failed; 744 filtered out
+
+cargo +1.95.0 test -p cccx-cli --test cccx_startup -j 1
+# 1 passed; 0 failed
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\verify-cccx-repository-hygiene.tests.ps1
+# 8 passed; 0 failed
+
+pwsh -NoProfile -File scripts\verify-cccx-repository-hygiene.ps1
+# PASS; tracked_files=5593; forbidden_tracked=0; generated roots=4/4
+```
+
+Scoped rustfmt and both staged/unstaged `git diff --check` also pass. The
+machine-readable LCOV artifact remains at
+`D:\cargo-targets\cccx-coverage.lcov` with SHA-256
+`C24529CDC6CB09224B77EBC034CBA4FEEFDF2D5B49DD1EA127CB18E4161D4E9F`.
+This completion audit therefore preserves the final result: **25/25 PASS, 0
+OPEN/PARTIAL**, with Bypass deliberately disabled.

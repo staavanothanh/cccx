@@ -32,6 +32,7 @@ use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
+use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
@@ -45,14 +46,59 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
+use wiremock::Mock;
+use wiremock::Respond;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path_regex;
 
 const PARENT_AUTHORITY_PROMPT: &str = "phase1 authority runtime parent";
 const CHILD_AUTHORITY_PROMPT: &str = "phase1 authority runtime child";
 const SPAWN_CALL_ID: &str = "phase1-authority-spawn";
+const PARENT_WAIT_CALL_ID: &str = "phase1-authority-parent-wait";
 const GRANDCHILD_CALL_ID: &str = "phase1-authority-grandchild";
 const ADR_CALL_ID: &str = "phase1-authority-child-adr";
 const WORK_SPEC_ID: &str = "ws-phase1-authority";
 const TASK_ID: &str = "task-phase1-authority";
+
+fn find_agent_id(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => map.iter().find_map(|(key, value)| {
+            if key == "agent_id" {
+                value.as_str().map(ToOwned::to_owned)
+            } else {
+                find_agent_id(value)
+            }
+        }),
+        serde_json::Value::Array(values) => values.iter().find_map(find_agent_id),
+        _ => None,
+    }
+}
+
+struct ParentWaitForAuthorityWorker;
+
+impl Respond for ParentWaitForAuthorityWorker {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let body: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("parent follow-up request JSON");
+        let agent_id = find_agent_id(&body).expect("spawn output must contain agent_id");
+        let arguments = json!({
+            "targets": [agent_id],
+            "timeout_ms": 10_000,
+        })
+        .to_string();
+        sse_response(sse(vec![
+            ev_response_created("phase1-authority-parent-wait-response"),
+            ev_function_call_with_namespace(
+                PARENT_WAIT_CALL_ID,
+                "multi_agent_v1",
+                "wait_agent",
+                &arguments,
+            ),
+            ev_completed("phase1-authority-parent-wait-response"),
+        ]))
+    }
+}
 
 fn authority_work_spec(project_root: &Path, objective: &str) -> WorkSpec {
     authority_work_spec_with_harness(
@@ -236,7 +282,7 @@ async fn spawn_authority_child_with_work_spec(
     .await;
     mount_sse_once_match(
         server,
-        |request: &wiremock::Request| request_body_contains(request, SPAWN_CALL_ID),
+        |request: &wiremock::Request| request_body_contains(request, PARENT_WAIT_CALL_ID),
         sse(vec![
             ev_response_created("phase1-authority-parent-follow-up"),
             ev_assistant_message("phase1-authority-parent-follow-up-msg", "child started"),
@@ -244,6 +290,13 @@ async fn spawn_authority_child_with_work_spec(
         ]),
     )
     .await;
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .and(|request: &wiremock::Request| request_body_contains(request, SPAWN_CALL_ID))
+        .respond_with(ParentWaitForAuthorityWorker)
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
 
     submit_default_disabled_turn(test, PARENT_AUTHORITY_PROMPT).await?;
     let child_thread_id = tokio::time::timeout(Duration::from_secs(10), created_threads.recv())
