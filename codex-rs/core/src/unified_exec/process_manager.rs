@@ -19,6 +19,8 @@ use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
 use crate::exec_env::create_env;
 use crate::exec_env::inject_permission_profile_env;
 use crate::exec_policy::ExecApprovalRequest;
+use crate::exec_policy::cccx_shell_command_is_known_read_only;
+use crate::exec_policy::cccx_shell_target_paths;
 use crate::exec_policy::cccx_subagent_shell_requirement;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
@@ -1160,6 +1162,22 @@ impl UnifiedExecProcessManager {
         {
             #[allow(deprecated)]
             let cccx_target_cwd = context.turn.cwd.to_path_buf();
+            if !cccx_shell_command_is_known_read_only(&request.command) {
+                let target_paths =
+                    cccx_shell_target_paths(&request.command, cccx_target_cwd.as_path())
+                        .map_err(UnifiedExecError::create_process)?;
+                for target in target_paths {
+                    context
+                        .turn
+                        .verify_cccx_read_observed_fresh(std::path::Path::new(&target))
+                        .await
+                        .map_err(|reason| {
+                            UnifiedExecError::create_process(format!(
+                                "cccx stale-read gate denied shell command: {reason}"
+                            ))
+                        })?;
+                }
+            }
             cccx_subagent_shell_requirement(&work_spec, &request.command, cccx_target_cwd.as_path())
                 .unwrap_or(crate::tools::sandboxing::ExecApprovalRequirement::Skip {
                     bypass_sandbox: false,

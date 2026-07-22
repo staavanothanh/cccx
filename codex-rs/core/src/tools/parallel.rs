@@ -40,7 +40,10 @@ static CCCX_PROJECT_WRITE_LEASES: OnceLock<Mutex<HashMap<PathBuf, Arc<RwLock<()>
 
 enum CccxProjectWriteLeaseGuard {
     Shared(OwnedRwLockReadGuard<()>),
-    Exclusive(OwnedRwLockWriteGuard<()>),
+    Exclusive {
+        _in_process: OwnedRwLockWriteGuard<()>,
+        _cross_process: crate::cccx_write_lease::CrossProcessWriteLease,
+    },
 }
 
 enum CccxProjectWriteLeaseKind {
@@ -150,7 +153,7 @@ impl ToolCallRuntime {
         let mut dispatch_handle: AbortOnDropHandle<Result<AnyToolResult, FunctionCallError>> =
             AbortOnDropHandle::new(tokio::spawn(async move {
                 let _cccx_project_write_lease =
-                    cccx_project_write_lease_for_tool_call(turn.as_ref(), &dispatch_call).await;
+                    cccx_project_write_lease_for_tool_call(turn.as_ref(), &dispatch_call).await?;
                 let _guard = if supports_parallel {
                     Either::Left(lock.read().await)
                 } else {
@@ -284,7 +287,7 @@ impl Drop for CccxProjectWriteLeaseGuard {
     fn drop(&mut self) {
         match self {
             Self::Shared(_guard) => {}
-            Self::Exclusive(_guard) => {}
+            Self::Exclusive { .. } => {}
         }
     }
 }
@@ -292,9 +295,9 @@ impl Drop for CccxProjectWriteLeaseGuard {
 async fn cccx_project_write_lease_for_tool_call(
     turn: &crate::session::turn_context::TurnContext,
     call: &ToolCall,
-) -> Option<CccxProjectWriteLeaseGuard> {
+) -> Result<Option<CccxProjectWriteLeaseGuard>, FunctionCallError> {
     if matches!(turn.cccx_actor_identity(), ActorIdentity::MainCc) {
-        return None;
+        return Ok(None);
     }
 
     let project_key = cccx_project_lease_key(turn);
@@ -311,12 +314,25 @@ async fn cccx_project_write_lease_for_tool_call(
     };
 
     match cccx_project_write_lease_kind(call) {
-        CccxProjectWriteLeaseKind::SharedRead => {
-            Some(CccxProjectWriteLeaseGuard::Shared(lease.read_owned().await))
+        CccxProjectWriteLeaseKind::SharedRead => Ok(Some(CccxProjectWriteLeaseGuard::Shared(
+            lease.read_owned().await,
+        ))),
+        CccxProjectWriteLeaseKind::ExclusiveWrite => {
+            let in_process = lease.write_owned().await;
+            let cross_process = crate::cccx_write_lease::CrossProcessWriteLease::acquire(
+                &cccx_project_lease_key(turn),
+            )
+            .await
+            .map_err(|error| {
+                FunctionCallError::RespondToModel(format!(
+                    "cccx write lease failed closed: {error}"
+                ))
+            })?;
+            Ok(Some(CccxProjectWriteLeaseGuard::Exclusive {
+                _in_process: in_process,
+                _cross_process: cross_process,
+            }))
         }
-        CccxProjectWriteLeaseKind::ExclusiveWrite => Some(CccxProjectWriteLeaseGuard::Exclusive(
-            lease.write_owned().await,
-        )),
     }
 }
 

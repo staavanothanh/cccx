@@ -3699,3 +3699,90 @@ $env:RUST_MIN_STACK = "33554432"
 - Deliberate remaining UX gap: the CCCX status line still summarizes the active
   permission profile (`Workspace`, `Read Only`, etc.), not live `pr-* active + N
   queued` state. This remains part of Gate 22 and is not claimed by Phase 2.
+
+## 2026-07-22 — Final-gate Phase 3 complete
+
+### Gates 8 and 9 PASS: one child projection reaches the live runtime
+
+- The spawn boundary snapshots the MainCc turn's actual tool/MCP/model/sandbox
+  capabilities, canonicalizes physical WorkSpec roots, then applies the strict
+  intersection to child Config before the child starts.
+- A real spawned CX positive case receives only `shell_command`, runs that
+  allowed read tool through the child dispatcher, and retains a WorkspaceWrite
+  sandbox whose effective root equals the projected root.
+- A real spawned CX negative case requests a future tool and a CC-only plugin
+  MCP stable ID while the parent exposes neither. Its projected tool/MCP sets
+  are empty, the OS sandbox is ReadOnly, the model request advertises zero
+  tools, and an injected future tool call is rejected and returned to the
+  child model without reaching an executor.
+- Empty MCP projection is now keyed by typed child identity. An empty child
+  set means no MCP capabilities; MainCc with no child projection remains
+  unrestricted.
+
+### Gate 10 PASS: one physical path and stale-read boundary
+
+- `cccx_paths` is the shared physical resolver for WorkSpec roots, sandbox
+  roots, shell/MCP arguments and apply-patch targets. It canonicalizes the
+  nearest existing ancestor, so a new target below a junction/symlink cannot
+  escape by string-prefix tricks; Windows comparisons are case-insensitive.
+- Shell extraction now covers simple filenames and redirection targets. An
+  unknown write command with no explicit target is scoped to the worker cwd;
+  explicit write targets require a directly observed fresh read.
+- MCP write tools use `readOnlyHint`; write-capable calls without a verifiable
+  target fail closed, nested `filename`/source/destination fields are included,
+  and every extracted write target must still match the direct-read digest.
+- Apply-patch continues to cover updates, deletes, move destinations and every
+  target in a multi-file action through the same physical resolver.
+
+### Gate 17 PASS: project write admission is process-safe
+
+- Child tool dispatch retains the in-process project `RwLock`: known readers
+  take a shared lease, writers and unknown/future tools take an exclusive one.
+- Exclusive child calls additionally acquire an OS-backed filesystem lock keyed
+  by canonical project root. This serializes writers from separate cccx
+  processes and is released by the OS after a crash without widening reader
+  authority or relying on racy stale-PID deletion.
+- A spawned CX read tool traverses the production dispatcher. Deterministic
+  runtime tests prove multiple readers overlap, writers serialize, and unknown
+  tool classes are treated as writers.
+
+### Gate 21 PASS: plugin compatibility uses the validated load snapshot
+
+- CCCX extension sidecars are parsed and validated during the native plugin
+  load, then stored as an immutable runtime snapshot. Spawn projection no
+  longer re-reads a mutable `cccx-plugin.json` from disk.
+- Mutation from `harness=cc` to `harness=cx` after load does not expand the CX
+  catalog. Active/disabled filtering and exact CX-compatible MCP stable-ID
+  projection remain fail-closed.
+- The spawned negative child proves that a requested CC-only plugin stable ID
+  absent from its live compatible parent catalog does not become model-visible.
+
+Validation commands and exact results:
+
+```powershell
+$env:RUST_MIN_STACK = "33554432"
+
+& "D:\cargo-targets\cccx\debug\deps\all-2100892d4fbb243a.exe" cccx_final_gate:: --nocapture
+# 7 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-70c02e5181d9035e.exe" cccx_spawn::phase0_tests:: --nocapture
+# 11 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-70c02e5181d9035e.exe" cccx_child_write_scope --nocapture
+# 5 passed; 0 failed (includes Windows junction escape and move destination)
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-70c02e5181d9035e.exe" cccx_stale_read_gate --nocapture
+# 3 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-70c02e5181d9035e.exe" cccx_project_write_lease --nocapture
+# 4 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core-70c02e5181d9035e.exe" independent_write_leases --nocapture
+# 1 passed; 0 failed
+
+& "D:\cargo-targets\cccx\debug\deps\codex_core_plugins-4650b4cf2229de08.exe" cccx_extension --nocapture
+# 5 passed; 0 failed
+```
+
+- Final Phase 3 status: Gates **8, 9, 10, 17 and 21 PASS**. Phase 4 has not
+  started in this commit.

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use cccx_protocol::ActorIdentity;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ToolInfo;
 use codex_tools::ToolExposure;
@@ -202,6 +203,7 @@ async fn excludes_tools_hidden_from_model_exposure() {
 #[tokio::test]
 async fn cccx_tool_projection_filters_mcp_runtime_tools() {
     let mut config = test_config().await;
+    config.cccx_actor_identity = ActorIdentity::CxSubagent;
     config
         .cccx_child_allowed_mcp_tools
         .insert("mcp:allowed_server.read_graph".to_string());
@@ -234,8 +236,62 @@ async fn cccx_tool_projection_filters_mcp_runtime_tools() {
 }
 
 #[tokio::test]
+async fn cccx_child_empty_mcp_projection_is_fail_closed() {
+    let mut config = test_config().await;
+    config.cccx_actor_identity = ActorIdentity::CxSubagent;
+    config.cccx_child_allowed_mcp_tools.clear();
+    let tool = make_mcp_tool(
+        "server",
+        "read_graph",
+        "mcp__server",
+        "read_graph",
+        /*connector_id*/ None,
+        /*connector_name*/ None,
+    );
+
+    let runtimes = build_mcp_tool_runtimes(
+        &[tool],
+        /*connectors*/ None,
+        &config,
+        /*search_tool_enabled*/ false,
+    );
+
+    assert!(
+        runtimes.is_empty(),
+        "an empty child MCP projection must expose no MCP capabilities"
+    );
+}
+
+#[tokio::test]
+async fn cccx_main_empty_mcp_projection_remains_unrestricted() {
+    let config = test_config().await;
+    assert_eq!(config.cccx_actor_identity, ActorIdentity::MainCc);
+    let tool = make_mcp_tool(
+        "server",
+        "read_graph",
+        "mcp__server",
+        "read_graph",
+        /*connector_id*/ None,
+        /*connector_name*/ None,
+    );
+
+    let runtimes = build_mcp_tool_runtimes(
+        &[tool.clone()],
+        /*connectors*/ None,
+        &config,
+        /*search_tool_enabled*/ false,
+    );
+
+    assert_eq!(
+        runtimes_by_name(&runtimes),
+        expected_runtimes(&[tool], ToolExposure::Direct)
+    );
+}
+
+#[tokio::test]
 async fn cccx_mcp_projection_rejects_server_wide_aliases() {
     let mut config = test_config().await;
+    config.cccx_actor_identity = ActorIdentity::CxSubagent;
     // A server id is not a grant: executor policy only accepts the same
     // canonical `mcp:{server}.{tool}` identity used by the visible catalog.
     config

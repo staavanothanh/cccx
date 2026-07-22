@@ -15,6 +15,8 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::path::PathBuf;
 
+use crate::cccx_paths::path_is_within;
+use crate::cccx_paths::resolve_physical_path;
 use crate::config::Config;
 
 /// Apply cccx harness configuration and deny-by-default projection to a
@@ -27,7 +29,12 @@ pub fn apply_cccx_harness_to_config(
     parent: &ParentCapabilitySet,
     work_spec: &WorkSpec,
 ) -> Result<(), ProtocolError> {
-    let projection = cccx_protocol::project_child_config(work_spec, parent)?;
+    let mut projection = cccx_protocol::project_child_config(work_spec, parent)?;
+    projection.writable_scope = canonical_writable_intersection(
+        &projection.writable_scope,
+        &parent.writable_roots,
+        config.cwd.as_path(),
+    )?;
 
     config.cccx_harness = work_spec.harness;
     config.cccx_actor_identity = match work_spec.harness {
@@ -90,6 +97,27 @@ pub fn apply_cccx_harness_to_config(
     );
 
     Ok(())
+}
+
+fn canonical_writable_intersection(
+    projected: &std::collections::BTreeSet<String>,
+    parent_roots: &std::collections::BTreeSet<String>,
+    cwd: &std::path::Path,
+) -> Result<std::collections::BTreeSet<String>, ProtocolError> {
+    let parent_roots = parent_roots
+        .iter()
+        .map(|root| resolve_physical_path(std::path::Path::new(root), cwd))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ProtocolError::RuntimeProjection)?;
+    let mut result = std::collections::BTreeSet::new();
+    for path in projected {
+        let path = resolve_physical_path(std::path::Path::new(path), cwd)
+            .map_err(ProtocolError::RuntimeProjection)?;
+        if parent_roots.iter().any(|root| path_is_within(&path, root)) {
+            result.insert(path.to_string_lossy().into_owned());
+        }
+    }
+    Ok(result)
 }
 
 fn apply_child_writable_scope_to_sandbox(config: &mut Config) -> Result<(), ProtocolError> {
@@ -370,16 +398,19 @@ mod phase0_tests {
         parent
             .writable_roots
             .insert("reduced-scope-path".to_string());
-        let expected_root = AbsolutePathBuf::resolve_path_against_base(
-            PathBuf::from("reduced-scope-path"),
+        let expected_path = resolve_physical_path(
+            std::path::Path::new("reduced-scope-path"),
             config.cwd.as_path(),
-        );
+        )
+        .expect("projected root should resolve");
+        let expected_root = AbsolutePathBuf::from_absolute_path(expected_path.clone())
+            .expect("projected root should be absolute");
 
         apply_cccx_harness_to_config(&mut config, &parent, &ws).unwrap();
 
         assert_eq!(
             config.cccx_child_writable_scope,
-            BTreeSet::from(["reduced-scope-path".into()]),
+            BTreeSet::from([expected_path.to_string_lossy().into_owned()]),
             "Projected WorkSpec writable scope must reach child Config"
         );
         assert!(
@@ -513,9 +544,12 @@ mod phase0_tests {
             config.cccx_child_allowed_mcp_tools, projection.allowed_mcp_tools,
             "Projected MCP allowlist must be retained on child Config"
         );
-        assert_eq!(
-            config.cccx_child_writable_scope, projection.writable_scope,
-            "Projected writable scope must be retained on child Config"
-        );
+        let expected_writable_scope = canonical_writable_intersection(
+            &projection.writable_scope,
+            &parent.writable_roots,
+            config.cwd.as_path(),
+        )
+        .expect("projection should canonicalize");
+        assert_eq!(config.cccx_child_writable_scope, expected_writable_scope);
     }
 }

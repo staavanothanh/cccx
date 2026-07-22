@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use codex_features::Feature;
@@ -815,6 +816,35 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         "tool_search",
         &ToolName::namespaced("mcp__searchable", "lookup").to_string(),
     ]);
+}
+
+#[tokio::test]
+async fn cccx_child_projection_filters_builtin_dynamic_and_deferred_tools() {
+    let plan = probe_with(
+        |turn| {
+            update_config(turn, |config| {
+                config.cccx_actor_identity = cccx_protocol::ActorIdentity::CxSubagent;
+                config.cccx_child_allowed_tools = BTreeSet::from(["apply_patch".to_string()]);
+            });
+            turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+            turn.model_info.supports_search_tool = true;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(DeferredExtensionTool)],
+            dynamic_tools: vec![dynamic_tool(
+                None,
+                "dynamic_echo",
+                /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&["apply_patch"]);
+    plan.assert_registered_contains(&["apply_patch"]);
+    plan.assert_visible_lacks(&["dynamic_echo", "extension_echo", "tool_search"]);
+    plan.assert_registered_lacks(&["dynamic_echo", "extension_echo", "tool_search"]);
 }
 
 #[tokio::test]

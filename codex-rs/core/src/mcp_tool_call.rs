@@ -280,14 +280,89 @@ pub(crate) async fn handle_mcp_tool_call(
     }
     #[allow(deprecated)]
     let cccx_target_cwd = turn_context.cwd.to_path_buf();
-    let cccx_target_paths = cccx_resolve_target_paths(
+    let cccx_target_paths = match cccx_resolve_target_paths(
         arguments_value
             .as_ref()
             .map(cccx_extract_mcp_target_paths)
             .unwrap_or_default(),
         &cccx_target_cwd,
-    );
-    if codex_features::cccx_mvp::provider_boundary_active() {
+    ) {
+        Ok(paths) => paths,
+        Err(reason) => {
+            let result = notify_mcp_tool_call_skip(
+                sess.as_ref(),
+                turn_context.as_ref(),
+                &call_id,
+                invocation,
+                item_metadata.clone(),
+                format!("cccx target-path gate denied MCP tool call: {reason}"),
+                /*already_started*/ false,
+            )
+            .await;
+            return HandledMcpToolCall {
+                result: CallToolResult::from_result(result),
+                tool_input: arguments_value
+                    .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
+            };
+        }
+    };
+    let cccx_work_spec = sess
+        .services
+        .agent_control
+        .cccx_work_spec_for_thread(sess.thread_id)
+        .await;
+    let cccx_live_tool = if cccx_work_spec.is_some() {
+        manager.tool_info(&server, &tool_name).await
+    } else {
+        None
+    };
+    let child_tool_is_read_only = cccx_live_tool
+        .as_ref()
+        .and_then(|tool| tool.tool.annotations.as_ref())
+        .and_then(|annotations| annotations.read_only_hint)
+        == Some(true);
+    if cccx_work_spec.is_some() && !child_tool_is_read_only && cccx_target_paths.is_empty() {
+        let result = notify_mcp_tool_call_skip(
+            sess.as_ref(),
+            turn_context.as_ref(),
+            &call_id,
+            invocation,
+            item_metadata.clone(),
+            "cccx target-path gate denied MCP write tool call: no verifiable target path"
+                .to_string(),
+            /*already_started*/ false,
+        )
+        .await;
+        return HandledMcpToolCall {
+            result: CallToolResult::from_result(result),
+            tool_input: arguments_value
+                .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
+        };
+    }
+    if cccx_work_spec.is_some() && !child_tool_is_read_only {
+        for path in &cccx_target_paths {
+            if let Err(reason) = turn_context
+                .verify_cccx_read_observed_fresh(std::path::Path::new(path))
+                .await
+            {
+                let result = notify_mcp_tool_call_skip(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    &call_id,
+                    invocation,
+                    item_metadata.clone(),
+                    format!("cccx stale-read gate denied MCP write tool call: {reason}"),
+                    /*already_started*/ false,
+                )
+                .await;
+                return HandledMcpToolCall {
+                    result: CallToolResult::from_result(result),
+                    tool_input: arguments_value
+                        .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
+                };
+            }
+        }
+    } else if codex_features::cccx_mvp::provider_boundary_active() {
         for path in &cccx_target_paths {
             if let Err(reason) = turn_context
                 .verify_cccx_read_fresh(std::path::Path::new(path))
@@ -311,13 +386,8 @@ pub(crate) async fn handle_mcp_tool_call(
             }
         }
     }
-    let cccx_requirement = if let Some(work_spec) = sess
-        .services
-        .agent_control
-        .cccx_work_spec_for_thread(sess.thread_id)
-        .await
-    {
-        let Some(live_tool) = manager.tool_info(&server, &tool_name).await else {
+    let cccx_requirement = if let Some(work_spec) = cccx_work_spec {
+        let Some(live_tool) = cccx_live_tool else {
             return HandledMcpToolCall {
                 result: CallToolResult::from_error_text(format!(
                     "cccx policy denied MCP tool call: live schema for `{server}/{tool_name}` is unavailable"

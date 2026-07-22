@@ -1,4 +1,6 @@
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 
 use cccx_protocol::plugin::CccxPluginManifest;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -6,7 +8,28 @@ use std::collections::BTreeSet;
 
 use crate::PluginLoadOutcome;
 
-const CCCX_PLUGIN_MANIFEST_FILE: &str = "cccx-plugin.json";
+static VALIDATED_EXTENSION_SNAPSHOTS: OnceLock<
+    RwLock<std::collections::HashMap<PathBuf, CccxPluginManifest>>,
+> = OnceLock::new();
+
+fn extension_snapshots() -> &'static RwLock<std::collections::HashMap<PathBuf, CccxPluginManifest>>
+{
+    VALIDATED_EXTENSION_SNAPSHOTS.get_or_init(|| RwLock::new(std::collections::HashMap::new()))
+}
+
+pub(crate) fn replace_validated_extension_snapshot(
+    root: &Path,
+    manifest: Option<CccxPluginManifest>,
+) {
+    let key = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut snapshots = extension_snapshots()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    snapshots.remove(&key);
+    if let Some(manifest) = manifest {
+        snapshots.insert(key, manifest);
+    }
+}
 
 /// CCCX-only metadata attached to a plugin which the native loader has already
 /// admitted. This is intentionally a sidecar: it never materializes skills,
@@ -44,9 +67,7 @@ impl LoadedCccxExtension {
             if !contents.trim().is_empty() {
                 fragments.push(format!(
                     "<cccx_plugin_rule plugin=\"{}\" path=\"{}\">\n{}\n</cccx_plugin_rule>",
-                    self.display_name,
-                    rule,
-                    contents
+                    self.display_name, rule, contents
                 ));
             }
         }
@@ -70,19 +91,21 @@ impl LoadedCccxExtension {
     }
 }
 
-/// Re-read strict CCCX sidecars only for native plugins which are active in
-/// this runtime snapshot. A changed or malformed sidecar is ignored here: the
-/// native loader will report it as an inactive plugin on the next refresh.
+/// Return only sidecars validated in the same native plugin load snapshot.
+/// Runtime projection never re-reads mutable sidecar files from disk.
 pub fn active_cccx_extensions(loaded_plugins: &PluginLoadOutcome) -> Vec<LoadedCccxExtension> {
     loaded_plugins
         .plugins()
         .iter()
         .filter(|plugin| plugin.is_active())
         .filter_map(|plugin| {
-            let path = plugin.root.join(CCCX_PLUGIN_MANIFEST_FILE);
-            let raw = fs::read_to_string(path).ok()?;
-            let manifest = serde_json::from_str::<CccxPluginManifest>(&raw).ok()?;
-            manifest.validate().ok()?;
+            let key = dunce::canonicalize(plugin.root.as_path())
+                .unwrap_or_else(|_| plugin.root.as_path().to_path_buf());
+            let manifest = extension_snapshots()
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&key)
+                .cloned()?;
             Some(LoadedCccxExtension {
                 config_name: plugin.config_name.clone(),
                 display_name: plugin.display_name().to_string(),
@@ -113,9 +136,7 @@ impl CccxExtensionMcpCatalog {
     }
 }
 
-pub fn cccx_extension_mcp_catalog(
-    loaded_plugins: &PluginLoadOutcome,
-) -> CccxExtensionMcpCatalog {
+pub fn cccx_extension_mcp_catalog(loaded_plugins: &PluginLoadOutcome) -> CccxExtensionMcpCatalog {
     let mut catalog = CccxExtensionMcpCatalog::default();
     for extension in active_cccx_extensions(loaded_plugins) {
         for stable_id in extension.manifest.mcp_stable_ids() {
@@ -136,6 +157,8 @@ mod tests {
     use cccx_protocol::plugin::PluginHarness;
     use std::collections::HashMap;
     use std::collections::HashSet;
+
+    const CCCX_PLUGIN_MANIFEST_FILE: &str = "cccx-plugin.json";
 
     fn manifest(harness: PluginHarness, rules: Vec<String>) -> CccxPluginManifest {
         CccxPluginManifest {
@@ -188,8 +211,13 @@ mod tests {
         let manifest = r#"{"cccxSchemaVersion":"1","harness":"cc"}"#;
         fs::write(active_root.path().join(CCCX_PLUGIN_MANIFEST_FILE), manifest)
             .expect("write active sidecar");
-        fs::write(disabled_root.path().join(CCCX_PLUGIN_MANIFEST_FILE), manifest)
-            .expect("write disabled sidecar");
+        fs::write(
+            disabled_root.path().join(CCCX_PLUGIN_MANIFEST_FILE),
+            manifest,
+        )
+        .expect("write disabled sidecar");
+        crate::loader::load_cccx_extension(active_root.path()).expect("load active sidecar");
+        crate::loader::load_cccx_extension(disabled_root.path()).expect("load disabled sidecar");
         let plugin = |name: &str, root: &std::path::Path, enabled: bool| crate::LoadedPlugin {
             config_name: name.to_string(),
             manifest_name: Some(name.to_string()),
@@ -217,6 +245,46 @@ mod tests {
     }
 
     #[test]
+    fn runtime_projection_uses_validated_sidecar_snapshot_after_disk_mutation() {
+        let root = tempfile::tempdir().expect("plugin root");
+        fs::write(
+            root.path().join(CCCX_PLUGIN_MANIFEST_FILE),
+            r#"{"cccxSchemaVersion":"1","harness":"cc","mcpTools":[{"stableId":"mcp:plugin.secret","schemaDigest":"sha256:cc"}]}"#,
+        )
+        .expect("write initial sidecar");
+        crate::loader::load_cccx_extension(root.path()).expect("validate initial sidecar");
+        fs::write(
+            root.path().join(CCCX_PLUGIN_MANIFEST_FILE),
+            r#"{"cccxSchemaVersion":"1","harness":"cx","mcpTools":[{"stableId":"mcp:plugin.secret","schemaDigest":"sha256:cc"}]}"#,
+        )
+        .expect("mutate sidecar");
+        let outcome = PluginLoadOutcome::from_plugins(vec![crate::LoadedPlugin {
+            config_name: "plugin@test".to_string(),
+            manifest_name: Some("plugin".to_string()),
+            plugin_namespace: Some("plugin".to_string()),
+            manifest_description: None,
+            root: AbsolutePathBuf::try_from(root.path()).expect("absolute root"),
+            enabled: true,
+            skill_roots: Vec::new(),
+            disabled_skill_paths: HashSet::new(),
+            has_enabled_skills: false,
+            mcp_servers: HashMap::new(),
+            apps: Vec::new(),
+            hook_sources: Vec::new(),
+            hook_load_warnings: Vec::new(),
+            error: None,
+        }]);
+
+        let catalog = cccx_extension_mcp_catalog(&outcome);
+        assert!(catalog.extension_stable_ids.contains("mcp:plugin.secret"));
+        assert!(
+            !catalog
+                .cx_compatible_stable_ids
+                .contains("mcp:plugin.secret")
+        );
+    }
+
+    #[test]
     fn cx_mcp_catalog_keeps_only_cx_compatible_extension_grants() {
         let cc_root = tempfile::tempdir().expect("cc plugin root");
         let cx_root = tempfile::tempdir().expect("cx plugin root");
@@ -230,6 +298,8 @@ mod tests {
             r#"{"cccxSchemaVersion":"1","harness":"cx","mcpTools":[{"stableId":"mcp:cx.read","schemaDigest":"sha256:cx"}]}"#,
         )
         .expect("write cx sidecar");
+        crate::loader::load_cccx_extension(cc_root.path()).expect("load cc sidecar");
+        crate::loader::load_cccx_extension(cx_root.path()).expect("load cx sidecar");
         let plugin = |name: &str, root: &std::path::Path| crate::LoadedPlugin {
             config_name: name.to_string(),
             manifest_name: Some(name.to_string()),

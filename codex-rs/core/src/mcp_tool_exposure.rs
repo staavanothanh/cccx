@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use cccx_protocol::ActorIdentity;
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_connectors::AppToolPolicyInput;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
@@ -31,7 +32,7 @@ pub(crate) fn build_mcp_tool_runtimes(
             config,
         ));
     }
-    if !config.cccx_child_allowed_mcp_tools.is_empty() {
+    if !matches!(config.cccx_actor_identity, ActorIdentity::MainCc) {
         exposed_tools.retain(|tool| cccx_mcp_tool_allowed(config, tool));
     }
 
@@ -60,10 +61,6 @@ pub(crate) fn build_mcp_tool_runtimes(
 
 fn cccx_mcp_tool_allowed(config: &Config, tool: &McpToolInfo) -> bool {
     let allowed = &config.cccx_child_allowed_mcp_tools;
-    if allowed.is_empty() {
-        return true;
-    }
-
     // A child WorkSpec grants the CCCX stable MCP identity rather than a
     // server-wide or upstream callable alias. The executor derives the same
     // `mcp:{server}.{tool}` value before its permission check.

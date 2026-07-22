@@ -22,9 +22,11 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once_match;
@@ -39,6 +41,7 @@ use std::path::Path;
 use std::time::Duration;
 
 const SPAWN_CALL_ID: &str = "cccx-final-gate-spawn";
+const SPAWN_CHILD_SHELL_CALL_ID: &str = "cccx-final-gate-child-shell";
 const SPAWN_PARENT_PROMPT: &str = "spawn the final-gate CX worker";
 const SPAWN_CHILD_PROMPT: &str = "perform the bounded final-gate child task";
 
@@ -129,6 +132,25 @@ fn request_body_contains(request: &wiremock::Request, needle: &str) -> bool {
     String::from_utf8_lossy(&request.body).contains(needle)
 }
 
+fn request_tool_names(request: &wiremock::Request) -> BTreeSet<String> {
+    serde_json::from_slice::<serde_json::Value>(&request.body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("tools")
+                .and_then(|tools| tools.as_array())
+                .cloned()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tool| {
+            tool.get("name")
+                .and_then(|name| name.as_str())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn root_session_bootstrap_is_typed_main_cc_cc_harness() -> Result<()> {
     let server = start_mock_server().await;
@@ -160,6 +182,14 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
         provider.wire_api = WireApi::Responses;
         provider.supports_websockets = false;
         config.model_provider = provider;
+        config
+            .set_legacy_sandbox_policy(SandboxPolicy::WorkspaceWrite {
+                writable_roots: vec![config.cwd.clone()],
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+            })
+            .expect("parent test sandbox should accept its cwd as writable root");
     });
     let test = builder.build(&server).await?;
 
@@ -191,8 +221,25 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
         },
         sse(vec![
             ev_response_created("cccx-final-gate-child"),
-            ev_assistant_message("cccx-final-gate-child-message", "child completed"),
+            ev_function_call(
+                SPAWN_CHILD_SHELL_CALL_ID,
+                "shell_command",
+                &json!({"command": "Get-ChildItem", "timeout_ms": 5_000}).to_string(),
+            ),
             ev_completed("cccx-final-gate-child"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| request_body_contains(request, SPAWN_CHILD_SHELL_CALL_ID),
+        sse(vec![
+            ev_response_created("cccx-final-gate-child-follow-up"),
+            ev_assistant_message(
+                "cccx-final-gate-child-message",
+                "bounded read tool completed",
+            ),
+            ev_completed("cccx-final-gate-child-follow-up"),
         ]),
     )
     .await;
@@ -236,9 +283,28 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
         Some(PermissionPolicy::Ask),
         "the child Ask policy must be intersected with the live turn ceiling"
     );
+    assert_eq!(child_config.cccx_child_writable_scope.len(), 1);
+    let child_sandbox = child_config.legacy_sandbox_policy();
     assert!(
-        child_config.cccx_child_writable_scope.is_empty(),
-        "the default test turn has no writable parent capability, so the spawned child must stay read-only"
+        matches!(
+            child_sandbox,
+            SandboxPolicy::WorkspaceWrite {
+                network_access: false,
+                ..
+            }
+        ),
+        "spawned child sandbox did not preserve the projected writable root: {child_sandbox:?}"
+    );
+    let projected_root = child_config
+        .cccx_child_writable_scope
+        .iter()
+        .next()
+        .expect("one projected root");
+    let effective_roots = child_config.effective_workspace_roots();
+    assert_eq!(effective_roots.len(), 1);
+    assert_eq!(
+        std::fs::canonicalize(effective_roots[0].as_path())?,
+        Path::new(projected_root)
     );
     let workers = test
         .codex
@@ -271,6 +337,19 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
             .map(|request| String::from_utf8_lossy(&request.body).into_owned())
             .collect::<Vec<_>>()
     );
+    let child_request = requests
+        .iter()
+        .find(|request| {
+            request_body_contains(request, SPAWN_CHILD_PROMPT)
+                && !request_body_contains(request, SPAWN_CALL_ID)
+        })
+        .expect("spawned child must send a model request");
+    let child_tools = request_tool_names(child_request);
+    assert!(child_tools.contains("shell_command"));
+    assert!(!child_tools.contains("apply_patch"));
+    assert!(!child_tools.contains("tool_search"));
+    assert!(!child_tools.iter().any(|tool| tool.starts_with("mcp__")));
+    assert!(!child_tools.iter().any(|tool| tool.contains("spawn_agent")));
     // The spawned task is deliberately unverified, so the StopHook must keep
     // the parent turn open. Interrupt only to tear down this focused Phase 1
     // fixture after the real spawn and child lifecycle have been observed.
@@ -286,6 +365,153 @@ async fn main_cc_tool_spawn_creates_a_typed_cx_runtime_child() -> Result<()> {
         "focused fixture cleanup must abort the still-unverified parent turn"
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawned_cx_empty_intersections_are_read_only_and_fail_closed() -> Result<()> {
+    const PARENT_PROMPT: &str = "spawn the deny-by-default CX worker";
+    const CHILD_PROMPT: &str = "inspect the deny-by-default child boundary";
+    const CALL_ID: &str = "cccx-deny-by-default-spawn";
+    const UNKNOWN_CALL_ID: &str = "cccx-injected-unknown-tool";
+    let server = start_mock_server().await;
+    let mock_base_url = server.uri();
+    let test = test_codex()
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("enable native multi-agent tool");
+            let mut provider = ModelProviderInfo::create_9router_provider();
+            provider.base_url = Some(mock_base_url);
+            provider.env_key = None;
+            provider.experimental_bearer_token = Some("final-gate-test-token".to_string());
+            provider.wire_api = WireApi::Responses;
+            provider.supports_websockets = false;
+            config.model_provider = provider;
+        })
+        .build(&server)
+        .await?;
+    let mut work_spec = runtime_work_spec(test.cwd_path());
+    work_spec.work_spec_id = "ws-final-gate-deny".to_string();
+    work_spec.task_id = "task-final-gate-deny".to_string();
+    work_spec.attempt_id = "attempt-final-gate-deny".to_string();
+    work_spec.allowed_tools = BTreeSet::from(["future_unknown_tool".to_string()]);
+    work_spec.allowed_mcp_tools = BTreeSet::from(["mcp:plugin.cc_only".to_string()]);
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "work_spec": work_spec,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| request_body_contains(request, PARENT_PROMPT),
+        sse(vec![
+            ev_response_created("cccx-deny-parent"),
+            ev_function_call_with_namespace(CALL_ID, "multi_agent_v1", "spawn_agent", &spawn_args),
+            ev_completed("cccx-deny-parent"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            request_body_contains(request, CHILD_PROMPT) && !request_body_contains(request, CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("cccx-deny-child"),
+            ev_function_call(UNKNOWN_CALL_ID, "future_unknown_tool", "{}"),
+            ev_completed("cccx-deny-child"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| request_body_contains(request, UNKNOWN_CALL_ID),
+        sse(vec![
+            ev_response_created("cccx-deny-child-follow-up"),
+            ev_assistant_message(
+                "cccx-deny-child-follow-up-message",
+                "unknown tool stayed denied",
+            ),
+            ev_completed("cccx-deny-child-follow-up"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| request_body_contains(request, CALL_ID),
+        sse(vec![
+            ev_response_created("cccx-deny-follow-up"),
+            ev_assistant_message("cccx-deny-follow-up-message", "child started"),
+            ev_completed("cccx-deny-follow-up"),
+        ]),
+    )
+    .await;
+
+    let mut created_threads = test.thread_manager.subscribe_thread_created();
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: PARENT_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    let child_thread_id = tokio::time::timeout(Duration::from_secs(10), created_threads.recv())
+        .await
+        .expect("timed out waiting for deny-by-default child")
+        .expect("thread-created channel closed");
+    let child = test.thread_manager.get_thread(child_thread_id).await?;
+    let child_config = child.config().await;
+    assert!(child_config.cccx_child_writable_scope.is_empty());
+    assert!(child_config.cccx_child_allowed_tools.is_empty());
+    assert!(child_config.cccx_child_allowed_mcp_tools.is_empty());
+    assert_eq!(
+        child_config.legacy_sandbox_policy(),
+        SandboxPolicy::ReadOnly {
+            network_access: false
+        }
+    );
+    wait_for_event_with_timeout(
+        &child,
+        |event| matches!(event, EventMsg::TurnComplete(_)),
+        Duration::from_secs(10),
+    )
+    .await;
+    let requests = server.received_requests().await.unwrap_or_default();
+    let child_request = requests
+        .iter()
+        .find(|request| {
+            request_body_contains(request, CHILD_PROMPT) && !request_body_contains(request, CALL_ID)
+        })
+        .expect("deny-by-default child must send a model request");
+    assert!(
+        request_tool_names(child_request).is_empty(),
+        "an empty child capability intersection must expose zero tools"
+    );
+    let unknown_follow_up = requests
+        .iter()
+        .find(|request| request_body_contains(request, UNKNOWN_CALL_ID))
+        .expect("the injected unknown tool must produce a fail-closed child follow-up");
+    let unknown_follow_up_body = String::from_utf8_lossy(&unknown_follow_up.body);
+    assert!(
+        unknown_follow_up_body.contains("not found")
+            || unknown_follow_up_body.contains("unsupported")
+            || unknown_follow_up_body.contains("unavailable"),
+        "unknown tool denial must be returned to the child model: {unknown_follow_up_body}"
+    );
+
+    test.codex.submit(Op::Interrupt).await?;
+    let _ = wait_for_event_with_timeout(
+        &test.codex,
+        |event| matches!(event, EventMsg::TurnAborted(_)),
+        Duration::from_secs(10),
+    )
+    .await;
     Ok(())
 }
 
@@ -328,9 +554,12 @@ async fn child_config_projection_sets_typed_identity_harness_and_denies_by_inter
         child_config.cccx_child_allowed_mcp_tools,
         BTreeSet::from(["mcp:codebase-memory.search_graph".to_string()])
     );
-    assert_eq!(
-        child_config.cccx_child_writable_scope,
-        BTreeSet::from(["D:/workspace/project/src".to_string()])
+    assert_eq!(child_config.cccx_child_writable_scope.len(), 1);
+    assert!(
+        child_config
+            .cccx_child_writable_scope
+            .iter()
+            .all(|path| Path::new(path).is_absolute())
     );
     assert_eq!(child_config.model.as_deref(), Some("route/cx-test"));
     assert!(!child_config.orchestrator_mcp_enabled);

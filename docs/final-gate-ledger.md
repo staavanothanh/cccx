@@ -23,20 +23,20 @@ interactive/TUI events and headless JSONL where a gate crosses either surface.
 | 5 | PASS (disabled) | Owner-selected Windows/app-server behavior rejects Bypass because no trusted OS-isolation backend exists; circuit breaker remains invariant | Missing/untrusted attestation denies and mode remains unchanged | sandbox/app-server/core |
 | 6 | PASS | Multiple workers produce one native active approval prompt | Cancelled/stale request never renders | queue/session/TUI |
 | 7 | PARTIAL | Main WorkSpec → child Artifact → acceptance runtime flow | Bad schema/binding rejects | spawn/runtime/task graph |
-| 8 | PARTIAL | Child receives live parent capability intersection | Empty intersection is read-only | spawn/executor |
-| 9 | PARTIAL | Spawned child tool/MCP/executor/sandbox agree on projection | Unknown/forbidden capability denies | spawn/tools/sandbox |
-| 10 | PARTIAL | Shell, MCP and patch writes use canonical observed targets | Junction, multi-target, stale target deny | executor/policy |
+| 8 | PASS | Child receives live parent capability intersection | Empty intersection is read-only | spawn/executor |
+| 9 | PASS | Spawned child tool/MCP/executor/sandbox agree on projection | Unknown/forbidden capability denies | spawn/tools/sandbox |
+| 10 | PASS | Shell, MCP and patch writes use canonical observed targets | Junction, multi-target, stale target deny | executor/policy |
 | 11 | PARTIAL | Default child input is structured WorkSpec/Artifact only | Raw parent context fork rejects | multi-agent spawn/runtime |
 | 12 | PASS | Preserve real verification-command regression | Prose-only completion cannot verify | verification/task graph |
 | 13 | PARTIAL | Concurrent process state writes retain both valid updates | Live competing writer rejects | state/task graph |
 | 14 | PASS | Preserve actual stop-path regression | Unverified task blocks terminal completion | stop hook/task graph |
 | 15 | PASS | TUI commands inspect/approve/deny exact queue IDs | Invalid ID/digest and unsafe batch reject | queue/slash/TUI |
 | 16 | PARTIAL | TUI/session interrupt-resume preserves logical ID | Cancelled worker cannot resume | runtime/checkpoint/TUI |
-| 17 | PARTIAL | Spawned child writers serialize while readers overlap | Unknown writer class serializes | tool runtime |
+| 17 | PASS | Spawned child dispatch uses project lease; writers serialize while readers overlap | Unknown writer class serializes | tool runtime |
 | 18 | PARTIAL | Complete LLM-path inventory reaches 9router boundary | Any non-9router route fails before transport | client/gateway |
 | 19 | PARTIAL | Stream/retry attempts persist factual route/provenance | Metadata omission remains `unknown` | gateway/provenance |
 | 20 | PARTIAL | Compact/restart restores memory, ADR refs, state refs and MCP health | Child ADR/memory write denies; raw output is not durable memory | compact/memory/ADR/MCP |
-| 21 | PARTIAL | Spawned CX catalog contains only trusted compatible plugin grants | CC-only/native grant does not leak | plugins/spawn |
+| 21 | PASS | Spawned CX catalog contains only trusted compatible plugin grants | CC-only/native grant does not leak | plugins/spawn |
 | 22 | PARTIAL | TUI commands/status/network/secure input use live state | Secret absent from parser/history/log/telemetry | TUI/secure config |
 | 23 | PASS | Preserve JSONL terminal-last/exit-code regression | Headless approval defaults deny | headless/exec |
 | 24 | PARTIAL | cccx-owned aggregate line coverage is at least 80% | Runtime seams retain negative tests | release validation |

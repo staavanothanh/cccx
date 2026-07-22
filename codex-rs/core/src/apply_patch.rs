@@ -1,3 +1,5 @@
+use crate::cccx_paths::path_is_within;
+use crate::cccx_paths::resolve_physical_path;
 use crate::exec_policy::cccx_subagent_edit_requirement;
 use crate::function_tool::FunctionCallError;
 use crate::safety::SafetyCheck;
@@ -9,7 +11,6 @@ use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -54,8 +55,7 @@ pub(crate) async fn apply_patch(
         )));
     }
     for target in cccx_action_required_fresh_read_targets(&action) {
-        let target = match resolve_path_for_scope(&target.to_path_buf(), &action.cwd.to_path_buf())
-        {
+        let target = match resolve_physical_path(&target.to_path_buf(), &action.cwd.to_path_buf()) {
             Ok(target) => target,
             Err(reason) => {
                 return InternalApplyPatchInvocation::Output(Err(
@@ -175,12 +175,12 @@ fn cccx_validate_write_scope(
     let cwd = action.cwd.to_path_buf();
     let roots = writable_roots
         .iter()
-        .map(|root| resolve_path_for_scope(Path::new(root), &cwd))
+        .map(|root| resolve_physical_path(Path::new(root), &cwd))
         .collect::<Result<Vec<_>, _>>()?;
 
     for target in cccx_action_write_targets(action) {
-        let target = resolve_path_for_scope(&target, &cwd)?;
-        if !roots.iter().any(|root| target.starts_with(root)) {
+        let target = resolve_physical_path(&target, &cwd)?;
+        if !roots.iter().any(|root| path_is_within(&target, root)) {
             return Err(format!(
                 "target `{}` is outside the projected writable scope",
                 target.display()
@@ -216,39 +216,6 @@ fn cccx_action_required_fresh_read_targets(action: &ApplyPatchAction) -> Vec<Pat
         }
     }
     targets
-}
-
-/// Canonicalize an existing path, or the nearest existing ancestor for a new
-/// path. Remaining segments are appended only after symlinks/junctions in the
-/// existing chain have been resolved.
-fn resolve_path_for_scope(path: &Path, cwd: &Path) -> Result<PathBuf, String> {
-    let absolute =
-        AbsolutePathBuf::resolve_path_against_base(path.to_path_buf(), cwd).into_path_buf();
-    let mut existing = absolute.as_path();
-    let mut missing_segments = Vec::new();
-    while !existing.exists() {
-        let Some(name) = existing.file_name() else {
-            return Err(format!(
-                "cannot resolve target path `{}`",
-                absolute.display()
-            ));
-        };
-        missing_segments.push(name.to_os_string());
-        existing = existing
-            .parent()
-            .ok_or_else(|| format!("cannot resolve target path `{}`", absolute.display()))?;
-    }
-
-    let mut resolved = std::fs::canonicalize(existing).map_err(|error| {
-        format!(
-            "cannot canonicalize target ancestor `{}`: {error}",
-            existing.display()
-        )
-    })?;
-    for segment in missing_segments.iter().rev() {
-        resolved.push(segment);
-    }
-    Ok(resolved)
 }
 
 fn changed_lines_in_action(action: &ApplyPatchAction) -> usize {

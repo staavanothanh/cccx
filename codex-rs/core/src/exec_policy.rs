@@ -49,6 +49,7 @@ use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 use tracing::instrument;
 
+use crate::cccx_paths::resolve_physical_paths;
 use crate::config::Config;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::sandboxing::ExecApprovalRequirement;
@@ -1647,15 +1648,91 @@ pub(crate) fn cccx_subagent_shell_requirement(
     command: &[String],
     cwd: &Path,
 ) -> Option<ExecApprovalRequirement> {
+    let mut target_paths = match cccx_shell_target_paths(command, cwd) {
+        Ok(paths) => paths,
+        Err(reason) => {
+            return Some(ExecApprovalRequirement::Forbidden {
+                reason: format!("cannot resolve shell target path: {reason}"),
+            });
+        }
+    };
+    if target_paths.is_empty() && !cccx_shell_command_is_known_read_only(command) {
+        match crate::cccx_paths::resolve_physical_path(cwd, cwd) {
+            Ok(path) => target_paths.push(path.to_string_lossy().into_owned()),
+            Err(reason) => {
+                return Some(ExecApprovalRequirement::Forbidden {
+                    reason: format!("cannot resolve shell working directory: {reason}"),
+                });
+            }
+        }
+    }
     cccx_subagent_tool_requirement(
         work_spec,
         "shell_command",
         CccxActionType::Shell,
         Some(command.join(" ")),
-        cccx_resolve_target_paths(cccx_extract_shell_target_paths(command), cwd),
+        target_paths,
         0,
         0,
     )
+}
+
+pub(crate) fn cccx_shell_target_paths(
+    command: &[String],
+    cwd: &Path,
+) -> Result<Vec<String>, String> {
+    resolve_physical_paths(cccx_extract_shell_target_paths(command), cwd)
+}
+
+pub(crate) fn cccx_shell_command_is_known_read_only(command: &[String]) -> bool {
+    let joined = command.join(" ").to_ascii_lowercase();
+    let mut tokens = command
+        .iter()
+        .flat_map(|argument| shlex::split(argument).unwrap_or_else(|| vec![argument.clone()]));
+    let executable = tokens
+        .next()
+        .and_then(|token| {
+            Path::new(&token)
+                .file_stem()
+                .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        })
+        .unwrap_or_default();
+    let mutating_markers = [
+        "set-content",
+        "add-content",
+        "out-file",
+        "new-item",
+        "remove-item",
+        "move-item",
+        "copy-item",
+        "rename-item",
+        "tee-object",
+        " >",
+        ">>",
+    ];
+    if mutating_markers
+        .iter()
+        .any(|marker| joined.contains(marker))
+    {
+        return false;
+    }
+    matches!(
+        executable.as_str(),
+        "rg" | "grep" | "findstr" | "type" | "where" | "pwd" | "ls" | "dir"
+    ) || ((executable == "powershell" || executable == "pwsh")
+        && [
+            "get-content",
+            "get-childitem",
+            "select-string",
+            "resolve-path",
+            "test-path",
+        ]
+        .iter()
+        .any(|verb| joined.contains(verb)))
+        || (executable == "git"
+            && [" status", " diff", " log", " show", " rev-parse"]
+                .iter()
+                .any(|verb| joined.contains(verb)))
 }
 
 pub(crate) fn cccx_subagent_edit_requirement(
@@ -1710,16 +1787,11 @@ pub(crate) fn cccx_extract_mcp_target_paths(arguments: &serde_json::Value) -> Ve
     paths
 }
 
-pub(crate) fn cccx_resolve_target_paths(paths: Vec<String>, cwd: &Path) -> Vec<String> {
-    paths
-        .into_iter()
-        .map(|path| {
-            AbsolutePathBuf::resolve_path_against_base(PathBuf::from(path), cwd)
-                .into_path_buf()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect()
+pub(crate) fn cccx_resolve_target_paths(
+    paths: Vec<String>,
+    cwd: &Path,
+) -> Result<Vec<String>, String> {
+    resolve_physical_paths(paths, cwd)
 }
 
 fn cccx_collect_mcp_target_paths(
@@ -1755,34 +1827,47 @@ fn cccx_mcp_field_can_hold_path(field_name: &str) -> bool {
             | "paths"
             | "file"
             | "files"
+            | "filename"
+            | "filenames"
             | "directory"
             | "directories"
             | "dir"
             | "cwd"
             | "target"
             | "targets"
+            | "source"
+            | "sources"
+            | "destination"
+            | "destinations"
     ) || field_name.ends_with("_path")
         || field_name.ends_with("_paths")
         || field_name.ends_with("_file")
         || field_name.ends_with("_files")
         || field_name.ends_with("_directory")
+        || field_name.ends_with("_filename")
+        || field_name.ends_with("_destination")
 }
 
 fn cccx_extract_shell_target_paths(command: &[String]) -> Vec<String> {
     let mut candidates = Vec::new();
-    for argument in command {
+    for (argument_index, argument) in command.iter().enumerate() {
         // A command-array argument may itself be a Windows path. Do not send
         // it through shlex first: backslashes are shell escapes there and
         // would turn `..\\outside.txt` into a different target.
-        if cccx_shell_token_looks_like_path(argument) {
-            candidates.push(argument.clone());
+        if !argument.chars().any(char::is_whitespace)
+            && let Some(path) = cccx_shell_path_token(argument, argument_index == 0)
+        {
+            candidates.push(path);
             continue;
         }
         let tokens = shlex::split(argument).unwrap_or_else(|| vec![argument.clone()]);
         candidates.extend(
             tokens
                 .into_iter()
-                .filter(|token| cccx_shell_token_looks_like_path(token)),
+                .enumerate()
+                .filter_map(|(token_index, token)| {
+                    cccx_shell_path_token(&token, argument_index == 0 && token_index == 0)
+                }),
         );
     }
     candidates.sort();
@@ -1790,12 +1875,20 @@ fn cccx_extract_shell_target_paths(command: &[String]) -> Vec<String> {
     candidates
 }
 
-fn cccx_shell_token_looks_like_path(token: &str) -> bool {
-    !token.starts_with('-')
-        && (token.starts_with('.')
-            || token.contains('/')
-            || token.contains('\\')
-            || (token.len() > 2 && token.as_bytes()[1] == b':'))
+fn cccx_shell_path_token(token: &str, is_executable: bool) -> Option<String> {
+    if is_executable || token.starts_with('-') || token.contains("://") {
+        return None;
+    }
+    let token = token
+        .strip_prefix('>')
+        .or_else(|| token.strip_prefix('<'))
+        .unwrap_or(token);
+    (token.starts_with('.')
+        || token.contains('/')
+        || token.contains('\\')
+        || (token.len() > 2 && token.as_bytes()[1] == b':')
+        || Path::new(token).extension().is_some())
+    .then(|| token.to_string())
 }
 
 /// Validate the immutable grant issued in a WorkSpec against the live MCP tool
@@ -1901,12 +1994,13 @@ mod cccx_policy_wiring_tests {
         let arguments = serde_json::json!({
             "paths": ["src/lib.rs", "src/main.rs"],
             "options": {"target_file": "Cargo.toml"},
+            "changes": [{"filename": "src/changed.rs"}],
             "query": "not a path"
         });
 
         assert_eq!(
             cccx_extract_mcp_target_paths(&arguments),
-            vec!["Cargo.toml", "src/lib.rs", "src/main.rs"]
+            vec!["Cargo.toml", "src/changed.rs", "src/lib.rs", "src/main.rs"]
         );
     }
 
@@ -1924,16 +2018,87 @@ mod cccx_policy_wiring_tests {
     }
 
     #[test]
-    fn cccx_resolves_relative_targets_against_worker_cwd() {
-        let cwd = Path::new("D:/repo");
+    fn cccx_extracts_simple_filename_and_redirection_shell_targets() {
         assert_eq!(
-            cccx_resolve_target_paths(vec!["src/lib.rs".to_string()], cwd),
-            vec![
-                AbsolutePathBuf::resolve_path_against_base(PathBuf::from("src/lib.rs"), cwd)
-                    .into_path_buf()
+            cccx_extract_shell_target_paths(&[
+                "powershell".to_string(),
+                "Set-Content out.txt 'data'; echo next >result.log".to_string(),
+            ]),
+            vec!["out.txt", "result.log"]
+        );
+    }
+
+    #[test]
+    fn cccx_subagent_shell_scope_blocks_simple_filename_outside_workspec() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let allowed = temp.path().join("allowed");
+        std::fs::create_dir_all(&allowed).expect("allowed dir");
+        let allowed = std::fs::canonicalize(&allowed).expect("canonical allowed");
+
+        let work_spec = cccx_protocol::WorkSpec {
+            schema_version: cccx_protocol::CCCX_WORK_SPEC_SCHEMA_VERSION.to_string(),
+            work_spec_id: "ws-shell-simple".to_string(),
+            task_id: "task-shell-simple".to_string(),
+            attempt_id: "attempt-shell-simple".to_string(),
+            created_at: "2026-07-22T00:00:00Z".to_string(),
+            expires_at: None,
+            base_revision: cccx_protocol::RevisionRef {
+                git_head: None,
+                working_tree_digest: None,
+            },
+            harness: cccx_protocol::HarnessKind::Cx,
+            role: cccx_protocol::WorkRole::Implementer,
+            runtime_identity: None,
+            objective: "delete only in allowed scope".to_string(),
+            scope: cccx_protocol::WorkScope {
+                canonical_paths: [allowed.to_string_lossy().into_owned()]
+                    .into_iter()
+                    .collect(),
+                protected_paths: std::collections::BTreeSet::new(),
+            },
+            allowed_tools: ["shell_command".to_string()].into_iter().collect(),
+            forbidden_tools: std::collections::BTreeSet::new(),
+            allowed_mcp_tools: std::collections::BTreeSet::new(),
+            tool_grants: Vec::new(),
+            permission_policy: cccx_protocol::PermissionPolicy::Allow,
+            model_route: cccx_protocol::ModelRouteSelection::InheritMainRequested,
+            fallback_policy_id: "strict".to_string(),
+            fork_policy: cccx_protocol::ForkPolicy::WorkSpecOnly,
+            enforced_constraints: Vec::new(),
+            typed_constraints: Vec::new(),
+            risk_threshold: None,
+            action_classes: None,
+            approval_policy: None,
+            verification_spec: None,
+            audit_depth: None,
+            expected_artifact: None,
+        };
+
+        let requirement = cccx_subagent_shell_requirement(
+            &work_spec,
+            &["rm".to_string(), "outside.txt".to_string()],
+            temp.path(),
+        );
+
+        assert!(
+            matches!(requirement, Some(ExecApprovalRequirement::Forbidden { ref reason }) if reason == "out_of_scope"),
+            "a simple filename target outside WorkSpec scope must be extracted and denied, got {requirement:?}"
+        );
+    }
+
+    #[test]
+    fn cccx_resolves_relative_targets_against_worker_cwd() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src = temp.path().join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        assert_eq!(
+            cccx_resolve_target_paths(vec!["src/lib.rs".to_string()], temp.path()),
+            Ok(vec![
+                crate::cccx_paths::resolve_physical_path(Path::new("src/lib.rs"), temp.path())
+                    .expect("target should resolve")
                     .to_string_lossy()
                     .into_owned()
-            ]
+            ])
         );
     }
 

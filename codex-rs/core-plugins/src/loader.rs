@@ -18,8 +18,8 @@ use crate::remote::RemoteInstalledPlugin;
 use crate::store::PluginStore;
 use crate::store::plugin_version_for_source;
 use crate::store::plugin_version_for_source_with_fallback_manifest;
-use codex_config::ConfigLayerStack;
 use cccx_protocol::plugin::CccxPluginManifest;
+use codex_config::ConfigLayerStack;
 use codex_config::HooksFile;
 use codex_config::types::McpServerConfig;
 use codex_config::types::PluginConfig;
@@ -120,37 +120,27 @@ pub(crate) fn log_plugin_load_errors(plugins: &[LoadedPlugin<McpServerConfig>]) 
 /// servers, apps and hooks.  This deliberately keeps hook materialization in
 /// Codex's existing hash/trust pipeline instead of adding a second loader
 /// which could accidentally run an untrusted hook.
-fn load_cccx_extension(plugin_root: &Path) -> Result<Vec<String>, String> {
+pub(crate) fn load_cccx_extension(plugin_root: &Path) -> Result<Vec<String>, String> {
+    crate::cccx_extension::replace_validated_extension_snapshot(plugin_root, None);
     let extension_path = plugin_root.join(CCCX_PLUGIN_MANIFEST_FILE);
     if !extension_path.is_file() {
         return Ok(Vec::new());
     }
 
-    let raw = fs::read_to_string(&extension_path).map_err(|err| {
-        format!(
-            "could not read {}: {err}",
-            extension_path.display()
-        )
-    })?;
-    let value: JsonValue = serde_json::from_str(&raw).map_err(|err| {
-        format!(
-            "invalid {} JSON: {err}",
-            extension_path.display()
-        )
-    })?;
+    let raw = fs::read_to_string(&extension_path)
+        .map_err(|err| format!("could not read {}: {err}", extension_path.display()))?;
+    let value: JsonValue = serde_json::from_str(&raw)
+        .map_err(|err| format!("invalid {} JSON: {err}", extension_path.display()))?;
     let missing_harness = value.get("harness").is_none();
-    let manifest: CccxPluginManifest = serde_json::from_value(value).map_err(|err| {
-        format!(
-            "invalid {} schema: {err}",
-            extension_path.display()
-        )
-    })?;
-    manifest.validate().map_err(|err| {
-        format!(
-            "invalid {}: {err}",
-            extension_path.display()
-        )
-    })?;
+    let manifest: CccxPluginManifest = serde_json::from_value(value)
+        .map_err(|err| format!("invalid {} schema: {err}", extension_path.display()))?;
+    manifest
+        .validate()
+        .map_err(|err| format!("invalid {}: {err}", extension_path.display()))?;
+    crate::cccx_extension::replace_validated_extension_snapshot(
+        plugin_root,
+        Some(manifest.clone()),
+    );
 
     let mut warnings = Vec::new();
     if missing_harness {

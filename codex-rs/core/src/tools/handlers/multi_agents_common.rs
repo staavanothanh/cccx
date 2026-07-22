@@ -1,6 +1,5 @@
 use crate::cccx_runtime::{
-    CccxSpawnRuntime, parent_capability_set_for_work_spec,
-    permission_ceiling_from_approval_policy,
+    CccxSpawnRuntime, parent_capability_set_for_work_spec, permission_ceiling_from_approval_policy,
 };
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -292,6 +291,28 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
     };
     #[allow(deprecated)]
     let project_root = turn.cwd.clone().to_path_buf();
+    work_spec.scope.canonical_paths = crate::cccx_paths::resolve_physical_paths(
+        work_spec.scope.canonical_paths.iter().cloned(),
+        &project_root,
+    )
+    .map_err(|error| {
+        FunctionCallError::RespondToModel(format!(
+            "cccx could not canonicalize WorkSpec scope: {error}"
+        ))
+    })?
+    .into_iter()
+    .collect();
+    work_spec.scope.protected_paths = crate::cccx_paths::resolve_physical_paths(
+        work_spec.scope.protected_paths.iter().cloned(),
+        &project_root,
+    )
+    .map_err(|error| {
+        FunctionCallError::RespondToModel(format!(
+            "cccx could not canonicalize WorkSpec protected paths: {error}"
+        ))
+    })?
+    .into_iter()
+    .collect();
     let role_preset =
         crate::cccx_agent_model_routes::route_for_work_role(&config.codex_home, &work_spec.role)
             .await
@@ -382,11 +403,20 @@ pub(crate) async fn apply_cccx_work_spec_to_spawn_config(
     let parent_writable_roots = if parent_file_system_policy.has_full_disk_write_access() {
         work_spec.scope.canonical_paths.clone()
     } else {
-        parent_file_system_policy
-            .get_writable_roots_with_cwd(config.cwd.as_path())
-            .into_iter()
-            .map(|root| root.root.to_string_lossy().to_string())
-            .collect()
+        crate::cccx_paths::resolve_physical_paths(
+            parent_file_system_policy
+                .get_writable_roots_with_cwd(config.cwd.as_path())
+                .into_iter()
+                .map(|root| root.root.to_string_lossy().to_string()),
+            &project_root,
+        )
+        .map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "cccx could not canonicalize parent writable roots: {error}"
+            ))
+        })?
+        .into_iter()
+        .collect()
     };
     let parent_permission_ceiling = permission_ceiling_from_approval_policy(
         turn.approval_policy.value(),
