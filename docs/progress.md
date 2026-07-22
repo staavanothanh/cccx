@@ -3963,3 +3963,63 @@ $env:RUST_MIN_STACK = "33554432"
   `Retry-After`, unstable map-key request digests and weak partial-delta proof.
 - Final Phase 5 status: Gates **18 and 19 PASS**. Overall ledger: **21/25
   PASS**; Gates **20, 22, 24 and 25** remain for Phases 6–8.
+
+## 2026-07-22 — Final-gate Phase 6 complete
+
+### Gate 20 PASS: durable context, ADR and MCP state
+
+- Added typed `cccx.compaction_survivor.v2`. MainCc/CC reconstructs exactly one
+  untrusted data item from current durable truth during initial context and
+  compaction, including the `DoNotInject` path. Old survivor copies are removed.
+- Survivor state contains only bounded references/digests for TaskGraph, active
+  WorkSpec/Artifact, checkpoints, ADR, MCP health and thread-scoped stale reads,
+  plus the explicit Project Memory excerpt. Raw Artifact bodies, tool/MCP output,
+  file contents and logs are excluded. Final JSON is capped at 128 KiB.
+- Project Memory and state refs are project-hashed under `CCCX_HOME`. Memory is
+  byte/line bounded. Read-set restoration is bound to the same thread, uses
+  canonical in-project paths only, and uses recoverable replacement writes.
+- `manage_adr` read modes remain read-only. Child writes become typed proposals;
+  arbitrary MCP aliases cannot bypass the gate. MainCc commits only through a
+  trusted ADR backend after all TaskGraph tasks have exact process-local
+  verification-runner attestations. Forged workspace JSON, restart or later
+  mutation cannot manufacture or retain commit authority.
+- ADR reference persistence uses canonical semantic JSON digests and bounded
+  tail/rotation; raw MCP request/result bodies do not become durable memory.
+- TaskGraph input is capped at 4 MiB. Checkpoint/ref collections and all
+  attacker-controlled ref strings are bounded and deterministic.
+
+Validation used the shared `D:\cargo-targets\cccx` target and Rust 1.95.0. The
+cache was cold after cleanup, so the Windows V8 `gn_root` junction was recreated
+to the pinned `v8-149.2.0` registry source before compiling.
+
+```powershell
+cargo +1.95.0 test -p codex-core --lib cccx_durable_context --no-fail-fast
+# 5 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --lib cccx_task_graph_state -j 1 -- --test-threads=1
+# 16 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --lib cccx_ -j 1 -- --test-threads=1
+# 187 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --lib project_memory::tests -j 1 -- --test-threads=1
+# 6 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --lib do_not_inject_world_state_still_restores_one_durable_survivor -j 1
+# 1 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --lib project_memory_is_injected_as_untrusted_user_context_not_developer_authority -j 1
+# 1 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --lib remote_compaction_output_cannot_retain_an_old_survivor_copy -j 1
+# 1 passed; 0 failed
+
+cargo +1.95.0 test -p codex-core --test all "cccx_final_gate::" -j 1 -- --test-threads=1
+# 18 passed; 0 failed (2 pre-existing unused-import warnings)
+```
+
+- Aggregate validation initially exposed one stale-read fixture whose files
+  were outside the session project. The fixture was corrected to exercise two
+  project-scoped files; the production path boundary remains fail-closed.
+- Final Phase 6 status: Gate **20 PASS**. Overall ledger: **22/25 PASS**; Gates
+  **22, 24 and 25** remain for Phases 7–8.

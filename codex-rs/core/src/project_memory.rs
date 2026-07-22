@@ -1,10 +1,15 @@
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::fs;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 
 const MEMORY_FILE: &str = "MEMORY.md";
 const MAX_LINES: usize = 200;
+const MAX_CONTEXT_BYTES: u64 = 64 * 1024;
+const MAX_MEMORY_FILE_BYTES: u64 = 128 * 1024;
+const MAX_NOTE_CHARS: usize = 16 * 1024;
 
 pub struct ProjectMemory {
     base_path: PathBuf,
@@ -15,14 +20,8 @@ impl ProjectMemory {
     /// ownership boundary; the workspace only contributes a stable hash, so
     /// project memory is never written into the checked-out repository.
     pub fn new(cccx_home: &Path, project_root: &Path) -> Self {
-        let canonical_root =
-            dunce::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
-        let project_hash = format!(
-            "{:x}",
-            Sha256::digest(canonical_root.as_os_str().as_encoded_bytes())
-        );
         Self {
-            base_path: cccx_home.join("projects").join(project_hash).join("memory"),
+            base_path: project_storage_root(cccx_home, project_root).join("memory"),
         }
     }
 
@@ -32,8 +31,11 @@ impl ProjectMemory {
 
     pub async fn load_context(&self) -> Result<String, std::io::Error> {
         let path = self.memory_file_path();
-        match fs::read_to_string(&path).await {
-            Ok(content) => {
+        match fs::File::open(&path).await {
+            Ok(file) => {
+                let mut bytes = Vec::new();
+                file.take(MAX_CONTEXT_BYTES).read_to_end(&mut bytes).await?;
+                let content = String::from_utf8_lossy(&bytes);
                 let lines: Vec<&str> = content.lines().take(MAX_LINES).collect();
                 Ok(lines.join("\n"))
             }
@@ -46,7 +48,8 @@ impl ProjectMemory {
         fs::create_dir_all(&self.base_path).await?;
         let path = self.memory_file_path();
         let timestamp = chrono::Utc::now().to_rfc3339();
-        let entry = format!("\n## {timestamp}\n\n{note}\n");
+        let bounded_note = note.chars().take(MAX_NOTE_CHARS).collect::<String>();
+        let entry = format!("\n## {timestamp}\n\n{bounded_note}\n");
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -58,6 +61,22 @@ impl ProjectMemory {
     }
 
     async fn truncate_if_needed(path: &Path) -> Result<(), std::io::Error> {
+        if fs::metadata(path).await?.len() > MAX_MEMORY_FILE_BYTES {
+            let mut file = fs::File::open(path).await?;
+            let len = file.metadata().await?.len();
+            file.seek(std::io::SeekFrom::Start(
+                len.saturating_sub(MAX_CONTEXT_BYTES),
+            ))
+            .await?;
+            let mut tail = Vec::new();
+            file.read_to_end(&mut tail).await?;
+            if len > MAX_CONTEXT_BYTES
+                && let Some(newline) = tail.iter().position(|byte| *byte == b'\n')
+            {
+                tail.drain(..=newline);
+            }
+            fs::write(path, tail).await?;
+        }
         let content = fs::read_to_string(path).await?;
         let lines: Vec<&str> = content.lines().collect();
         if lines.len() > MAX_LINES * 2 {
@@ -67,6 +86,16 @@ impl ProjectMemory {
         }
         Ok(())
     }
+}
+
+pub(crate) fn project_storage_root(cccx_home: &Path, project_root: &Path) -> PathBuf {
+    let canonical_root =
+        dunce::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    let project_hash = format!(
+        "{:x}",
+        Sha256::digest(canonical_root.as_os_str().as_encoded_bytes())
+    );
+    cccx_home.join("projects").join(project_hash)
 }
 
 #[cfg(test)]
@@ -121,6 +150,22 @@ mod tests {
         assert_eq!(context.lines().count(), MAX_LINES);
         assert!(context.contains("line-0"));
         assert!(!context.contains(&format!("line-{MAX_LINES}")));
+    }
+
+    #[tokio::test]
+    async fn loaded_memory_context_is_bounded_even_for_one_huge_line() {
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let memory = ProjectMemory::new(home.path(), project.path());
+        let path = memory.memory_file_path();
+        fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        fs::write(&path, vec![b'x'; (MAX_CONTEXT_BYTES as usize) * 2])
+            .await
+            .unwrap();
+
+        let context = memory.load_context().await.unwrap();
+
+        assert!(context.len() <= MAX_CONTEXT_BYTES as usize);
     }
 
     // ── Phase 9 tests ──

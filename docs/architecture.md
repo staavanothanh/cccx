@@ -1052,6 +1052,26 @@ Thời điểm compact:
   xuyên gây gián đoạn, nhưng vẫn chừa đủ buffer trước khi chạm giới hạn cứng).
 ```
 
+### Durable survivor contract
+
+Implementation dùng schema typed `cccx.compaction_survivor.v2`, chỉ được nạp
+cho `MainCc` chạy CC harness tại provider boundary của cccx. Survivor là một
+user-role data item có nhãn `untrusted-data`, không phải developer instruction.
+Mỗi lần tạo initial context hoặc compact, runtime dựng lại đúng một bundle từ
+durable truth hiện tại; survivor cũ do model/remote compact trả về bị loại.
+
+Bundle chỉ chứa TaskGraph digest/ref, active WorkSpec/Artifact IDs, checkpoint
+file refs, ADR digest refs, Project Memory excerpt, MCP registry health và
+thread-scoped stale-read refs. Nó không chứa Artifact body, raw tool/MCP output,
+build log hoặc nội dung file đã đọc. Chuỗi/ref và số phần tử đều có cap; JSON
+cuối có hard limit 128 KiB. TaskGraph lớn hơn 4 MiB và read-set vượt limit bị
+fail-closed thay vì nạp không giới hạn.
+
+Project Memory, ADR refs và read-set state nằm dưới
+`CCCX_HOME/projects/<project-hash>/...`; read-set gắn với thread ID và chỉ nhận
+canonical path nằm trong project. Restart cùng thread có thể khôi phục stale-read
+authority, còn thread khác hoặc path ngoài project không được kế thừa.
+
 ---
 
 ## 9. Memory / Decision Policy
@@ -1075,6 +1095,15 @@ Thời điểm compact:
   đọc/ghi), tách biệt hoàn toàn khỏi MCP này.
 - Không ghi ADR giữa chừng lúc CX đang thử-sai (tránh nhiễm giả thuyết tạm/lỗi build).
 ```
+
+`manage_adr` read operations (`get/read/list/search/show/query`) vẫn là MCP read.
+Mọi operation ghi hoặc không nhận diện được đi qua PreDecisionWrite trên cả MCP
+direct và namespaced tool path. CC/CX child chỉ nhận `ADRProposal`; MainCc chỉ
+được commit qua trusted codebase-memory-mcp identity sau khi mọi Task có bằng
+chứng verification-runner khớp digest trong process. Workspace TaskGraph JSON,
+restart, alias MCP hoặc sửa graph sau verification không tự tạo quyền commit.
+Durable ADR log chỉ giữ canonical request/result digest refs, không giữ raw MCP
+payload.
 
 ### Project Memory — project-scoped, explicit-first
 

@@ -588,7 +588,8 @@ impl CccxRuntimeRegistry {
             format!("sha256:{:x}", Sha256::digest(bytes))
         };
         let initial = TaskGraph::new("cccx-runtime", "cccx runtime graph");
-        let task_update =
+        let has_verification_run = verification_run.is_some();
+        let (task_update, verified_task) =
             cccx_task_graph_state::update_task_graph(&runtime.project_root, initial, |graph| {
                 let mut state = CccxRuntimeState::new(graph.clone());
                 state.track_existing_attempt(
@@ -626,11 +627,29 @@ impl CccxRuntimeRegistry {
                     }
                 }
                 *graph = state.task_graph.clone();
-                task_update_from_graph(graph, &runtime.work_spec.task_id)
-                    .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)
+                let update = task_update_from_graph(graph, &runtime.work_spec.task_id)
+                    .map_err(cccx_task_graph_state::TaskGraphStateError::Mutation)?;
+                let verified_task = update
+                    .verified
+                    .then(|| graph.tasks.get(&runtime.work_spec.task_id).cloned())
+                    .flatten();
+                Ok((update, verified_task))
             })
             .await
             .map_err(|error| error.to_string())?;
+        if has_verification_run && let Some(task) = verified_task.as_ref() {
+            cccx_task_graph_state::attest_verified_task(&runtime.project_root, task)
+                .map_err(|error| error.to_string())?;
+        }
+        if verified_task.is_some()
+            && let Some(graph) = cccx_task_graph_state::load_task_graph(&runtime.project_root)
+                .await
+                .map_err(|error| error.to_string())?
+            && graph.can_stop()
+        {
+            cccx_task_graph_state::seal_verified_graph(&runtime.project_root, &graph)
+                .map_err(|error| error.to_string())?;
+        }
         Ok(Some(CccxRuntimeCompletion {
             task_update,
             verification_error,

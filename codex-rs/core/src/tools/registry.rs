@@ -451,13 +451,49 @@ impl ToolRegistry {
                 if let ToolPayload::Function { arguments } = &invocation.payload {
                     let arguments_value =
                         serde_json::from_str::<Value>(arguments).unwrap_or(Value::Null);
+                    let is_adr_write = crate::cccx_adr::is_adr_write_request(
+                        &tool_name.name,
+                        Some(&arguments_value),
+                    );
+                    let main_verification_complete = if is_adr_write
+                        && matches!(
+                            invocation.turn.cccx_actor_identity(),
+                            cccx_protocol::ActorIdentity::MainCc
+                        ) {
+                        crate::cccx_adr::task_graph_verification_complete(&invocation.turn).await
+                    } else {
+                        false
+                    };
                     if let Some(result) = crate::cccx_adr::maybe_intercept_namespaced_adr_commit(
                         invocation.turn.cccx_actor_identity(),
                         invocation.turn.cccx_harness(),
+                        main_verification_complete,
                         tool_name.namespace.as_deref(),
                         &tool_name.name,
                         Some(&arguments_value),
                     ) {
+                        if result.is_error != Some(true) {
+                            let server_id = tool_name
+                                .namespace
+                                .as_deref()
+                                .and_then(|namespace| namespace.strip_prefix("mcp__"))
+                                .unwrap_or("unknown");
+                            #[allow(deprecated)]
+                            if let Err(error) = crate::cccx_durable_context::record_adr_ref(
+                                invocation.turn.config.codex_home.as_path(),
+                                invocation.turn.cwd.as_path(),
+                                "proposed",
+                                invocation.turn.cccx_actor_identity(),
+                                server_id,
+                                &tool_name.name,
+                                Some(&arguments_value),
+                                result.structured_content.as_ref(),
+                            )
+                            .await
+                            {
+                                tracing::warn!(%error, "failed to persist cccx ADR proposal ref");
+                            }
+                        }
                         notify_tool_start(&invocation).await;
                         let output = McpToolOutput {
                             result,

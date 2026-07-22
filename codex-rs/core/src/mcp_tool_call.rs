@@ -149,14 +149,42 @@ pub(crate) async fn handle_mcp_tool_call(
         tool: tool_name.clone(),
         arguments: arguments_value.clone(),
     };
+    let is_adr_commit = crate::cccx_adr::is_adr_write_request(&tool_name, arguments_value.as_ref());
+    let main_verification_complete = if is_adr_commit
+        && matches!(
+            turn_context.cccx_actor_identity(),
+            cccx_protocol::ActorIdentity::MainCc
+        ) {
+        crate::cccx_adr::task_graph_verification_complete(turn_context).await
+    } else {
+        false
+    };
     if let Some(result) = crate::cccx_adr::maybe_intercept_adr_commit(
         turn_context.cccx_actor_identity(),
         turn_context.cccx_harness(),
+        main_verification_complete,
         &server,
         &tool_name,
         arguments_value.as_ref(),
     ) {
         let item_metadata = McpToolCallItemMetadata::from_tool_metadata(&server, None);
+        if result.is_error != Some(true) {
+            #[allow(deprecated)]
+            if let Err(error) = crate::cccx_durable_context::record_adr_ref(
+                turn_context.config.codex_home.as_path(),
+                turn_context.cwd.as_path(),
+                "proposed",
+                turn_context.cccx_actor_identity(),
+                &server,
+                &tool_name,
+                arguments_value.as_ref(),
+                result.structured_content.as_ref(),
+            )
+            .await
+            {
+                tracing::warn!(%error, "failed to persist cccx ADR proposal ref");
+            }
+        }
         notify_mcp_tool_call_started(
             sess.as_ref(),
             turn_context.as_ref(),
@@ -821,7 +849,7 @@ async fn execute_mcp_tool_call(
         .call_tool(
             &invocation.server,
             &invocation.tool,
-            rewritten_arguments,
+            rewritten_arguments.clone(),
             request_meta,
         )
         .await
@@ -833,6 +861,31 @@ async fn execute_mcp_tool_call(
             .contains(&InputModality::Image),
         Ok(result),
     )?;
+    if crate::cccx_adr::is_adr_write_request(&invocation.tool, rewritten_arguments.as_ref())
+        && crate::cccx_adr::is_trusted_adr_backend(&invocation.server)
+        && matches!(
+            turn_context.cccx_actor_identity(),
+            cccx_protocol::ActorIdentity::MainCc
+        )
+        && result.is_error != Some(true)
+    {
+        let result_value = serde_json::to_value(&result).ok();
+        #[allow(deprecated)]
+        if let Err(error) = crate::cccx_durable_context::record_adr_ref(
+            turn_context.config.codex_home.as_path(),
+            turn_context.cwd.as_path(),
+            "committed",
+            turn_context.cccx_actor_identity(),
+            &invocation.server,
+            &invocation.tool,
+            rewritten_arguments.as_ref(),
+            result_value.as_ref(),
+        )
+        .await
+        {
+            tracing::warn!(%error, "failed to persist cccx committed ADR ref");
+        }
+    }
     Ok(maybe_request_codex_apps_auth_elicitation(
         sess,
         turn_context,

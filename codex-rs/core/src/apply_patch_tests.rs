@@ -245,7 +245,8 @@ async fn cccx_stale_read_gate_blocks_unobserved_update_before_runtime_execution(
 #[tokio::test]
 async fn cccx_stale_read_gate_blocks_multifile_patch_when_one_target_is_unobserved() {
     let (session, turn_context) = crate::session::tests::make_session_and_context().await;
-    let tmp = tempdir().expect("tmp");
+    let tmp = tempfile::tempdir_in(turn_context.config.cwd.as_path())
+        .expect("project-scoped temp directory");
     let observed = tmp.path().join("observed.txt");
     let unobserved = tmp.path().join("unobserved.txt");
     std::fs::write(&observed, "before-a\n").expect("observed file");

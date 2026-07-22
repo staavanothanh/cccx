@@ -20,6 +20,7 @@ use std::time::Instant;
 use cccx_mode::CccxModeState;
 use cccx_task_graph::ActiveAttemptMetadata;
 use cccx_task_graph::TaskGraph;
+use cccx_task_graph::TaskNode;
 use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
@@ -31,8 +32,12 @@ const TASK_GRAPH_FILE: &str = "task-graph.json";
 const STATE_WRITER_LOCK_FILE: &str = ".writer.lock";
 const STATE_WRITER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const STATE_WRITER_RETRY_INTERVAL: Duration = Duration::from_millis(20);
+const MAX_TASK_GRAPH_BYTES: u64 = 4 * 1024 * 1024;
 static STATE_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PROJECT_WRITERS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+static VERIFIED_GRAPH_SEALS: OnceLock<Mutex<BTreeMap<PathBuf, String>>> = OnceLock::new();
+static VERIFIED_TASK_ATTESTATIONS: OnceLock<Mutex<BTreeMap<(PathBuf, String), String>>> =
     OnceLock::new();
 
 #[derive(Debug, Error)]
@@ -57,6 +62,8 @@ pub enum TaskGraphStateError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    #[error("task graph at {path} exceeds the {max_bytes}-byte safety limit")]
+    TooLarge { path: PathBuf, max_bytes: u64 },
     #[error("failed to serialize task graph: {0}")]
     Serialize(serde_json::Error),
     #[error("invalid task graph: {0}")]
@@ -77,9 +84,19 @@ pub async fn load_task_graph(
     project_root: &Path,
 ) -> Result<Option<TaskGraph>, TaskGraphStateError> {
     let path = task_graph_path(project_root);
+    match fs::metadata(&path).await {
+        Ok(metadata) if metadata.len() > MAX_TASK_GRAPH_BYTES => {
+            return Err(TaskGraphStateError::TooLarge {
+                path,
+                max_bytes: MAX_TASK_GRAPH_BYTES,
+            });
+        }
+        Ok(_) => {}
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(TaskGraphStateError::Read { path, source }),
+    }
     let bytes = match fs::read(&path).await {
         Ok(bytes) => bytes,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(TaskGraphStateError::Read { path, source }),
     };
     serde_json::from_slice(&bytes)
@@ -91,6 +108,8 @@ pub async fn save_task_graph(
     project_root: &Path,
     task_graph: &TaskGraph,
 ) -> Result<(), TaskGraphStateError> {
+    clear_verified_graph_seal(project_root);
+    clear_verified_task_attestations(project_root);
     let writer = project_writer(project_root);
     let _process_lease = writer.lock().await;
     let _state_lease = acquire_state_writer_lease(project_root).await?;
@@ -133,13 +152,147 @@ pub async fn update_task_graph<T, F>(
 where
     F: FnOnce(&mut TaskGraph) -> Result<T, TaskGraphStateError>,
 {
+    clear_verified_graph_seal(project_root);
     let writer = project_writer(project_root);
     let _process_lease = writer.lock().await;
     let _state_lease = acquire_state_writer_lease(project_root).await?;
     let mut graph = load_task_graph(project_root).await?.unwrap_or(initial);
     let result = mutate(&mut graph)?;
     write_task_graph(project_root, &graph).await?;
+    retain_matching_task_attestations(project_root, &graph)?;
     Ok(result)
+}
+
+/// Record that the independent verification runner produced the exact task
+/// state supplied by the in-process transaction. A later workspace edit cannot
+/// manufacture this attestation or reuse it after changing the task payload.
+pub(crate) fn attest_verified_task(
+    project_root: &Path,
+    task: &TaskNode,
+) -> Result<(), TaskGraphStateError> {
+    if !task.is_verified() {
+        return Err(TaskGraphStateError::InvalidGraph(format!(
+            "cannot attest unverified task `{}`",
+            task.task_id
+        )));
+    }
+    verified_task_attestations()
+        .lock()
+        .expect("verified task attestation map poisoned")
+        .insert(
+            (canonical_project_root(project_root), task.task_id.clone()),
+            task_node_digest(task)?,
+        );
+    Ok(())
+}
+
+/// Seal one all-verified graph in process memory after the independent
+/// verification runner has persisted it. Workspace JSON alone is never enough
+/// to authorize an ADR write; any later graph mutation clears this seal.
+pub(crate) fn seal_verified_graph(
+    project_root: &Path,
+    task_graph: &TaskGraph,
+) -> Result<(), TaskGraphStateError> {
+    task_graph
+        .validate()
+        .map_err(|error| TaskGraphStateError::InvalidGraph(error.to_string()))?;
+    if !task_graph.can_stop() {
+        return Err(TaskGraphStateError::InvalidGraph(
+            "cannot seal an unverified task graph".to_string(),
+        ));
+    }
+    let root = canonical_project_root(project_root);
+    let attestations = verified_task_attestations()
+        .lock()
+        .expect("verified task attestation map poisoned");
+    for (task_id, task) in &task_graph.tasks {
+        let expected = task_node_digest(task)?;
+        if attestations.get(&(root.clone(), task_id.clone())) != Some(&expected) {
+            return Err(TaskGraphStateError::InvalidGraph(format!(
+                "task `{task_id}` lacks an in-process verification attestation"
+            )));
+        }
+    }
+    drop(attestations);
+    verified_graph_seals()
+        .lock()
+        .expect("verified graph seal map poisoned")
+        .insert(
+            canonical_project_root(project_root),
+            task_graph_digest(task_graph)?,
+        );
+    Ok(())
+}
+
+pub(crate) fn matches_verified_graph_seal(project_root: &Path, task_graph: &TaskGraph) -> bool {
+    let Ok(digest) = task_graph_digest(task_graph) else {
+        return false;
+    };
+    verified_graph_seals()
+        .lock()
+        .expect("verified graph seal map poisoned")
+        .get(&canonical_project_root(project_root))
+        == Some(&digest)
+}
+
+fn clear_verified_graph_seal(project_root: &Path) {
+    verified_graph_seals()
+        .lock()
+        .expect("verified graph seal map poisoned")
+        .remove(&canonical_project_root(project_root));
+}
+
+fn verified_graph_seals() -> &'static Mutex<BTreeMap<PathBuf, String>> {
+    VERIFIED_GRAPH_SEALS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn verified_task_attestations() -> &'static Mutex<BTreeMap<(PathBuf, String), String>> {
+    VERIFIED_TASK_ATTESTATIONS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn clear_verified_task_attestations(project_root: &Path) {
+    let root = canonical_project_root(project_root);
+    verified_task_attestations()
+        .lock()
+        .expect("verified task attestation map poisoned")
+        .retain(|(candidate, _), _| candidate != &root);
+}
+
+fn retain_matching_task_attestations(
+    project_root: &Path,
+    task_graph: &TaskGraph,
+) -> Result<(), TaskGraphStateError> {
+    let root = canonical_project_root(project_root);
+    let current = task_graph
+        .tasks
+        .iter()
+        .map(|(task_id, task)| Ok((task_id.clone(), task_node_digest(task)?)))
+        .collect::<Result<BTreeMap<_, _>, TaskGraphStateError>>()?;
+    verified_task_attestations()
+        .lock()
+        .expect("verified task attestation map poisoned")
+        .retain(|(candidate, task_id), digest| {
+            candidate != &root || current.get(task_id) == Some(digest)
+        });
+    Ok(())
+}
+
+fn task_graph_digest(task_graph: &TaskGraph) -> Result<String, TaskGraphStateError> {
+    use sha2::Digest;
+    use sha2::Sha256;
+    let bytes = serde_json::to_vec(task_graph).map_err(TaskGraphStateError::Serialize)?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+fn task_node_digest(task: &TaskNode) -> Result<String, TaskGraphStateError> {
+    use sha2::Digest;
+    use sha2::Sha256;
+    let bytes = serde_json::to_vec(task).map_err(TaskGraphStateError::Serialize)?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+fn canonical_project_root(path: &Path) -> PathBuf {
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Persist a user-declared completion condition for one concrete cccx task.
@@ -523,6 +676,38 @@ mod tests {
         graph.add_task(task).expect("add task");
 
         assert!(stop_guard(&graph).is_ok());
+    }
+
+    #[test]
+    fn verified_graph_seal_rejects_workspace_state_tampering() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut graph = TaskGraph::new("graph-1", "verified");
+        let mut task = TaskNode::new("T1", "verified", verification_spec());
+        task.status = TaskStatus::Verified;
+        task.verified_at = Some("2026-07-22T00:00:00Z".to_string());
+        graph.add_task(task).expect("add task");
+        attest_verified_task(temp_dir.path(), &graph.tasks["T1"]).expect("attest task");
+        seal_verified_graph(temp_dir.path(), &graph).expect("seal verified graph");
+        assert!(matches_verified_graph_seal(temp_dir.path(), &graph));
+
+        graph.title = "forged workspace state".to_string();
+
+        assert!(!matches_verified_graph_seal(temp_dir.path(), &graph));
+    }
+
+    #[test]
+    fn forged_verified_task_cannot_be_sealed_without_runner_attestation() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut graph = TaskGraph::new("graph-1", "forged");
+        let mut task = TaskNode::new("T1", "forged", verification_spec());
+        task.status = TaskStatus::Verified;
+        task.verified_at = Some("2026-07-22T00:00:00Z".to_string());
+        graph.add_task(task).expect("add task");
+
+        let error = seal_verified_graph(temp_dir.path(), &graph)
+            .expect_err("workspace JSON alone must not grant ADR authority");
+
+        assert!(error.to_string().contains("verification attestation"));
     }
 
     #[tokio::test]

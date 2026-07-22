@@ -81,15 +81,57 @@ impl CccxPostToolUseCounters {
 #[derive(Debug, Default)]
 pub(crate) struct CccxReadSet {
     digests: Mutex<HashMap<PathBuf, String>>,
+    project_root: Option<PathBuf>,
+    state_path: Option<PathBuf>,
 }
 
 impl CccxReadSet {
+    pub(crate) fn new(cccx_home: &Path, project_root: &Path, scope_id: &str) -> Self {
+        const MAX_READ_SET_BYTES: u64 = 512 * 1024;
+        let project_root = cccx_read_set_key(project_root);
+        let state_path = cccx_read_set_state_path(cccx_home, &project_root, scope_id);
+        let digests = std::fs::metadata(&state_path)
+            .ok()
+            .filter(|metadata| metadata.len() <= MAX_READ_SET_BYTES)
+            .and_then(|_| std::fs::read(&state_path).ok())
+            .and_then(|bytes| serde_json::from_slice::<PersistedReadSet>(&bytes).ok())
+            .filter(|state| state.schema_version == "cccx.read_set.v1")
+            .map(|state| {
+                state
+                    .digests
+                    .into_iter()
+                    .filter(|(path, _)| cccx_read_set_key(path).starts_with(&project_root))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            digests: Mutex::new(digests),
+            project_root: Some(project_root),
+            state_path: Some(state_path),
+        }
+    }
+
     pub(crate) async fn record(&self, path: PathBuf, bytes: &[u8]) {
         let path = cccx_read_set_key(&path);
-        self.digests
-            .lock()
-            .await
-            .insert(path, format!("sha256:{:x}", Sha256::digest(bytes)));
+        if self
+            .project_root
+            .as_deref()
+            .is_some_and(|project_root| !path.starts_with(project_root))
+        {
+            return;
+        }
+        let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+        let snapshot = {
+            let mut digests = self.digests.lock().await;
+            digests.insert(path.clone(), digest);
+            digests.clone()
+        };
+        if let (Some(project_root), Some(state_path)) =
+            (self.project_root.as_deref(), self.state_path.as_deref())
+            && let Err(error) = persist_cccx_read_set(state_path, project_root, snapshot).await
+        {
+            tracing::warn!(%error, "failed to persist cccx stale-read state");
+        }
     }
 
     pub(crate) async fn verify_if_observed(&self, path: &Path) -> Result<(), String> {
@@ -112,6 +154,95 @@ impl CccxReadSet {
         };
         verify_cccx_read_digest(&path, &expected)
     }
+
+    pub(crate) async fn snapshot_refs(&self) -> Vec<crate::cccx_durable_context::StaleReadRef> {
+        const MAX_STALE_READ_REFS: usize = 256;
+        let mut refs = self
+            .digests
+            .lock()
+            .await
+            .iter()
+            .filter_map(|(path, digest)| {
+                let root = self.project_root.as_deref()?;
+                let relative = path.strip_prefix(root).ok()?;
+                Some(crate::cccx_durable_context::StaleReadRef {
+                    canonical_path: relative.to_string_lossy().into_owned(),
+                    content_digest: digest.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        refs.sort();
+        refs.truncate(MAX_STALE_READ_REFS);
+        refs
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PersistedReadSet {
+    schema_version: String,
+    digests: HashMap<PathBuf, String>,
+}
+
+static CCCX_READ_SET_WRITE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+fn cccx_read_set_state_path(cccx_home: &Path, project_root: &Path, scope_id: &str) -> PathBuf {
+    let scope_hash = format!("{:x}", Sha256::digest(scope_id.as_bytes()));
+    crate::project_memory::project_storage_root(cccx_home, project_root)
+        .join("state/read-set")
+        .join(format!("{scope_hash}.json"))
+}
+
+async fn persist_cccx_read_set(
+    path: &Path,
+    project_root: &Path,
+    mut digests: HashMap<PathBuf, String>,
+) -> std::io::Result<()> {
+    const MAX_PERSISTED_READS: usize = 256;
+    let _guard = CCCX_READ_SET_WRITE_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    if let Ok(bytes) = tokio::fs::read(path).await
+        && let Ok(existing) = serde_json::from_slice::<PersistedReadSet>(&bytes)
+        && existing.schema_version == "cccx.read_set.v1"
+    {
+        for (path, digest) in existing.digests {
+            if cccx_read_set_key(&path).starts_with(project_root) {
+                digests.entry(path).or_insert(digest);
+            }
+        }
+    }
+    let mut entries = digests.into_iter().collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries.truncate(MAX_PERSISTED_READS);
+    let state = PersistedReadSet {
+        schema_version: "cccx.read_set.v1".to_string(),
+        digests: entries.into_iter().collect(),
+    };
+    let bytes = serde_json::to_vec_pretty(&state).map_err(std::io::Error::other)?;
+    let temp_path = path.with_extension("json.tmp");
+    let backup_path = path.with_extension("json.bak");
+    let mut temp = tokio::fs::File::create(&temp_path).await?;
+    use tokio::io::AsyncWriteExt;
+    temp.write_all(&bytes).await?;
+    temp.sync_all().await?;
+    drop(temp);
+    let _ = tokio::fs::remove_file(&backup_path).await;
+    let had_existing = tokio::fs::rename(path, &backup_path).await.is_ok();
+    if let Err(error) = tokio::fs::rename(&temp_path, path).await {
+        if had_existing {
+            let _ = tokio::fs::rename(&backup_path, path).await;
+        }
+        return Err(error);
+    }
+    if had_existing {
+        let _ = tokio::fs::remove_file(backup_path).await;
+    }
+    Ok(())
 }
 
 fn cccx_read_set_key(path: &Path) -> PathBuf {
@@ -147,6 +278,59 @@ mod cccx_read_set_tests {
         assert!(
             result.is_err_and(|reason| reason.contains("stale read detected")),
             "a file changed after its observed read must be blocked before write"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_read_state_survives_restart_and_still_blocks_stale_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tracked.rs");
+        std::fs::write(&path, "before").expect("initial file");
+        let home = tempfile::tempdir().expect("home");
+        let read_set = CccxReadSet::new(home.path(), dir.path(), "thread-1");
+        read_set.record(path.clone(), b"before").await;
+        drop(read_set);
+
+        std::fs::write(&path, "after").expect("external change");
+        let restored = CccxReadSet::new(home.path(), dir.path(), "thread-1");
+        let result = restored.verify_observed_fresh(&path).await;
+
+        assert!(result.is_err_and(|reason| reason.contains("stale read detected")));
+    }
+
+    #[tokio::test]
+    async fn a_new_thread_does_not_inherit_direct_read_authority() {
+        let home = tempfile::tempdir().expect("home");
+        let project = tempfile::tempdir().expect("project");
+        let path = project.path().join("tracked.rs");
+        std::fs::write(&path, "current").expect("file");
+        let original = CccxReadSet::new(home.path(), project.path(), "thread-1");
+        original.record(path.clone(), b"current").await;
+
+        let unrelated = CccxReadSet::new(home.path(), project.path(), "thread-2");
+        let result = unrelated.verify_observed_fresh(&path).await;
+
+        assert!(result.is_err_and(|reason| reason.contains("no direct read recorded")));
+    }
+
+    #[tokio::test]
+    async fn paths_outside_project_are_never_persisted_or_exposed_as_survivor_refs() {
+        let home = tempfile::tempdir().expect("home");
+        let project = tempfile::tempdir().expect("project");
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        let read_set = CccxReadSet::new(home.path(), project.path(), "thread-1");
+
+        read_set
+            .record(outside.path().to_path_buf(), b"outside-secret")
+            .await;
+
+        assert!(read_set.snapshot_refs().await.is_empty());
+        let restored = CccxReadSet::new(home.path(), project.path(), "thread-1");
+        assert!(
+            restored
+                .verify_observed_fresh(outside.path())
+                .await
+                .is_err_and(|reason| reason.contains("no direct read recorded"))
         );
     }
 }
@@ -719,6 +903,11 @@ impl Session {
         let (current_date, timezone) = local_time_context();
         let extension_data = Arc::new(codex_extension_api::ExtensionData::new(sub_id.clone()));
         extension_data.insert(skills_snapshot.clone());
+        let cccx_read_set = Arc::new(CccxReadSet::new(
+            per_turn_config.codex_home.as_path(),
+            cwd.as_path(),
+            &thread_id.to_string(),
+        ));
         TurnContext {
             sub_id,
             trace_id: current_span_trace_id(),
@@ -764,7 +953,7 @@ impl Session {
             turn_skills: TurnSkillsContext::new(skills_snapshot),
             turn_timing_state: Arc::new(TurnTimingState::default()),
             cccx_post_tool_use_counters: Arc::new(CccxPostToolUseCounters::default()),
-            cccx_read_set: Arc::new(CccxReadSet::default()),
+            cccx_read_set,
             terminal_error: Arc::new(Mutex::new(None)),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),

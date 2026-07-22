@@ -35,7 +35,7 @@ interactive/TUI events and headless JSONL where a gate crosses either surface.
 | 17 | PASS | Spawned child dispatch uses project lease; writers serialize while readers overlap | Unknown writer class serializes | tool runtime |
 | 18 | PASS | Complete live LLM-path inventory reaches parsed/trusted 9router HTTP/SSE boundary | Spoofed/non-9router route and unsupported WS/realtime fail before transport | client/gateway |
 | 19 | PASS | Responses/Chat stream, retry, auth and terminal attempts persist factual provenance | Metadata omission remains `unknown`; post-tool disconnect never replays | gateway/provenance |
-| 20 | PARTIAL | Compact/restart restores memory, ADR refs, state refs and MCP health | Child ADR/memory write denies; raw output is not durable memory | compact/memory/ADR/MCP |
+| 20 | PASS | Compact/restart restores typed memory, ADR, WorkSpec/Artifact/checkpoint, MCP-health and stale-read refs | Child/alias ADR writes deny or become proposals; forged TaskGraph and raw output cannot grant durable authority | compact/memory/ADR/MCP |
 | 21 | PASS | Spawned CX catalog contains only trusted compatible plugin grants | CC-only/native grant does not leak | plugins/spawn |
 | 22 | PARTIAL | TUI commands/status/network/secure input use live state | Secret absent from parser/history/log/telemetry | TUI/secure config |
 | 23 | PASS | Preserve JSONL terminal-last/exit-code regression | Headless approval defaults deny | headless/exec |

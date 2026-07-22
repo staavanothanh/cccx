@@ -39,6 +39,7 @@ pub mod artifact_collector;
 mod attestation;
 pub(crate) mod cccx_adr;
 pub mod cccx_agent_model_routes;
+mod cccx_durable_context;
 mod cccx_gateway_provenance_state;
 mod cccx_paths;
 mod cccx_runtime;

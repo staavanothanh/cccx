@@ -51,6 +51,15 @@ fn compacted_user_message(text: &str) -> CompactedUserMessage {
     }
 }
 
+#[test]
+fn remote_compaction_output_cannot_retain_an_old_survivor_copy() {
+    let stale = user_message(&format!("{CCCX_SURVIVOR_PREFIX}{{}}"));
+
+    assert!(!crate::compact_remote::should_keep_compacted_history_item(
+        &stale
+    ));
+}
+
 #[tokio::test]
 async fn cccx_compaction_survivor_keeps_project_memory_without_a_task_graph() {
     let (_session, turn_context) = crate::session::tests::make_session_and_context().await;
@@ -70,7 +79,7 @@ async fn cccx_compaction_survivor_keeps_project_memory_without_a_task_graph() {
     .await
     .expect("persist project memory");
 
-    let survivor = cccx_compaction_survivor_item(&turn_context)
+    let survivor = cccx_compaction_survivor_item(&_session, &turn_context)
         .await
         .expect("Main CC memory must survive compaction without a TaskGraph");
     let ResponseItem::Message { content, .. } = survivor else {
@@ -84,7 +93,65 @@ async fn cccx_compaction_survivor_keeps_project_memory_without_a_task_graph() {
         })
         .expect("survivor input text");
     assert!(text.contains("retain this project memory through compaction"));
-    assert!(text.contains("\"task_graph\":null"));
+    assert!(text.contains("\"task_graph_ref\":null"));
+    assert!(text.contains("\"schema_version\":\"cccx.compaction_survivor.v2\""));
+}
+
+#[tokio::test]
+async fn do_not_inject_world_state_still_restores_one_durable_survivor() {
+    let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+    crate::project_memory::ProjectMemory::new(
+        turn_context.config.codex_home.as_path(),
+        turn_context.config.cwd.as_path(),
+    )
+    .remember("manual compaction durable sentinel")
+    .await
+    .expect("persist project memory");
+
+    let (items, baseline) = build_compaction_initial_context(
+        &session,
+        &turn_context,
+        &InitialContextInjection::DoNotInject,
+    )
+    .await;
+
+    assert!(baseline.is_none());
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| is_cccx_compaction_survivor_item(item))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn project_memory_is_injected_as_untrusted_user_context_not_developer_authority() {
+    let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+    crate::project_memory::ProjectMemory::new(
+        turn_context.config.codex_home.as_path(),
+        turn_context.config.cwd.as_path(),
+    )
+    .remember("memory must stay below developer authority")
+    .await
+    .expect("persist project memory");
+    let world_state = build_world_state_from_turn_context(&session, &turn_context).await;
+    let items = session
+        .build_initial_context_with_world_state(&turn_context, &world_state)
+        .await;
+
+    let memory_items = items
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::Message { role, content, .. }
+                if content.iter().any(|content| {
+                    matches!(content, ContentItem::InputText { text } if text.contains("memory must stay below developer authority"))
+                }) => Some(role.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(memory_items, vec!["user"]);
 }
 
 #[test]

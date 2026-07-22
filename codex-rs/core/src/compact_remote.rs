@@ -338,6 +338,9 @@ pub(crate) async fn process_compacted_history(
 ///   messages. Legacy warning fragments are filtered by `parse_turn_item` before they reach this
 ///   check.
 pub(crate) fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
+    if crate::compact::is_cccx_compaction_survivor_item(item) {
+        return false;
+    }
     match item {
         ResponseItem::Message { role, .. } if role == "developer" => false,
         ResponseItem::Message { role, .. } if role == "user" => {

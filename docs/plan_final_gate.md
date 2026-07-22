@@ -1,4 +1,4 @@
-Kết luận cập nhật sau Phase 5: cccx pass chắc chắn **21/25 gate**. Bốn gate còn lại — **20, 22, 24 và 25** — vẫn PARTIAL theo tiêu chuẩn runtime/E2E của [task.md](D:/Learning_Programing/cccx/docs/task.md:951). Chưa thể kết luận “cccx hoàn thiện đúng thiết kế”.
+Kết luận cập nhật sau Phase 6: cccx pass chắc chắn **22/25 gate**. Ba gate còn lại — **22, 24 và 25** — vẫn PARTIAL theo tiêu chuẩn runtime/E2E của [task.md](D:/Learning_Programing/cccx/docs/task.md:951). Chưa thể kết luận “cccx hoàn thiện đúng thiết kế”.
 
 ## Phát hiện audit
 
@@ -198,6 +198,8 @@ thực tế, kể cả partial text/tool arguments trước disconnect.
 ### Phase 6 — Durable context, ADR và MCP
 
 Cover Gate **20**, đồng thời regression Gate 3/10/21.
+
+**Trạng thái 2026-07-22: COMPLETE — Gate 20 PASS.**
 
 - `/remember` lưu đúng project scope.
 - Memory sống qua compaction dù không có TaskGraph.
